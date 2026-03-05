@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+immurok.app/
+.sign-identity
+Resources/*.pkg
+*.log
+*.tmp
+*.swp
+*~
