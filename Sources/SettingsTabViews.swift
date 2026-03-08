@@ -2,6 +2,16 @@ import SwiftUI
 import ServiceManagement
 import UniformTypeIdentifiers
 
+private func batteryIconName(level: Int) -> String {
+    switch level {
+    case 0...10:  return "battery.0percent"
+    case 11...35: return "battery.25percent"
+    case 36...65: return "battery.50percent"
+    case 66...90: return "battery.75percent"
+    default:      return "battery.100percent"
+    }
+}
+
 // MARK: - Device Tab
 
 struct DeviceTabView: View {
@@ -31,6 +41,14 @@ struct DeviceTabView: View {
                                 .foregroundColor(.secondary)
 
                             Spacer()
+
+                            if let level = viewModel.batteryLevel {
+                                Image(systemName: batteryIconName(level: level))
+                                    .foregroundColor(level <= 10 ? .red : .secondary)
+                                Text("\(level)%")
+                                    .font(.callout)
+                                    .foregroundColor(level <= 10 ? .red : .secondary)
+                            }
                         }
                     }
                     .padding(4)

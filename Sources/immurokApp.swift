@@ -50,13 +50,25 @@ struct MenuBarView: View {
         setupManager.isPAMModuleInstalled
     }
 
+    /// 设置窗口是否已经可见
+    private var isSettingsWindowVisible: Bool {
+        NSApp.windows.contains { $0.title == "immurok" && $0.isVisible }
+    }
+
+    /// 打开设置窗口，仅在窗口不可见时跳转到指定 tab
+    private func openSettings(tab: SettingsTab? = nil) {
+        if !isSettingsWindowVisible, let tab = tab {
+            NotificationCenter.default.post(name: .openSettingsTab, object: tab)
+        }
+        openWindow(id: "settings")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 连接状态 - 点击进入设备页面
             Button(action: {
-                NotificationCenter.default.post(name: .openSettingsTab, object: SettingsTab.device)
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
+                openSettings(tab: .device)
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: viewModel.isDeviceConnected ? "bolt.fill" : "bolt.slash.fill")
@@ -70,9 +82,7 @@ struct MenuBarView: View {
 
             // 整体状态 - 点击进入状态页面
             Button(action: {
-                NotificationCenter.default.post(name: .openSettingsTab, object: SettingsTab.status)
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
+                openSettings(tab: .status)
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: isAllStatusOK ? "checkmark.circle" : "exclamationmark.circle")
@@ -88,8 +98,7 @@ struct MenuBarView: View {
 
             // 设置
             Button(action: {
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
+                openSettings(tab: .permissions)
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")

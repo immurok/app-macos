@@ -617,23 +617,24 @@ class BLEManager: NSObject {
     }
 
     /// Get device status including fingerprint bitmap and paired status
-    func getDeviceStatus(completion: @escaping (UInt8, Bool) -> Void) {
+    func getDeviceStatus(completion: @escaping (UInt8, Bool, Int?) -> Void) {
         guard deviceState.isConnected else {
-            completion(0, false)
+            completion(0, false, nil)
             return
         }
 
         sendCommand(.getStatus) { response in
             guard let response = response, response.count >= 3,
                   response[0] == ImmurokStatus.ok.rawValue else {
-                completion(0, false)
+                completion(0, false, nil)
                 return
             }
 
             let bitmap = response[1]
             let isPaired = response[2] != 0
-            NSLog("BLEManager: Status: bitmap=0x%02x, paired=%d", bitmap, isPaired ? 1 : 0)
-            completion(bitmap, isPaired)
+            let batteryLevel = response.count >= 4 ? Int(response[3]) : nil
+            NSLog("BLEManager: Status: bitmap=0x%02x, paired=%d, battery=%@", bitmap, isPaired ? 1 : 0, batteryLevel.map { "\($0)%" } ?? "n/a")
+            completion(bitmap, isPaired, batteryLevel)
         }
     }
 
@@ -1490,19 +1491,40 @@ extension BLEManager: CBPeripheralDelegate {
         if cmdCharacteristic != nil && rspCharacteristic != nil && !deviceState.isConnected {
             stopReconnectTimer()
 
-            // Subscribe to RSP notifications for proactive fingerprint match
+            // Subscribe to RSP notifications — must wait for confirmation
+            // before marking connected (device drops responses if CCC not enabled)
             if let rspChar = rspCharacteristic, rspChar.properties.contains(.notify) {
                 peripheral.setNotifyValue(true, for: rspChar)
-                NSLog("BLEManager: Subscribed to RSP notifications")
+                NSLog("BLEManager: Subscribing to RSP notifications...")
+            } else {
+                // No notify support — connect immediately (shouldn't happen)
+                let name = peripheral.name ?? "immurok"
+                deviceState = .connected(name: name)
+                NSLog("BLEManager: Ready - %@", name)
+                Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
+                onDeviceConnected?(name)
             }
-
-            let name = peripheral.name ?? "immurok"
-            deviceState = .connected(name: name)
-
-            NSLog("BLEManager: Ready - %@", name)
-            Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
-            onDeviceConnected?(name)
         }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == IMMUROK_RSP_CHAR_UUID else { return }
+
+        if let error = error {
+            NSLog("BLEManager: RSP notification subscribe FAILED: %@", error.localizedDescription)
+            return
+        }
+
+        NSLog("BLEManager: RSP notifications confirmed (isNotifying=%d)", characteristic.isNotifying ? 1 : 0)
+
+        // Now safe to mark connected — device CCC is enabled
+        guard !deviceState.isConnected else { return }
+        let name = peripheral.name ?? "immurok"
+        deviceState = .connected(name: name)
+
+        NSLog("BLEManager: Ready - %@", name)
+        Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
+        onDeviceConnected?(name)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -1544,6 +1566,7 @@ extension BLEManager: CBPeripheralDelegate {
             }
             return
         }
+
 
         // Handle OTA characteristic reads separately
         if characteristic.uuid == OTA_CHAR_UUID {

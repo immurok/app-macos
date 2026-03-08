@@ -22,6 +22,9 @@ class AppViewModel: ObservableObject {
     // Firmware version
     @Published var firmwareVersion: String?
 
+    // Battery level (0-100%, nil = unknown)
+    @Published var batteryLevel: Int?
+
     // Bluetooth permission state
     @Published var bluetoothStatus: BluetoothAuthStatus = .notDetermined
 
@@ -101,12 +104,13 @@ class AppViewModel: ObservableObject {
             completion?()
             return
         }
-        bleManager.getDeviceStatus { [weak self] bitmap, isPaired in
+        bleManager.getDeviceStatus { [weak self] bitmap, isPaired, battery in
             Task { @MainActor in
                 let count = (0..<5).filter { bitmap & (1 << $0) != 0 }.count
                 self?.fingerprintCount = count
                 self?.isDevicePaired = isPaired
                 self?.isPasswordConfigured = ImmurokSecurity.shared.hasPassword()
+                self?.batteryLevel = battery
                 FingerprintViewModel.cachedBitmap = bitmap
                 FingerprintViewModel.isCacheValid = true
                 completion?()
@@ -150,6 +154,7 @@ class AppViewModel: ObservableObject {
                 self?.isDeviceConnected = false
                 self?.deviceName = nil
                 self?.firmwareVersion = nil
+                self?.batteryLevel = nil
                 self?.fingerprintCount = 0
                 self?.isDevicePaired = false
                 self?.pendingGatedOperation = false
