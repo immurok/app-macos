@@ -588,7 +588,9 @@ class PAMSocketServer {
         }
 
         let subCmd = String(parts[1])
-        NSLog("PAMSocketServer: OTA cmd: %@", subCmd)
+        if subCmd != "WRITE" {
+            NSLog("PAMSocketServer: OTA cmd: %@", subCmd)
+        }
 
         switch subCmd {
         case "INFO":
@@ -732,25 +734,21 @@ class PAMSocketServer {
         ])
         cmd.append(data)
 
+        // Write Without Response for throughput — integrity verified by SHA256+HMAC at END
         let sem = DispatchSemaphore(value: 0)
-        var result: Data?
+        var ok = false
 
-        bleManager.otaWriteAndRead(data: cmd, timeout: 5.0) { resp in
-            result = resp
+        bleManager.otaWriteOnly(data: cmd) { success in
+            ok = success
             sem.signal()
         }
 
         _ = sem.wait(timeout: .now() + 8)
 
-        guard let resp = result, resp.count >= 1 else {
-            sendLine(clientSocket, line: "ERROR:WRITE_TIMEOUT")
-            return
-        }
-
-        if resp[0] == 0x00 {
+        if ok {
             sendLine(clientSocket, line: "OK")
         } else {
-            sendLine(clientSocket, line: "ERROR:WRITE_FAILED:\(String(format: "%02x", resp[0]))")
+            sendLine(clientSocket, line: "ERROR:WRITE_FAILED")
         }
     }
 

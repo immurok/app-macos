@@ -159,7 +159,8 @@ class BLEManager: NSObject {
     private var gateGeneration: UInt = 0  // Increments per startGateTimeout, scopes gate timeouts
     private var fpFailureCount = 0  // FP_NOT_MATCH counter, max 2 then deny
     private var otaReadCallback: ((Data?) -> Void)?
-    private var reconnectTimer: Timer?
+    private var otaWriteReadyCallback: (() -> Void)?
+    private var reconnectTimer: DispatchSourceTimer?
     private var resubscribeTimer: DispatchSourceTimer?
     private var napActivity: NSObjectProtocol?
     private var displaySleeping = false
@@ -1245,18 +1246,21 @@ class BLEManager: NSObject {
 
     private func startReconnectTimer() {
         stopReconnectTimer()
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
+        timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             if !self.deviceState.isConnected {
                 self.doConnect()
             }
         }
-        RunLoop.current.add(reconnectTimer!, forMode: .common)
+        reconnectTimer = timer
+        timer.resume()
         doConnect()
     }
 
     private func stopReconnectTimer() {
-        reconnectTimer?.invalidate()
+        reconnectTimer?.cancel()
         reconnectTimer = nil
     }
 
@@ -1272,8 +1276,6 @@ class BLEManager: NSObject {
             completion(nil)
             return
         }
-
-        NSLog("BLEManager: OTA write %d bytes", data.count)
 
         var completed = false
         let timeoutItem = DispatchWorkItem { [weak self] in
@@ -1306,6 +1308,25 @@ class BLEManager: NSObject {
 
         setupReadCallback()
         peripheral.writeValue(data, for: otaChar, type: .withResponse)
+    }
+
+    /// Write data to OTA characteristic using Write Without Response.
+    /// Faster than Write With Response — no BLE round-trip per packet.
+    /// Requires firmware to have requested latency 0 during OTA.
+    /// Data integrity verified by SHA256+HMAC at OTA END.
+    func otaWriteOnly(data: Data, completion: @escaping (Bool) -> Void) {
+        guard let otaChar = otaCharacteristic, let peripheral = peripheral else {
+            completion(false)
+            return
+        }
+
+        peripheral.writeValue(data, for: otaChar, type: .withoutResponse)
+
+        if peripheral.canSendWriteWithoutResponse {
+            completion(true)
+        } else {
+            otaWriteReadyCallback = { completion(true) }
+        }
     }
 
     /// Check if OTA service is available
@@ -1527,15 +1548,31 @@ extension BLEManager: CBPeripheralDelegate {
         onDeviceConnected?(name)
     }
 
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        let cb = otaWriteReadyCallback
+        otaWriteReadyCallback = nil
+        cb?()
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         if characteristic.uuid == OTA_CHAR_UUID {
+            // otaWriteOnly: write-only mode (no read), signal completion immediately
+            if let cb = otaWriteReadyCallback {
+                otaWriteReadyCallback = nil
+                if let error = error {
+                    NSLog("BLEManager: OTA write error: %@", error.localizedDescription)
+                }
+                cb()
+                return
+            }
+
+            // otaWriteAndRead: write-then-read mode (for INFO, ERASE, HEADER, END)
             if let error = error {
                 NSLog("BLEManager: OTA write error: %@", error.localizedDescription)
                 let cb = otaReadCallback
                 otaReadCallback = nil
                 cb?(nil)
             } else {
-                // OTA uses write-then-read: read response after write completes
                 queue.asyncAfter(deadline: .now() + 0.05) {
                     peripheral.readValue(for: characteristic)
                 }

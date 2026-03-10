@@ -137,7 +137,8 @@ static int authenticate_via_socket(const char *user, const char *service) {
             frame++;
             total_ms += 80;
         } else {
-            break; /* select error */
+            if (errno == EINTR) continue; /* signal interrupted, retry */
+            break; /* real select error */
         }
     }
 

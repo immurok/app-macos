@@ -772,26 +772,22 @@ struct KeysTabView: View {
         let name = input.stringValue.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
 
+        // KEY_GENERATE already has its own FP gate — no need for separate requestAuth()
         keystoreVM.isAdding = true
-        keystoreVM.requestAuth { [self] success in
-            guard success else {
-                keystoreVM.isAdding = false
-                return
-            }
-            BLEManager.shared.sshGenerateKey(name: name) { [self] result in
-                DispatchQueue.main.async {
-                    self.keystoreVM.isAdding = false
-                    if let result = result {
-                        NSLog("SSH key generated: idx=%d", result.idx)
-                        let blob = SSHKeyCache.buildSSHPublicKeyBlob(publicKey: result.publicKey)
-                        let fp = SSHKeyCache.computeFingerprint(blob: blob)
-                        SSHKeyCache.shared.addEntry(SSHKeyCacheEntry(
-                            index: result.idx, name: name, publicKeyBlob: blob, fingerprint: fp
-                        ))
-                        self.keystoreVM.loadEntries(cat: .ssh)
-                    }
-                    self.showCopiedNotification("ssh.generate.success".localized)
+        BLEManager.shared.sshGenerateKey(name: name) { [self] result in
+            DispatchQueue.main.async {
+                self.keystoreVM.isAdding = false
+                self.keystoreVM.dismissGate()
+                if let result = result {
+                    NSLog("SSH key generated: idx=%d", result.idx)
+                    let blob = SSHKeyCache.buildSSHPublicKeyBlob(publicKey: result.publicKey)
+                    let fp = SSHKeyCache.computeFingerprint(blob: blob)
+                    SSHKeyCache.shared.addEntry(SSHKeyCacheEntry(
+                        index: result.idx, name: name, publicKeyBlob: blob, fingerprint: fp
+                    ))
+                    self.keystoreVM.loadEntries(cat: .ssh)
                 }
+                self.showCopiedNotification("ssh.generate.success".localized)
             }
         }
     }

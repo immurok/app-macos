@@ -118,43 +118,24 @@ class KeystoreViewModel: ObservableObject {
         }
     }
 
-    /// Show fingerprint gate overlay, request unlock, dismiss gate, then call completion
-    func requestAuth(completion: @escaping (Bool) -> Void) {
-        startGateCountdown()
-        bleManager.requestUnlock(timeout: 30.0) { [weak self] success in
-            Task { @MainActor in
-                guard let self = self else {
-                    completion(false)
-                    return
-                }
-                self.showGateOverlay = false
-                self.countdownTask?.cancel()
-                completion(success)
-            }
-        }
-    }
-
     func addEntry(cat: KeystoreCategory, data: Data, completion: @escaping (Bool) -> Void) {
         isAdding = true
         clearError()
 
-        requestAuth { [weak self] success in
-            guard let self = self, success else {
-                Task { @MainActor in self?.isAdding = false }
-                completion(false)
-                return
-            }
-            self.bleManager.writeKeyEntry(cat: cat, idx: 0xFF, data: data) { [weak self] success in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    self.isAdding = false
-                    if success {
-                        self.loadEntries(cat: cat)
-                    } else {
-                        self.showError("keys.add.failed".localized)
-                    }
-                    completion(success)
+        // KEY_COMMIT already has its own FP gate (fp_gate_needed) — no need for
+        // separate requestAuth(). AUTH_REQUEST intentionally doesn't set the gate
+        // cooldown, so calling it first would cause a redundant second verification.
+        bleManager.writeKeyEntry(cat: cat, idx: 0xFF, data: data) { [weak self] success in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isAdding = false
+                self.dismissGate()
+                if success {
+                    self.loadEntries(cat: cat)
+                } else {
+                    self.showError("keys.add.failed".localized)
                 }
+                completion(success)
             }
         }
     }
@@ -164,49 +145,44 @@ class KeystoreViewModel: ObservableObject {
         isAdding = true
         clearError()
 
-        requestAuth { [weak self] success in
-            guard let self = self, success else {
-                Task { @MainActor in self?.isAdding = false }
+        // KEY_COMMIT already has its own FP gate — no need for separate requestAuth()
+        bleManager.readKeyEntry(cat: cat, idx: idx) { [weak self] data in
+            guard let self = self, var entryData = data else {
+                Task { @MainActor in
+                    self?.isAdding = false
+                    self?.showError("keys.edit.failed".localized)
+                }
                 completion(false)
                 return
             }
-            self.bleManager.readKeyEntry(cat: cat, idx: idx) { [weak self] data in
-                guard let self = self, var entryData = data else {
-                    Task { @MainActor in
-                        self?.isAdding = false
-                        self?.showError("keys.edit.failed".localized)
-                    }
-                    completion(false)
-                    return
-                }
-                switch cat {
-                case .ssh:
-                    let nameData = Self.buildField(name, size: 16)
-                    entryData.replaceSubrange(0..<16, with: nameData)
-                case .otp:
-                    let nameData = Self.buildField(name, size: 30)
-                    let serviceData = Self.buildField(service, size: 30)
-                    entryData.replaceSubrange(0..<30, with: nameData)
-                    entryData.replaceSubrange(30..<60, with: serviceData)
-                case .api:
-                    let nameData = Self.buildField(name, size: 32)
-                    entryData.replaceSubrange(0..<32, with: nameData)
-                }
-                self.bleManager.writeKeyEntry(cat: cat, idx: idx, data: entryData) { [weak self] success in
-                    Task { @MainActor in
-                        guard let self = self else { return }
-                        self.isAdding = false
-                        if success {
-                            // Update locally — no need to re-read all entries
-                            if let i = self.entries.firstIndex(where: { $0.index == Int(idx) }) {
-                                self.entries[i] = Entry(index: Int(idx), name: name, service: service)
-                            }
-                            KeyNameCache.shared.updateEntry(cat: cat, index: Int(idx), name: name, service: service)
-                        } else {
-                            self.showError("keys.edit.failed".localized)
+            switch cat {
+            case .ssh:
+                let nameData = Self.buildField(name, size: 16)
+                entryData.replaceSubrange(0..<16, with: nameData)
+            case .otp:
+                let nameData = Self.buildField(name, size: 30)
+                let serviceData = Self.buildField(service, size: 30)
+                entryData.replaceSubrange(0..<30, with: nameData)
+                entryData.replaceSubrange(30..<60, with: serviceData)
+            case .api:
+                let nameData = Self.buildField(name, size: 32)
+                entryData.replaceSubrange(0..<32, with: nameData)
+            }
+            self.bleManager.writeKeyEntry(cat: cat, idx: idx, data: entryData) { [weak self] success in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    self.isAdding = false
+                    self.dismissGate()
+                    if success {
+                        // Update locally — no need to re-read all entries
+                        if let i = self.entries.firstIndex(where: { $0.index == Int(idx) }) {
+                            self.entries[i] = Entry(index: Int(idx), name: name, service: service)
                         }
-                        completion(success)
+                        KeyNameCache.shared.updateEntry(cat: cat, index: Int(idx), name: name, service: service)
+                    } else {
+                        self.showError("keys.edit.failed".localized)
                     }
+                    completion(success)
                 }
             }
         }
@@ -239,28 +215,13 @@ class KeystoreViewModel: ObservableObject {
         deleteProgress = 0
         deleteTotal = indices.count
         clearError()
-        startGateCountdown()
 
-        let ble = bleManager
-        ble.requestUnlock(timeout: 30.0) { [weak self] success in
-            Task { @MainActor in
-                guard let self = self else { return }
-                // Dismiss gate but keep isDeleting true
-                self.showGateOverlay = false
-                self.countdownTask?.cancel()
-                guard success else {
-                    self.isDeleting = false
-                    self.deleteProgress = 0
-                    self.deleteTotal = 0
-                    completion()
-                    return
-                }
-                self.deleteEntriesAfterAuth(cat: cat, indices: indices, completion: completion)
-            }
-        }
+        // KEY_DELETE already has its own FP gate — no need for separate requestUnlock().
+        // First delete triggers gate; rolling cooldown covers the rest.
+        deleteEntriesSequentially(cat: cat, indices: indices, completion: completion)
     }
 
-    private func deleteEntriesAfterAuth(cat: KeystoreCategory, indices: [UInt8], completion: @escaping () -> Void) {
+    private func deleteEntriesSequentially(cat: KeystoreCategory, indices: [UInt8], completion: @escaping () -> Void) {
         // Delete from largest index first to avoid swap-delete index shifting
         let sorted = indices.sorted(by: >)
         func deleteNext(i: Int) {
@@ -271,6 +232,7 @@ class KeystoreViewModel: ObservableObject {
                     self.entries.removeAll { deletedSet.contains($0.index) }
                     KeyNameCache.shared.removeEntries(cat: cat, indices: deletedSet)
                     self.isDeleting = false
+                    self.dismissGate()
                     self.deleteProgress = 0
                     self.deleteTotal = 0
                 }
@@ -350,37 +312,27 @@ class KeystoreViewModel: ObservableObject {
         }
     }
 
-    /// Import OTP entries serially (fingerprint auth first, then batch write)
+    /// Import OTP entries serially (KEY_COMMIT has its own FP gate; rolling cooldown covers batch)
     func importOTPEntries(_ entries: [(name: String, service: String, secret: Data)],
                           completion: @escaping (Int) -> Void) {
         isImporting = true
         importProgress = 0
         importTotal = entries.count
-        startGateCountdown()
-        let ble = bleManager
-        // Verify fingerprint first (sets device-side gate cooldown for batch writes)
-        ble.requestUnlock(timeout: 30.0) { [weak self] success in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.dismissGate()
-                guard success else {
-                    self.isImporting = false
-                    completion(0)
-                    return
-                }
-                self.writeOTPEntriesAfterAuth(entries, ble: ble, completion: completion)
-            }
-        }
+
+        // KEY_COMMIT already has FP gate — no need for separate requestUnlock().
+        // First commit triggers gate; rolling cooldown covers the rest.
+        writeOTPEntriesSequentially(entries, completion: completion)
     }
 
-    private func writeOTPEntriesAfterAuth(_ entries: [(name: String, service: String, secret: Data)],
-                                           ble: BLEManager,
-                                           completion: @escaping (Int) -> Void) {
+    private func writeOTPEntriesSequentially(_ entries: [(name: String, service: String, secret: Data)],
+                                              completion: @escaping (Int) -> Void) {
+        let ble = bleManager
         var successCount = 0
         func writeNext(index: Int) {
             guard index < entries.count else {
                 Task { @MainActor in
                     self.isImporting = false
+                    self.dismissGate()
                     self.loadEntries(cat: .otp)
                 }
                 completion(successCount)
@@ -423,8 +375,6 @@ class KeystoreViewModel: ObservableObject {
     func dismissGate() {
         showGateOverlay = false
         countdownTask?.cancel()
-        isAdding = false
-        isDeleting = false
     }
 
     // MARK: - Helpers
