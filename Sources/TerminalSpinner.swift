@@ -30,16 +30,15 @@ class TerminalSpinner {
     }
 
     /// Start the spinner animation (non-blocking, runs on background thread)
+    /// Can be called to switch from signing animation to fingerprint prompt.
     func start() {
-        guard !isRunning else { return }
-        if ttyHandle == nil {
-            ttyHandle = FileHandle(forWritingAtPath: ttyPath)
-        }
-        guard ttyHandle != nil else { return }
-        isRunning = true
+        guard ensureTTY() else { return }
+        isRunning = false
         generation += 1
         let myGen = generation
+        Thread.sleep(forTimeInterval: 0.1) // let old loop exit
 
+        isRunning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             var frame = 0
@@ -67,8 +66,9 @@ class TerminalSpinner {
         }
     }
 
-    /// Transition from fingerprint spinner to signing animation
+    /// Transition to signing animation (can be called before or after start)
     func showSigning() {
+        guard ensureTTY() else { return }
         isRunning = false
         generation += 1  // immediately invalidate old spinner loop
         let myGen = generation
@@ -121,6 +121,13 @@ class TerminalSpinner {
     }
 
     // MARK: - Private
+
+    private func ensureTTY() -> Bool {
+        if ttyHandle == nil {
+            ttyHandle = FileHandle(forWritingAtPath: ttyPath)
+        }
+        return ttyHandle != nil
+    }
 
     private func write(_ text: String) {
         ttyHandle?.write(Data(text.utf8))

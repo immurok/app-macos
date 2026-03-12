@@ -111,6 +111,10 @@ class SSHAgentServer {
                 continue
             }
 
+            // Prevent SIGPIPE when client disconnects (e.g. Ctrl+C during sign)
+            var on: Int32 = 1
+            setsockopt(clientSocket, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.handleClient(clientSocket)
             }
@@ -240,13 +244,14 @@ class SSHAgentServer {
         // Hash the data (SHA-256)
         let hash = Data(SHA256.hash(data: signData))
 
-        // Start spinner on client terminal
+        // Spinner shows nothing until BLE response arrives (~100ms).
+        // Device returns 0x10 (cooldown) or 0x11 (need FP) deterministically.
         let spinner = TerminalSpinner(clientSocket: clientSocket)
-        spinner?.start()
 
-        // Hook up retry and gate-approved feedback
         let previousAttemptFailed = BLEManager.shared.onFingerprintAttemptFailed
         let previousGateApproved = BLEManager.shared.onFingerprintGateApproved
+        let previousGateRequired = BLEManager.shared.onFingerprintGateRequired
+        BLEManager.shared.onFingerprintGateRequired = { spinner?.start() }
         BLEManager.shared.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
         BLEManager.shared.onFingerprintGateApproved = { spinner?.showSigning() }
 
@@ -263,6 +268,7 @@ class SSHAgentServer {
         let result = semaphore.wait(timeout: .now() + 50.0)
         BLEManager.shared.onFingerprintAttemptFailed = previousAttemptFailed
         BLEManager.shared.onFingerprintGateApproved = previousGateApproved
+        BLEManager.shared.onFingerprintGateRequired = previousGateRequired
 
         guard result == .success, let sig = signature, sig.count == 64 else {
             spinner?.dismiss()

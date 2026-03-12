@@ -142,6 +142,7 @@ class BLEManager: NSObject {
     /// Called when fingerprint doesn't match during FP gate or AUTH — parameter is remaining attempts
     var onFingerprintAttemptFailed: ((Int) -> Void)?
     var onFingerprintGateApproved: (() -> Void)?
+    var onFingerprintGateRequired: (() -> Void)?
     /// Posted when a command enters FP gate (WAIT_FP). UI should prompt "请验证指纹".
     static let fingerprintGateRequiredNotification = Notification.Name("BLEManagerFingerprintGateRequired")
 
@@ -631,24 +632,35 @@ class BLEManager: NSObject {
     }
 
     /// Get device status including fingerprint bitmap and paired status
-    func getDeviceStatus(completion: @escaping (UInt8, Bool, Int?) -> Void) {
+    func getDeviceStatus(completion: @escaping (UInt8, Bool, Int?, String?) -> Void) {
         guard deviceState.isConnected else {
-            completion(0, false, nil)
+            completion(0, false, nil, nil)
             return
         }
 
-        sendCommand(.getStatus) { response in
+        sendCommand(.getStatus) { [weak self] response in
             guard let response = response, response.count >= 3,
                   response[0] == ImmurokStatus.ok.rawValue else {
-                completion(0, false, nil)
+                completion(0, false, nil, nil)
                 return
             }
 
             let bitmap = response[1]
             let isPaired = response[2] != 0
             let batteryLevel = response.count >= 4 ? Int(response[3]) : nil
-            NSLog("BLEManager: Status: bitmap=0x%02x, paired=%d, battery=%@", bitmap, isPaired ? 1 : 0, batteryLevel.map { "\($0)%" } ?? "n/a")
-            completion(bitmap, isPaired, batteryLevel)
+            let firmwareVersion: String?
+            if response.count >= 7 {
+                firmwareVersion = "\(response[4]).\(response[5]).\(response[6])"
+            } else {
+                firmwareVersion = nil
+            }
+            NSLog("BLEManager: Status: bitmap=0x%02x, paired=%d, battery=%@, fw=%@", bitmap, isPaired ? 1 : 0, batteryLevel.map { "\($0)%" } ?? "n/a", firmwareVersion ?? "n/a")
+            if let version = firmwareVersion {
+                DispatchQueue.main.async {
+                    self?.onFirmwareVersionRead?(version)
+                }
+            }
+            completion(bitmap, isPaired, batteryLevel, firmwareVersion)
         }
     }
 
@@ -1026,8 +1038,9 @@ class BLEManager: NSObject {
                     // Convert LE to BE
                     completion(self.convertEndianness64(data))
                 }
-            } else if status == ImmurokStatus.waitFingerprint.rawValue {
-                // FP gate - wait for fingerprint, then read result
+            } else if status == ImmurokStatus.waitFingerprint.rawValue || status == 0x10 {
+                // 0x11 WAIT_FP = need fingerprint, 0x10 = cooldown (approved, signing in progress)
+                let needsFP = status == ImmurokStatus.waitFingerprint.rawValue
                 self.pendingGateCompletion = { success in
                     guard success else {
                         completion(nil)
@@ -1042,8 +1055,13 @@ class BLEManager: NSObject {
                     }
                 }
                 self.startGateTimeout()
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(name: BLEManager.fingerprintGateRequiredNotification, object: nil)
+                if needsFP {
+                    self.onFingerprintGateRequired?()
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: BLEManager.fingerprintGateRequiredNotification, object: nil)
+                    }
+                } else {
+                    self.onFingerprintGateApproved?()
                 }
             } else {
                 completion(nil)

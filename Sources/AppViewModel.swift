@@ -106,13 +106,16 @@ class AppViewModel: ObservableObject {
             completion?()
             return
         }
-        bleManager.getDeviceStatus { [weak self] bitmap, isPaired, battery in
+        bleManager.getDeviceStatus { [weak self] bitmap, isPaired, battery, fwVersion in
             Task { @MainActor in
                 let count = (0..<5).filter { bitmap & (1 << $0) != 0 }.count
                 self?.fingerprintCount = count
                 self?.isDevicePaired = isPaired
                 self?.isPasswordConfigured = ImmurokSecurity.shared.hasPassword()
                 self?.batteryLevel = battery
+                if let fwVersion = fwVersion {
+                    self?.firmwareVersion = fwVersion
+                }
                 FingerprintViewModel.cachedBitmap = bitmap
                 FingerprintViewModel.isCacheValid = true
                 completion?()
