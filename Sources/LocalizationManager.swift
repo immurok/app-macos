@@ -269,6 +269,8 @@ class LocalizationManager: ObservableObject {
         "fingerprint.delete.failed.message": "无法删除指纹。",
         "fingerprint.loading": "正在访问设备获取指纹信息……",
         "fingerprint.verify.required": "请用已录入的手指验证身份",
+        "gate.attempt.remaining": "识别失败，还剩 %d 次机会",
+        "gate.processing": "验证通过，正在处理…",
 
         // Enrollment
         "enroll.verify.fingerprint": "请用已录入的手指验证身份，再开始新指纹录入",
@@ -588,6 +590,8 @@ class LocalizationManager: ObservableObject {
         "fingerprint.delete.failed.message": "無法刪除指紋。",
         "fingerprint.loading": "正在訪問設備取得指紋資訊……",
         "fingerprint.verify.required": "請用已錄入的手指驗證身分",
+        "gate.attempt.remaining": "辨識失敗，還剩 %d 次機會",
+        "gate.processing": "驗證通過，正在處理…",
 
         // Enrollment
         "enroll.verify.fingerprint": "請用已錄入的手指驗證身分，再開始新指紋錄入",
@@ -907,6 +911,8 @@ class LocalizationManager: ObservableObject {
         "fingerprint.delete.failed.message": "Unable to delete fingerprint.",
         "fingerprint.loading": "Fetching fingerprint info from device...",
         "fingerprint.verify.required": "Verify with an enrolled finger",
+        "gate.attempt.remaining": "Failed, %d attempts remaining",
+        "gate.processing": "Verified, processing…",
 
         // Enrollment
         "enroll.verify.fingerprint": "Verify with an enrolled finger before adding a new one",

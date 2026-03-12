@@ -20,6 +20,7 @@ class TerminalSpinner {
     private let ttyPath: String
     private var ttyHandle: FileHandle?
     private var isRunning = false
+    private var generation = 0  // invalidates old animation loops
     private let message: String
 
     init?(clientSocket: Int32, message: String = "Please verify your fingerprint...") {
@@ -31,14 +32,18 @@ class TerminalSpinner {
     /// Start the spinner animation (non-blocking, runs on background thread)
     func start() {
         guard !isRunning else { return }
-        ttyHandle = FileHandle(forWritingAtPath: ttyPath)
+        if ttyHandle == nil {
+            ttyHandle = FileHandle(forWritingAtPath: ttyPath)
+        }
         guard ttyHandle != nil else { return }
         isRunning = true
+        generation += 1
+        let myGen = generation
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             var frame = 0
-            while self.isRunning {
+            while self.isRunning && self.generation == myGen {
                 let spinner = Self.frames[frame % Self.frames.count]
                 self.write("\r\u{1B}[K\u{1B}[33m\(spinner) \(self.message)\u{1B}[0m")
                 frame += 1
@@ -51,7 +56,8 @@ class TerminalSpinner {
     func showTryAgain(remaining: Int) {
         let wasRunning = isRunning
         isRunning = false
-        Thread.sleep(forTimeInterval: 0.05) // let spinner loop exit
+        generation += 1  // immediately invalidate old spinner loop
+        Thread.sleep(forTimeInterval: 0.1) // let old loop exit
         let s = remaining == 1 ? "" : "s"
         write("\r\u{1B}[K\u{1B}[31m✗ Not matched, \(remaining) attempt\(s) left\u{1B}[0m")
         Thread.sleep(forTimeInterval: 0.5)
@@ -64,13 +70,15 @@ class TerminalSpinner {
     /// Transition from fingerprint spinner to signing animation
     func showSigning() {
         isRunning = false
-        Thread.sleep(forTimeInterval: 0.05) // let spinner loop exit
+        generation += 1  // immediately invalidate old spinner loop
+        let myGen = generation
+        Thread.sleep(forTimeInterval: 0.1) // let old loop exit
 
         isRunning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             var dots = 0
-            while self.isRunning {
+            while self.isRunning && self.generation == myGen {
                 let n = (dots % 3) + 1
                 let dotStr = String(repeating: ".", count: n)
                 let pad = String(repeating: " ", count: 3 - n)
@@ -84,7 +92,8 @@ class TerminalSpinner {
     /// Stop the spinner silently (erase line, no message)
     func dismiss() {
         isRunning = false
-        Thread.sleep(forTimeInterval: 0.05)
+        generation += 1
+        Thread.sleep(forTimeInterval: 0.1)
         write("\r\u{1B}[K")
         ttyHandle?.closeFile()
         ttyHandle = nil
@@ -93,7 +102,8 @@ class TerminalSpinner {
     /// Stop the spinner and show final result
     func stop(_ result: Result) {
         isRunning = false
-        Thread.sleep(forTimeInterval: 0.05) // let spinner loop exit
+        generation += 1
+        Thread.sleep(forTimeInterval: 0.1) // let animation loop exit
 
         switch result {
         case .approved:

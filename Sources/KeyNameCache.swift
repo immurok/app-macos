@@ -52,6 +52,15 @@ class KeyNameCache {
     /// 同步所有分类（设备连接后调用）
     func sync(completion: @escaping () -> Void) {
         let categories: [KeystoreCategory] = [.ssh, .api, .otp]
+        syncCategories(categories, completion: completion)
+    }
+
+    /// 同步非 SSH 分类（SSH 由 SSHKeyCache 填充，避免重复 BLE 读取）
+    func syncNonSSH(completion: @escaping () -> Void) {
+        syncCategories([.api, .otp], completion: completion)
+    }
+
+    private func syncCategories(_ categories: [KeystoreCategory], completion: @escaping () -> Void) {
         func syncNext(index: Int) {
             guard index < categories.count else {
                 self.isSynced = true

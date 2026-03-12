@@ -220,6 +220,23 @@ class SSHAgentServer {
         let keyName = SSHKeyCache.shared.entries.first(where: { $0.index == idx })?.name ?? "key"
         NSLog("SSHAgentServer: Sign request for key idx=%d (%@), data=%d bytes", idx, keyName, signData.count)
 
+        // Wait for BLE reconnection if device is temporarily disconnected
+        if !BLEManager.shared.deviceState.isConnected {
+            NSLog("SSHAgentServer: Device disconnected, waiting for reconnection...")
+            for _ in 0..<50 {  // 5 seconds, 100ms intervals
+                Thread.sleep(forTimeInterval: 0.1)
+                if BLEManager.shared.deviceState.isConnected { break }
+            }
+            guard BLEManager.shared.deviceState.isConnected else {
+                NSLog("SSHAgentServer: Reconnection timeout, sign failed")
+                sendFailure(clientSocket)
+                return
+            }
+            // Brief settle after reconnect; sshSign serializes via BLE command queue
+            Thread.sleep(forTimeInterval: 0.3)
+            NSLog("SSHAgentServer: Device reconnected, proceeding with sign")
+        }
+
         // Hash the data (SHA-256)
         let hash = Data(SHA256.hash(data: signData))
 
@@ -242,8 +259,8 @@ class SSHAgentServer {
             semaphore.signal()
         }
 
-        // Wait up to 35 seconds (30s FP gate + 5s command timeout)
-        let result = semaphore.wait(timeout: .now() + 35.0)
+        // Wait up to 50 seconds (30s FP gate + 15s ECDSA/param-update + 5s margin)
+        let result = semaphore.wait(timeout: .now() + 50.0)
         BLEManager.shared.onFingerprintAttemptFailed = previousAttemptFailed
         BLEManager.shared.onFingerprintGateApproved = previousGateApproved
 

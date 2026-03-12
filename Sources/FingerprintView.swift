@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 extension Notification.Name {
     static let fingerprintCacheUpdated = Notification.Name("fingerprintCacheUpdated")
@@ -31,6 +32,9 @@ struct FingerprintView: View {
         }
         .sheet(isPresented: $viewModel.isEnrolling) {
             EnrollmentSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.gateController.isPresented) {
+            FingerprintGateSheet(controller: viewModel.gateController)
         }
         .background(
             // Hidden button for CMD+R shortcut
@@ -76,9 +80,9 @@ struct FingerprintView: View {
                 VStack(spacing: 12) {
                     ProgressView()
                         .scaleEffect(0.8)
-                    Text(viewModel.gateMessage ?? "fingerprint.loading".localized)
+                    Text("fingerprint.loading".localized)
                         .font(.caption)
-                        .foregroundColor(viewModel.gateMessage != nil ? .orange : .secondary)
+                        .foregroundColor(.secondary)
                 }
                 .frame(height: 100)
             } else {
@@ -305,9 +309,8 @@ class FingerprintViewModel: ObservableObject {
     @Published var enrollmentStatus = ""
     @Published var enrollmentProgress = 0
     @Published var enrollmentTotal = 6  // Match firmware ENROLL_CAPTURE_COUNT
-    @Published var isTesting = false
-    @Published var testResult: String?
-    @Published var gateMessage: String?  // Shown when FP gate is active (e.g. during delete)
+
+    var gateController = FingerprintGateController()
 
     // Track current enrollment slot
     private var currentEnrollSlot: Int?
@@ -367,6 +370,7 @@ class FingerprintViewModel: ObservableObject {
     }
 
     private let bleManager = BLEManager.shared
+    private var gateCancellable: AnyCancellable?
 
     // Fingerprint bitmap cache (shared across instances)
     static var cachedBitmap: UInt8 = 0
@@ -384,6 +388,11 @@ class FingerprintViewModel: ObservableObject {
             sudoEnabled = true
             systemPrefsEnabled = true
             UserDefaults.standard.set(true, forKey: "immurok.settingsInitialized")
+        }
+
+        // Forward gate controller changes so SwiftUI sheet binding updates
+        gateCancellable = gateController.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
         }
 
         loadFingerprintNames()
@@ -425,11 +434,9 @@ class FingerprintViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                if self.isEnrolling {
-                    self.enrollmentStatus = "enroll.verify.fingerprint".localized
-                }
-                if self.isLoading {
-                    self.gateMessage = "fingerprint.verify.required".localized
+                // Gate sheet handles FP verification UI for both delete and enroll
+                if self.isLoading || self.currentEnrollSlot != nil {
+                    self.gateController.onGateRequired()
                 }
             }
         }
@@ -523,63 +530,64 @@ class FingerprintViewModel: ObservableObject {
     }
 
     func enrollFingerprint(slot: Int) {
-        guard !isEnrolling else { return }
+        guard !isEnrolling, !gateController.isPresented else { return }
 
         NSLog("FingerprintView: enrollFingerprint called with slot=%d, bitmap=0x%02X, nextAvailable=%@",
               slot, fingerprintBitmap, nextAvailableSlot.map { String($0) } ?? "nil")
 
         currentEnrollSlot = slot
-        isEnrolling = true
-        enrollmentStatus = "enroll.place.finger".localized
         enrollmentProgress = 0
+
+        // If fingerprints already enrolled, firmware requires FP verification first
+        if fingerprintCount > 0 {
+            gateController.present(title: "fingerprint.add".localized, onCancel: { [weak self] in
+                self?.currentEnrollSlot = nil
+            })
+        }
 
         bleManager.startEnrollment(slotId: UInt8(slot)) { [weak self] success in
             Task { @MainActor in
+                guard let self = self else { return }
                 if success {
-                    // Device may respond with WAIT_FP (fingerprint gate) or OK
-                    // Either way, enrollment is in progress — wait for enroll status callbacks
-                    self?.enrollmentStatus = "enroll.in.progress".localized
+                    // Gate succeeded (or wasn't needed) — transition to enrollment sheet
+                    self.gateController.reset()
+                    self.isEnrolling = true
+                    self.enrollmentStatus = "enroll.place.finger".localized
                 } else {
-                    self?.showAlert(title: "enroll.failed".localized, message: "enroll.failed.start".localized)
-                    self?.isEnrolling = false
-                    self?.currentEnrollSlot = nil
+                    if self.gateController.isPresented {
+                        self.gateController.reportFailed()
+                    } else {
+                        self.showAlert(title: "enroll.failed".localized, message: "enroll.failed.start".localized)
+                    }
+                    self.currentEnrollSlot = nil
                 }
             }
         }
     }
 
     func deleteFingerprint(slot: Int) {
-        let alert = NSAlert()
-        alert.messageText = "fingerprint.delete".localized
-        alert.informativeText = "fingerprint.delete.confirm".localized(slot + 1)
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "alert.delete".localized)
-        alert.addButton(withTitle: "alert.cancel".localized)
+        isLoading = true
+        gateController.present(title: "fingerprint.delete".localized, onCancel: { [weak self] in
+            self?.isLoading = false
+        })
 
-        if alert.runModal() == .alertFirstButtonReturn {
-            isLoading = true
-
-            bleManager.deleteFingerprint(slotId: UInt8(slot)) { [weak self] success in
-                NSLog("FingerprintView: deleteFingerprint callback, success=%d", success ? 1 : 0)
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    NSLog("FingerprintView: updating UI, old bitmap=0x%02X", self.fingerprintBitmap)
-                    self.isLoading = false
-                    self.gateMessage = nil
-                    if success {
-                        // Update local cache (don't fetch from device)
-                        // Clear the bit for deleted slot
-                        self.fingerprintBitmap &= ~UInt8(1 << slot)
-                        Self.cachedBitmap = self.fingerprintBitmap
-                        Self.isCacheValid = true
-                        // Clear name for deleted slot
-                        self.fingerprintNames.removeValue(forKey: slot)
-                        self.saveFingerprintNames()
-                        NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
-                        NSLog("FingerprintView: new bitmap=0x%02X (cached)", self.fingerprintBitmap)
-                    } else {
-                        self.showAlert(title: "fingerprint.delete.failed".localized, message: "fingerprint.delete.failed.message".localized)
-                    }
+        bleManager.deleteFingerprint(slotId: UInt8(slot)) { [weak self] success in
+            NSLog("FingerprintView: deleteFingerprint callback, success=%d", success ? 1 : 0)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                NSLog("FingerprintView: updating UI, old bitmap=0x%02X", self.fingerprintBitmap)
+                self.isLoading = false
+                if success {
+                    self.gateController.reportSuccess()
+                    self.fingerprintBitmap &= ~UInt8(1 << slot)
+                    Self.cachedBitmap = self.fingerprintBitmap
+                    Self.isCacheValid = true
+                    self.fingerprintNames.removeValue(forKey: slot)
+                    self.saveFingerprintNames()
+                    NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
+                    NSLog("FingerprintView: new bitmap=0x%02X (cached)", self.fingerprintBitmap)
+                } else {
+                    self.gateController.reportFailed()
                 }
             }
         }
@@ -592,29 +600,16 @@ class FingerprintViewModel: ObservableObject {
     }
 
     func testFingerprint() {
-        // Check actual BLE connection state, not cached value
-        guard bleManager.deviceState.isConnected, !isTesting else {
-            if !bleManager.deviceState.isConnected {
-                testResult = "fingerprint.test.not.connected".localized
-                // Clear result after 3 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                    self?.testResult = nil
-                }
-            }
-            return
-        }
+        guard bleManager.deviceState.isConnected, !gateController.isPresented else { return }
 
-        isTesting = true
-        testResult = "fingerprint.test.prompt".localized
+        gateController.present(title: "fingerprint.test".localized)
 
         bleManager.requestUnlock(timeout: 30.0) { [weak self] success in
             Task { @MainActor in
-                self?.isTesting = false
-                self?.testResult = success ? "fingerprint.test.success".localized : "fingerprint.test.failed".localized
-
-                // Clear result after 3 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    self?.testResult = nil
+                if success {
+                    self?.gateController.reportSuccess()
+                } else {
+                    self?.gateController.reportFailed()
                 }
             }
         }

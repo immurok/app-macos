@@ -26,8 +26,15 @@ class SSHKeyCache {
 
     static let shared = SSHKeyCache()
 
-    private(set) var entries: [SSHKeyCacheEntry] = []
+    private var _entries: [SSHKeyCacheEntry] = []
+    private let lock = NSLock()
     private let cacheURL: URL
+
+    var entries: [SSHKeyCacheEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _entries
+    }
 
     private init() {
         let immurokDir = FileManager.default.homeDirectoryForCurrentUser
@@ -49,14 +56,14 @@ class SSHKeyCache {
 
         ble.getKeyCount(cat: .ssh) { [weak self] count in
             guard let self = self, count > 0 else {
-                self?.entries = []
+                self?.setEntries([])
                 self?.saveToDisk()
                 completion()
                 return
             }
 
             self.chainSync(ble: ble, count: count, index: 0, result: []) { newEntries in
-                self.entries = newEntries
+                self.setEntries(newEntries)
                 self.saveToDisk()
                 NSLog("SSHKeyCache: synced %d keys", newEntries.count)
                 completion()
@@ -67,8 +74,10 @@ class SSHKeyCache {
     /// Add a single entry and save (used after KEY_GENERATE to avoid full sync)
     /// Replaces any existing entry with the same index.
     func addEntry(_ entry: SSHKeyCacheEntry) {
-        entries.removeAll(where: { $0.index == entry.index })
-        entries.append(entry)
+        lock.lock()
+        _entries.removeAll(where: { $0.index == entry.index })
+        _entries.append(entry)
+        lock.unlock()
         saveToDisk()
     }
 
@@ -121,6 +130,14 @@ class SSHKeyCache {
         return "ecdsa-sha2-nistp256 \(b64) \(comment)"
     }
 
+    // MARK: - Internal
+
+    private func setEntries(_ newEntries: [SSHKeyCacheEntry]) {
+        lock.lock()
+        _entries = newEntries
+        lock.unlock()
+    }
+
     // MARK: - Private
 
     private func chainSync(ble: BLEManager, count: Int, index: Int,
@@ -167,16 +184,22 @@ class SSHKeyCache {
         guard FileManager.default.fileExists(atPath: cacheURL.path) else { return }
         do {
             let data = try Data(contentsOf: cacheURL)
-            entries = try JSONDecoder().decode([SSHKeyCacheEntry].self, from: data)
-            NSLog("SSHKeyCache: loaded %d entries from disk", entries.count)
+            let loaded = try JSONDecoder().decode([SSHKeyCacheEntry].self, from: data)
+            lock.lock()
+            _entries = loaded
+            lock.unlock()
+            NSLog("SSHKeyCache: loaded %d entries from disk", loaded.count)
         } catch {
             NSLog("SSHKeyCache: failed to load: %@", error.localizedDescription)
         }
     }
 
     private func saveToDisk() {
+        lock.lock()
+        let snapshot = _entries
+        lock.unlock()
         do {
-            let data = try JSONEncoder().encode(entries)
+            let data = try JSONEncoder().encode(snapshot)
             try data.write(to: cacheURL, options: .atomic)
         } catch {
             NSLog("SSHKeyCache: failed to save: %@", error.localizedDescription)

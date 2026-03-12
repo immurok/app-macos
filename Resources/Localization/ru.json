@@ -59,6 +59,8 @@
   "fingerprint.test.prompt": "Коснитесь датчика отпечатка...",
   "fingerprint.test.success": "Распознавание успешно!",
   "fingerprint.test.failed": "Распознавание не удалось или истекло время",
+  "gate.attempt.remaining": "Не удалось, осталось %d попыток",
+  "gate.processing": "Подтверждено, обработка…",
   "fingerprint.delete": "Удалить отпечаток",
   "fingerprint.delete.confirm": "Удалить «Палец %d»?",
   "fingerprint.delete.failed": "Ошибка удаления",
@@ -198,6 +200,8 @@
 
   "notification.need.accessibility": "Предоставьте разрешение универсального доступа",
   "notification.cannot.unlock": "Не удалось разблокировать",
+
+  "ssh.generate.success": "Ключ сгенерирован",
 
   "settings.language": "Язык"
 }

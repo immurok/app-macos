@@ -59,6 +59,8 @@
   "fingerprint.test.prompt": "Touchez le capteur d'empreinte...",
   "fingerprint.test.success": "Reconnaissance réussie !",
   "fingerprint.test.failed": "Reconnaissance échouée ou expirée",
+  "gate.attempt.remaining": "Échec, %d tentatives restantes",
+  "gate.processing": "Vérifié, traitement en cours…",
   "fingerprint.delete": "Supprimer l'empreinte",
   "fingerprint.delete.confirm": "Voulez-vous supprimer « Doigt %d » ?",
   "fingerprint.delete.failed": "Échec de la suppression",
@@ -198,6 +200,8 @@
 
   "notification.need.accessibility": "Accordez l'autorisation d'accessibilité",
   "notification.cannot.unlock": "Impossible de déverrouiller",
+
+  "ssh.generate.success": "Clé générée",
 
   "settings.language": "Langue"
 }

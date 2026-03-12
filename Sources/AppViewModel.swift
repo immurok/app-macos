@@ -12,11 +12,10 @@ extension Notification.Name {
 class AppViewModel: ObservableObject {
     @Published var isDeviceConnected = false
     @Published var deviceName: String?
-    @Published var testResult: String?
     @Published var fingerprintCount = 0
     @Published var isDevicePaired = false  // Device-side pairing status (ECDH)
     @Published var isPasswordConfigured = false  // Keychain has password
-    @Published var isWaitingForFingerprintGate = false  // True when a command awaits FP verification
+    var gateController = FingerprintGateController()
     @Published var isPairing = false  // ECDH pairing in progress
 
     // Firmware version
@@ -61,14 +60,18 @@ class AppViewModel: ObservableObject {
 
     private var fingerprintObserver: Any?
     private var gateObserver: Any?
-    private var pendingGatedOperation = false  // Track if WE initiated a gated operation
+    private var gateCancellable: AnyCancellable?
+    private var pendingGatedOperation = false
 
     init() {
         setupBLECallbacks()
         updateStatus()
         updateBluetoothStatus()
 
-        // Observe fingerprint cache changes from FingerprintViewModel
+        gateCancellable = gateController.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+
         fingerprintObserver = NotificationCenter.default.addObserver(
             forName: .fingerprintCacheUpdated, object: nil, queue: .main
         ) { [weak self] _ in
@@ -77,14 +80,13 @@ class AppViewModel: ObservableObject {
             }
         }
 
-        // Observe FP gate required notification — only show indicator for our own operations
+        // Only show gate when AppViewModel itself initiated a gated operation (factory reset)
         gateObserver = NotificationCenter.default.addObserver(
             forName: BLEManager.fingerprintGateRequiredNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                if self?.pendingGatedOperation == true {
-                    self?.isWaitingForFingerprintGate = true
-                }
+                guard let self = self, self.pendingGatedOperation else { return }
+                self.gateController.onGateRequired()
             }
         }
     }
@@ -136,10 +138,15 @@ class AppViewModel: ObservableObject {
                 self?.refreshDeviceStatus {
                     SSHKeyCache.shared.sync {
                         NSLog("SSH key cache synced")
+                        // Populate KeyNameCache for SSH from already-synced data (avoid duplicate BLE reads)
+                        KeyNameCache.shared.replaceCategory(.ssh, with: SSHKeyCache.shared.entries.map {
+                            KeyNameCache.Entry(index: $0.index, name: $0.name, service: "", category: .ssh)
+                        })
                         DispatchQueue.main.async {
                             NotificationCenter.default.post(name: .sshKeyCacheSynced, object: nil)
                         }
-                        KeyNameCache.shared.sync {
+                        // Sync non-SSH categories only (SSH already populated above)
+                        KeyNameCache.shared.syncNonSSH {
                             NSLog("Key name cache synced")
                         }
                     }
@@ -158,7 +165,7 @@ class AppViewModel: ObservableObject {
                 self?.fingerprintCount = 0
                 self?.isDevicePaired = false
                 self?.pendingGatedOperation = false
-                self?.isWaitingForFingerprintGate = false
+                self?.gateController.reset()
                 KeyNameCache.shared.clear()
 
                 FingerprintViewModel.cachedBitmap = 0
@@ -215,20 +222,22 @@ class AppViewModel: ObservableObject {
     }
 
     func testAuth() {
-        guard isDeviceConnected else {
-            showAlert(title: "test.device.not.connected".localized, message: "test.connect.first".localized)
+        guard isDeviceConnected, !gateController.isPresented else {
+            if !isDeviceConnected {
+                showAlert(title: "test.device.not.connected".localized, message: "test.connect.first".localized)
+            }
             return
         }
 
-        testResult = "test.prompt".localized
+        gateController.present(title: "fingerprint.test".localized)
 
         bleManager.requestUnlock(timeout: 30.0) { [weak self] success in
             Task { @MainActor in
-                self?.testResult = nil
-                self?.showAlert(
-                    title: success ? "test.success".localized : "test.failed".localized,
-                    message: success ? "test.success.message".localized : "test.failed.message".localized
-                )
+                if success {
+                    self?.gateController.reportSuccess()
+                } else {
+                    self?.gateController.reportFailed()
+                }
             }
         }
     }
@@ -349,23 +358,26 @@ class AppViewModel: ObservableObject {
         }
 
         pendingGatedOperation = true
+        gateController.title = "reset.title".localized
         bleManager.factoryReset { [weak self] success in
             Task { @MainActor in
-                self?.pendingGatedOperation = false
-                self?.isWaitingForFingerprintGate = false
+                guard let self = self else { return }
+                self.pendingGatedOperation = false
+                if self.gateController.isPresented {
+                    success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
+                }
                 if success {
-                    self?.fingerprintCount = 0
-                    self?.isDevicePaired = false
-                    self?.isPasswordConfigured = false
-                    // Clear Keychain data
+                    self.fingerprintCount = 0
+                    self.isDevicePaired = false
+                    self.isPasswordConfigured = false
                     ImmurokSecurity.shared.clearPairingData()
                     ImmurokSecurity.shared.clearPassword()
                     FingerprintViewModel.cachedBitmap = 0
                     FingerprintViewModel.isCacheValid = true
                     NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
-                    self?.showAlert(title: "reset.done".localized, message: "reset.done.message".localized)
-                } else {
-                    self?.showAlert(title: "alert.error".localized, message: "reset.failed".localized)
+                    self.showAlert(title: "reset.done".localized, message: "reset.done.message".localized)
+                } else if !self.gateController.isPresented {
+                    self.showAlert(title: "alert.error".localized, message: "reset.failed".localized)
                 }
             }
         }

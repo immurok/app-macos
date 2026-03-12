@@ -59,6 +59,8 @@
   "fingerprint.test.prompt": "Toca el sensor de huella...",
   "fingerprint.test.success": "¡Reconocimiento exitoso!",
   "fingerprint.test.failed": "Reconocimiento fallido o expirado",
+  "gate.attempt.remaining": "Falló, %d intentos restantes",
+  "gate.processing": "Verificado, procesando…",
   "fingerprint.delete": "Eliminar huella",
   "fingerprint.delete.confirm": "¿Deseas eliminar «Dedo %d»?",
   "fingerprint.delete.failed": "Error al eliminar",
@@ -198,6 +200,8 @@
 
   "notification.need.accessibility": "Otorga permiso de accesibilidad",
   "notification.cannot.unlock": "No se puede desbloquear",
+
+  "ssh.generate.success": "Clave generada",
 
   "settings.language": "Idioma"
 }

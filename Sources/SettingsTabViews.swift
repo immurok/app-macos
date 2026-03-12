@@ -98,39 +98,20 @@ struct DeviceTabView: View {
                         }
                         .padding(.vertical, 4)
 
-                        // Fingerprint gate message
-                        if let gateMessage = fpViewModel.gateMessage {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                    .scaleEffect(0.6)
-                                Text(gateMessage)
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                            }
-                        }
-
                         Divider()
 
                         // Test button
-                        HStack {
-                            Button(action: {
-                                fpViewModel.testFingerprint()
-                            }) {
-                                HStack {
-                                    Image(systemName: "checkmark.shield")
-                                    Text("fingerprint.test".localized)
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(!fpViewModel.isDeviceConnected || fpViewModel.isTesting)
-
-                            if let testResult = fpViewModel.testResult {
-                                Text(testResult)
-                                    .font(.caption)
-                                    .foregroundColor(testResult.contains("fingerprint.test.success".localized) ? .green : .orange)
+                        Button(action: {
+                            fpViewModel.testFingerprint()
+                        }) {
+                            HStack {
+                                Image(systemName: "checkmark.shield")
+                                Text("fingerprint.test".localized)
                             }
                         }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!fpViewModel.isDeviceConnected || fpViewModel.gateController.isPresented)
                     }
                     .padding(4)
                 }
@@ -175,15 +156,6 @@ struct DeviceTabView: View {
                             }
                         }
 
-                        if viewModel.isWaitingForFingerprintGate {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                    .scaleEffect(0.6)
-                                Text("fingerprint.verify.required".localized)
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                            }
-                        }
                     }
                     .padding(4)
                 }
@@ -195,6 +167,12 @@ struct DeviceTabView: View {
         }
         .sheet(isPresented: $fpViewModel.isEnrolling) {
             EnrollmentSheet(viewModel: fpViewModel)
+        }
+        .sheet(isPresented: $fpViewModel.gateController.isPresented) {
+            FingerprintGateSheet(controller: fpViewModel.gateController)
+        }
+        .sheet(isPresented: $viewModel.gateController.isPresented) {
+            FingerprintGateSheet(controller: viewModel.gateController)
         }
     }
 
@@ -442,7 +420,7 @@ struct KeysTabView: View {
                                 Text(note)
                                     .font(.caption)
                                     .foregroundColor(.green)
-                            } else if !keystoreVM.showGateOverlay {
+                            } else if !keystoreVM.gateController.isPresented {
                                 if let error = keystoreVM.errorMessage {
                                     Text(error)
                                         .font(.caption)
@@ -536,14 +514,11 @@ struct KeysTabView: View {
                 }
             }
         }
+        .sheet(isPresented: $keystoreVM.gateController.isPresented) {
+            FingerprintGateSheet(controller: keystoreVM.gateController)
+        }
         .overlay {
-            if keystoreVM.showGateOverlay {
-                FingerprintGateOverlay(
-                    countdown: keystoreVM.gateCountdown,
-                    total: KeystoreViewModel.gateTimeout,
-                    onDismiss: { keystoreVM.dismissGate() }
-                )
-            } else if keystoreVM.isImporting {
+            if keystoreVM.isImporting {
                 BatchProgressOverlay(
                     icon: "square.and.arrow.down",
                     text: "keys.importing.progress".localized(keystoreVM.importProgress, keystoreVM.importTotal),
@@ -563,7 +538,8 @@ struct KeysTabView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .sshKeyCacheSynced)) { _ in
             if selectedCategory == .sshGit {
-                keystoreVM.loadEntries(cat: .ssh)
+                let vm = keystoreVM
+                vm.loadFromSSHKeyCache()
             }
         }
     }
@@ -597,17 +573,6 @@ struct KeysTabView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
-            if viewModel.isWaitingForFingerprintGate {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .scaleEffect(0.6)
-                    Text("fingerprint.verify.required".localized)
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 6)
-            }
         }
     }
 
@@ -773,11 +738,12 @@ struct KeysTabView: View {
         guard !name.isEmpty else { return }
 
         // KEY_GENERATE already has its own FP gate — no need for separate requestAuth()
-        keystoreVM.isAdding = true
-        BLEManager.shared.sshGenerateKey(name: name) { [self] result in
+        let vm = keystoreVM
+        vm.isAdding = true
+        vm.gateController.successMessage = "ssh.generate.success".localized
+        BLEManager.shared.sshGenerateKey(name: name) { result in
             DispatchQueue.main.async {
-                self.keystoreVM.isAdding = false
-                self.keystoreVM.dismissGate()
+                vm.isAdding = false
                 if let result = result {
                     NSLog("SSH key generated: idx=%d", result.idx)
                     let blob = SSHKeyCache.buildSSHPublicKeyBlob(publicKey: result.publicKey)
@@ -785,9 +751,12 @@ struct KeysTabView: View {
                     SSHKeyCache.shared.addEntry(SSHKeyCacheEntry(
                         index: result.idx, name: name, publicKeyBlob: blob, fingerprint: fp
                     ))
-                    self.keystoreVM.loadEntries(cat: .ssh)
+                    vm.loadEntries(cat: .ssh)
+                    vm.gateController.reportSuccess()
+                } else {
+                    NSLog("SSH key generation failed or timed out")
+                    vm.gateController.reportFailed()
                 }
-                self.showCopiedNotification("ssh.generate.success".localized)
             }
         }
     }
@@ -922,67 +891,6 @@ struct KeysTabView: View {
             return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
         }
         return s
-    }
-}
-
-// MARK: - Fingerprint Gate Overlay
-
-struct FingerprintGateOverlay: View {
-    let countdown: Int
-    let total: Int
-    let onDismiss: () -> Void
-
-    private var progress: Double {
-        total > 0 ? Double(countdown) / Double(total) : 0
-    }
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.4)
-                .ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                Image(systemName: "touchid")
-                    .font(.system(size: 40))
-                    .foregroundColor(.accentColor)
-
-                Text("fingerprint.verify.required".localized)
-                    .font(.headline)
-
-                // Countdown progress bar
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(Color.secondary.opacity(0.2))
-                            .frame(height: 2)
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(progress > 0.17 ? Color.accentColor : Color.red)
-                            .frame(width: geo.size.width * progress, height: 2)
-                            .animation(.linear(duration: 1), value: countdown)
-                    }
-                }
-                .frame(height: 2)
-            }
-            .frame(width: 220)
-            .padding(.horizontal, 30)
-            .padding(.vertical, 24)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(NSColor.windowBackgroundColor))
-                    .shadow(radius: 10)
-            )
-            .overlay(alignment: .topTrailing) {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(10)
-            }
-        }
     }
 }
 

@@ -61,6 +61,8 @@
   "fingerprint.test.prompt": "",
   "fingerprint.test.success": "",
   "fingerprint.test.failed": "",
+  "gate.attempt.remaining": "",
+  "gate.processing": "",
   "fingerprint.delete": "",
   "fingerprint.delete.confirm": "",
   "fingerprint.delete.failed": "",
@@ -200,6 +202,8 @@
 
   "notification.need.accessibility": "",
   "notification.cannot.unlock": "",
+
+  "ssh.generate.success": "",
 
   "settings.language": ""
 }

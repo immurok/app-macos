@@ -59,6 +59,8 @@
   "fingerprint.test.prompt": "指紋センサーに触れてください...",
   "fingerprint.test.success": "認識成功！",
   "fingerprint.test.failed": "認識失敗またはタイムアウト",
+  "gate.attempt.remaining": "認識失敗、残り %d 回",
+  "gate.processing": "認証成功、処理中…",
   "fingerprint.delete": "指紋を削除",
   "fingerprint.delete.confirm": "「指 %d」を削除してもよろしいですか？",
   "fingerprint.delete.failed": "削除失敗",
@@ -198,6 +200,8 @@
 
   "notification.need.accessibility": "システム設定でアクセシビリティ権限を許可してください",
   "notification.cannot.unlock": "画面をロック解除できません",
+
+  "ssh.generate.success": "鍵を生成しました",
 
   "settings.language": "言語"
 }

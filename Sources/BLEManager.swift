@@ -35,6 +35,7 @@ enum ImmurokCommand: UInt8 {
     case pairStatus = 0x32
     case authRequest = 0x33
     case factoryReset = 0x36
+    case gateCancel = 0x37
     case keyCount = 0x60
     case keyRead = 0x61
     case keyWrite = 0x62
@@ -170,7 +171,7 @@ class BLEManager: NSObject {
 
     // Command queue — serializes BLE command/response pairs
     private var commandInFlight = false
-    private var commandQueue: [(command: ImmurokCommand, payload: [UInt8], completion: (Data?) -> Void)] = []
+    private var commandQueue: [(command: ImmurokCommand, payload: [UInt8], timeout: TimeInterval, completion: (Data?) -> Void)] = []
 
     private var isOnBLEQueue: Bool {
         DispatchQueue.getSpecific(key: queueKey) == true
@@ -285,6 +286,11 @@ class BLEManager: NSObject {
             return
         }
 
+        // Already connecting (GATT discovery in progress), don't re-trigger
+        if deviceState == .connecting {
+            return
+        }
+
         deviceState = .connecting
         NSLog("BLEManager: Looking for immurok device...")
         Task { @MainActor in LogManager.shared.log("BLE 扫描中...") }
@@ -317,6 +323,13 @@ class BLEManager: NSObject {
     }
 
     /// Request unlock via AUTH_REQUEST - device waits for fingerprint
+    /// Cancel a pending fingerprint-gated command on the device
+    func cancelGate() {
+        guard deviceState.isConnected else { return }
+        NSLog("BLEManager: Sending GATE_CANCEL")
+        sendCommand(.gateCancel) { _ in }
+    }
+
     func requestUnlock(timeout: TimeInterval = 30.0, completion: @escaping (Bool) -> Void) {
         guard deviceState.isConnected else {
             NSLog("BLEManager: Not connected")
@@ -519,7 +532,7 @@ class BLEManager: NSObject {
         NSLog("BLEManager: Starting ECDH pairing...")
 
         // Step 1: Send PAIR_INIT (no payload)
-        sendCommand(.pairInit) { [weak self] response in
+        sendCommand(.pairInit, timeout: 15.0) { [weak self] response in
             // Response: [0x30][compressed_pubkey:33B] or [0x30][error:1B]
             guard let self = self, let response = response, response.count >= 2 else {
                 NSLog("BLEManager: PAIR_INIT no response")
@@ -996,7 +1009,7 @@ class BLEManager: NSObject {
         var payload: [UInt8] = [0x00, idx, 0x00]
         payload.append(contentsOf: hash)
 
-        sendCommand(.keySign, payload: payload) { [weak self] response in
+        sendCommand(.keySign, payload: payload, timeout: 15.0) { [weak self] response in
             guard let self = self, let response = response, response.count >= 1 else {
                 completion(nil)
                 return
@@ -1080,7 +1093,7 @@ class BLEManager: NSObject {
         var payload: [UInt8] = [0x00]  // cat=SSH
         payload.append(contentsOf: nameBytes)
 
-        sendCommand(.keyGenerate, payload: payload) { [weak self] response in
+        sendCommand(.keyGenerate, payload: payload, timeout: 15.0) { [weak self] response in
             guard let self = self, let response = response, response.count >= 1 else {
                 completion(nil)
                 return
@@ -1174,29 +1187,29 @@ class BLEManager: NSObject {
         NSLog("BLEManager: ACK sent")
     }
 
-    private func sendCommand(_ command: ImmurokCommand, payload: [UInt8] = [], completion: @escaping (Data?) -> Void) {
+    private func sendCommand(_ command: ImmurokCommand, payload: [UInt8] = [], timeout: TimeInterval = 5.0, completion: @escaping (Data?) -> Void) {
         if isOnBLEQueue {
             // Called from within a BLE callback chain — execute synchronously
-            enqueueOrExecute(command, payload: payload, completion: completion)
+            enqueueOrExecute(command, payload: payload, timeout: timeout, completion: completion)
         } else {
             // Called from external thread — dispatch to BLE queue
             queue.async { [weak self] in
-                self?.enqueueOrExecute(command, payload: payload, completion: completion)
+                self?.enqueueOrExecute(command, payload: payload, timeout: timeout, completion: completion)
             }
         }
     }
 
     /// Enqueue or execute a command (must be called on BLE queue)
-    private func enqueueOrExecute(_ command: ImmurokCommand, payload: [UInt8], completion: @escaping (Data?) -> Void) {
+    private func enqueueOrExecute(_ command: ImmurokCommand, payload: [UInt8], timeout: TimeInterval, completion: @escaping (Data?) -> Void) {
         if commandInFlight {
-            commandQueue.append((command: command, payload: payload, completion: completion))
+            commandQueue.append((command: command, payload: payload, timeout: timeout, completion: completion))
             return
         }
-        executeSend(command, payload: payload, completion: completion)
+        executeSend(command, payload: payload, timeout: timeout, completion: completion)
     }
 
     /// Execute a command immediately (must be called on BLE queue, commandInFlight must be false)
-    private func executeSend(_ command: ImmurokCommand, payload: [UInt8], completion: @escaping (Data?) -> Void) {
+    private func executeSend(_ command: ImmurokCommand, payload: [UInt8], timeout: TimeInterval = 5.0, completion: @escaping (Data?) -> Void) {
         guard let cmdChar = cmdCharacteristic, let peripheral = peripheral else {
             completion(nil)
             dequeueNext()
@@ -1221,7 +1234,7 @@ class BLEManager: NSObject {
         responseCallback = completion
 
         // Timeout — only fires if no newer command has been sent since
-        queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+        queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self = self, self.commandGeneration == myGeneration else { return }
             if let cb = self.responseCallback {
                 Task { @MainActor in LogManager.shared.log("TX timeout cmd=0x\(String(format: "%02x", command.rawValue))") }
@@ -1241,7 +1254,7 @@ class BLEManager: NSObject {
     private func dequeueNext() {
         guard !commandQueue.isEmpty else { return }
         let next = commandQueue.removeFirst()
-        executeSend(next.command, payload: next.payload, completion: next.completion)
+        executeSend(next.command, payload: next.payload, timeout: next.timeout, completion: next.completion)
     }
 
     private func startReconnectTimer() {
@@ -1676,8 +1689,20 @@ extension BLEManager: CBPeripheralDelegate {
             if data[0] == 0x11 && data.count == 4 {
                 // Fall through to enrollment status handler below
             } else if data[0] == 0x10 {
-                // FP approved, operation in progress — notify but keep gate active
-                NSLog("BLEManager: FP gate: fingerprint approved, operation in progress")
+                // FP approved, operation in progress — reset gate timeout for ECDSA
+                NSLog("BLEManager: FP gate: fingerprint approved, resetting timeout for operation")
+                // Cancel old gate timeout and start a 15s operation timeout
+                // (ECDSA ~2s + param update wait up to 10s + margin)
+                gateGeneration &+= 1
+                let myGen = gateGeneration
+                queue.asyncAfter(deadline: .now() + 15.0) { [weak self] in
+                    guard let self = self, self.gateGeneration == myGen else { return }
+                    if let cb = self.pendingGateCompletion {
+                        NSLog("BLEManager: FP gate operation timeout (post-approve)")
+                        self.pendingGateCompletion = nil
+                        cb(false)
+                    }
+                }
                 onFingerprintGateApproved?()
                 return
             } else if data[0] == ImmurokStatus.errFpNotMatch.rawValue {
