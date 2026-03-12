@@ -1665,6 +1665,18 @@ extension BLEManager: CBPeripheralDelegate {
               data.count, rxHex, responseCallback != nil ? 1 : 0)
         Task { @MainActor in LogManager.shared.log("RX [\(rxHex)] (\(data.count)B)") }
 
+        // Connection parameter update notification from firmware: [0xF0, interval_hi, interval_lo, latency, timeout_hi, timeout_lo]
+        if data[0] == 0xF0 && data.count == 6 {
+            let interval = (UInt16(data[1]) << 8) | UInt16(data[2])
+            let latency = data[3]
+            let timeout = (UInt16(data[4]) << 8) | UInt16(data[5])
+            let intervalMs = String(format: "%.1f", Double(interval) * 1.25)
+            let timeoutMs = timeout * 10
+            NSLog("BLEManager: Param update: interval=%@ms, latency=%d, timeout=%dms", intervalMs, latency, timeoutMs)
+            Task { @MainActor in LogManager.shared.log("BLE 参数更新: interval=\(intervalMs)ms latency=\(latency) timeout=\(timeoutMs)ms") }
+            return
+        }
+
         // Check for signed fingerprint match notification (0x21)
         // Format: [0x21][page_id:2B LE][hmac:8B] = 11 bytes
         if data[0] == 0x21 && data.count == 11 {
