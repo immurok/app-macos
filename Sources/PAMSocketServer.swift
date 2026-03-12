@@ -593,6 +593,9 @@ class PAMSocketServer {
         }
 
         switch subCmd {
+        case "VERSION":
+            let ver = bleManager.firmwareVersion ?? "unknown"
+            sendLine(clientSocket, line: "OK:\(ver)")
         case "INFO":
             handleOTAInfo(clientSocket)
         case "ERASE":

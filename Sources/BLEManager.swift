@@ -128,6 +128,7 @@ class BLEManager: NSObject {
 
     private(set) var deviceState: BLEDeviceState = .disconnected
     private(set) var bluetoothAuthStatus: BluetoothAuthStatus = .notDetermined
+    private(set) var firmwareVersion: String?
 
     // MARK: - Callbacks
 
@@ -166,6 +167,8 @@ class BLEManager: NSObject {
     private var resubscribeTimer: DispatchSourceTimer?
     private var napActivity: NSObjectProtocol?
     private var displaySleeping = false
+    private var connectingStartTime: Date?  // Tracks when .connecting state began
+    private static let connectingTimeout: TimeInterval = 10  // Max time in .connecting before reset
 
     private let queue = DispatchQueue(label: "com.immurok.ble", qos: .userInitiated)
     private let queueKey = DispatchSpecificKey<Bool>()
@@ -287,21 +290,34 @@ class BLEManager: NSObject {
             return
         }
 
-        // Already connecting (GATT discovery in progress), don't re-trigger
+        // Reset stale .connecting state — prevents deadlock when scan/connect silently fails
         if deviceState == .connecting {
-            return
+            if let start = connectingStartTime,
+               Date().timeIntervalSince(start) < Self.connectingTimeout {
+                return  // Still within timeout, let current attempt finish
+            }
+            NSLog("BLEManager: Connecting timed out, resetting")
+            centralManager.stopScan()
+            deviceState = .disconnected
         }
 
         deviceState = .connecting
+        connectingStartTime = Date()
         NSLog("BLEManager: Looking for immurok device...")
         Task { @MainActor in LogManager.shared.log("BLE 扫描中...") }
 
-        // Find already connected devices by immurok service UUID
-        // Key: Use the custom service UUID, not HID service UUID!
+        // Strategy 1: Check if our known peripheral is already connected (system auto-reconnect)
+        if let p = peripheral, p.state == .connected {
+            NSLog("BLEManager: Known peripheral already connected, re-discovering services")
+            p.delegate = self
+            p.discoverServices([IMMUROK_SERVICE_UUID, OTA_SERVICE_UUID, DEVICE_INFO_SERVICE_UUID])
+            return
+        }
+
+        // Strategy 2: Find connected devices by immurok service UUID
         let connectedPeripherals = centralManager.retrieveConnectedPeripherals(
             withServices: [IMMUROK_SERVICE_UUID]
         )
-
         for peripheral in connectedPeripherals {
             if peripheral.name?.lowercased().contains("immurok") == true {
                 NSLog("BLEManager: Found connected device: %@", peripheral.name ?? "unknown")
@@ -312,7 +328,7 @@ class BLEManager: NSObject {
             }
         }
 
-        // Not found, start scanning for all devices (filter by name)
+        // Strategy 3: Scan for advertising device
         NSLog("BLEManager: No connected device found, scanning...")
         centralManager.scanForPeripherals(withServices: nil, options: nil)
     }
@@ -649,13 +665,17 @@ class BLEManager: NSObject {
             let isPaired = response[2] != 0
             let batteryLevel = response.count >= 4 ? Int(response[3]) : nil
             let firmwareVersion: String?
-            if response.count >= 7 {
+            if response.count >= 9 {
+                let build = (UInt16(response[7]) << 8) | UInt16(response[8])
+                firmwareVersion = "\(response[4]).\(response[5]).\(response[6]).\(String(build, radix: 16, uppercase: false))"
+            } else if response.count >= 7 {
                 firmwareVersion = "\(response[4]).\(response[5]).\(response[6])"
             } else {
                 firmwareVersion = nil
             }
             NSLog("BLEManager: Status: bitmap=0x%02x, paired=%d, battery=%@, fw=%@", bitmap, isPaired ? 1 : 0, batteryLevel.map { "\($0)%" } ?? "n/a", firmwareVersion ?? "n/a")
             if let version = firmwareVersion {
+                self?.firmwareVersion = version
                 DispatchQueue.main.async {
                     self?.onFirmwareVersionRead?(version)
                 }
@@ -1470,6 +1490,7 @@ extension BLEManager: CBCentralManagerDelegate {
         otaReadCallback?(nil)
         otaReadCallback = nil
         otaCharacteristic = nil
+        firmwareVersion = nil
 
         // Flush command queue
         let pending = commandQueue
@@ -1571,6 +1592,7 @@ extension BLEManager: CBPeripheralDelegate {
 
         // Now safe to mark connected — device CCC is enabled
         guard !deviceState.isConnected else { return }
+        connectingStartTime = nil
         let name = peripheral.name ?? "immurok"
         deviceState = .connected(name: name)
 
