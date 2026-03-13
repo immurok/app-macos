@@ -1207,6 +1207,8 @@ class BLEManager: NSObject {
                 self.pendingGateCompletion = nil
                 cb(false)
             }
+            // Notify device to stop LED blinking and cancel pending gate
+            self.cancelGate()
         }
     }
 
