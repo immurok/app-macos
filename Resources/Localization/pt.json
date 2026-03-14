@@ -69,6 +69,7 @@
   "enroll.place.finger": "Coloque seu dedo no sensor...",
   "enroll.captured": "Capturado (%d/%d)",
   "enroll.lift.finger": "Levante o dedo e pressione novamente...",
+  "enroll.adjust.angle": "Ajuste levemente o ângulo do dedo e pressione novamente...",
   "enroll.processing": "Processando...",
   "enroll.success": "Sucesso",
   "enroll.success.message": "Impressão digital registrada com sucesso!",

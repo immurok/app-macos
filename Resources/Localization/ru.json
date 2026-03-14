@@ -69,6 +69,7 @@
   "enroll.place.finger": "Поместите палец на датчик...",
   "enroll.captured": "Захвачено (%d/%d)",
   "enroll.lift.finger": "Поднимите палец и нажмите снова...",
+  "enroll.adjust.angle": "Слегка измените угол пальца и нажмите снова...",
   "enroll.processing": "Обработка...",
   "enroll.success": "Успех",
   "enroll.success.message": "Отпечаток успешно зарегистрирован!",

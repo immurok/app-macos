@@ -69,6 +69,7 @@
   "enroll.place.finger": "Placez votre doigt sur le capteur...",
   "enroll.captured": "Capturé (%d/%d)",
   "enroll.lift.finger": "Levez votre doigt, puis appuyez à nouveau...",
+  "enroll.adjust.angle": "Ajustez légèrement l'angle de votre doigt, puis appuyez à nouveau...",
   "enroll.processing": "Traitement...",
   "enroll.success": "Succès",
   "enroll.success.message": "Empreinte enregistrée avec succès !",

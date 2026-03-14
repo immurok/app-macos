@@ -141,7 +141,7 @@ struct FingerprintView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.isDeviceConnected || viewModel.isEnrolling || viewModel.nextAvailableSlot == nil)
+            .disabled(!viewModel.isDeviceConnected || viewModel.isEnrolling || viewModel.isLoading || viewModel.nextAvailableSlot == nil)
 
             Text("fingerprint.add".localized)
                 .font(.caption)
@@ -308,7 +308,7 @@ class FingerprintViewModel: ObservableObject {
     @Published var isEnrolling = false
     @Published var enrollmentStatus = ""
     @Published var enrollmentProgress = 0
-    @Published var enrollmentTotal = 6  // Match firmware ENROLL_CAPTURE_COUNT
+    @Published var enrollmentTotal = 12  // Dual-slot: 2 rounds × 6 captures
 
     var gateController = FingerprintGateController()
 
@@ -459,6 +459,9 @@ class FingerprintViewModel: ObservableObject {
                 case .liftFinger:
                     self.enrollmentStatus = "enroll.lift.finger".localized
                     self.enrollmentProgress = current
+                case .adjust:
+                    self.enrollmentStatus = "enroll.adjust.angle".localized
+                    self.enrollmentProgress = current
                 case .processing:
                     self.enrollmentStatus = "enroll.processing".localized
                     self.enrollmentProgress = current
@@ -530,11 +533,12 @@ class FingerprintViewModel: ObservableObject {
     }
 
     func enrollFingerprint(slot: Int) {
-        guard !isEnrolling, !gateController.isPresented else { return }
+        guard !isEnrolling, !isLoading, !gateController.isPresented else { return }
 
         NSLog("FingerprintView: enrollFingerprint called with slot=%d, bitmap=0x%02X, nextAvailable=%@",
               slot, fingerprintBitmap, nextAvailableSlot.map { String($0) } ?? "nil")
 
+        isLoading = true  // Immediately block UI to prevent duplicate clicks
         currentEnrollSlot = slot
         enrollmentProgress = 0
 
@@ -542,12 +546,14 @@ class FingerprintViewModel: ObservableObject {
         if fingerprintCount > 0 {
             gateController.present(title: "fingerprint.add".localized, onCancel: { [weak self] in
                 self?.currentEnrollSlot = nil
+                self?.isLoading = false
             })
         }
 
         bleManager.startEnrollment(slotId: UInt8(slot)) { [weak self] success in
             Task { @MainActor in
                 guard let self = self else { return }
+                self.isLoading = false
                 if success {
                     // Gate succeeded (or wasn't needed) — transition to enrollment sheet
                     self.gateController.reset()
@@ -597,6 +603,7 @@ class FingerprintViewModel: ObservableObject {
         isEnrolling = false
         enrollmentStatus = ""
         enrollmentProgress = 0
+        bleManager.cancelEnrollment()
     }
 
     func testFingerprint() {

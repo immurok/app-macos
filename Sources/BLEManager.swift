@@ -27,6 +27,7 @@ let OTA_CHAR_UUID = CBUUID(string: "FEE1")
 enum ImmurokCommand: UInt8 {
     case getStatus = 0x01
     case enrollStart = 0x10
+    case enrollCancel = 0x11
     case deleteFP = 0x12
     case fpList = 0x13
     case fpMatchAck = 0x22
@@ -85,12 +86,14 @@ enum ImmurokStatus: UInt8 {
 
 // Enrollment status notifications (from device)
 // Must match firmware fingerprint.h: FP_ENROLL_WAITING=0, CAPTURED=1, PROCESSING=2, LIFT_FINGER=3
+// Must match firmware fingerprint.h fp_enroll_event_t
 enum EnrollEvent: UInt8 {
     case waiting = 0x00
     case captured = 0x01
     case processing = 0x02
     case liftFinger = 0x03
     case complete = 0x04
+    case adjust = 0x05          // Adjust finger angle for second slot
     case failed = 0xFF
 }
 
@@ -304,7 +307,7 @@ class BLEManager: NSObject {
         deviceState = .connecting
         connectingStartTime = Date()
         NSLog("BLEManager: Looking for immurok device...")
-        Task { @MainActor in LogManager.shared.log("BLE 扫描中...") }
+        Task { @MainActor in LogManager.shared.log("BLE 查找已连接设备...") }
 
         // Strategy 1: Check if our known peripheral is already connected (system auto-reconnect)
         if let p = peripheral, p.state == .connected {
@@ -328,9 +331,12 @@ class BLEManager: NSObject {
             }
         }
 
-        // Strategy 3: Scan for advertising device
-        NSLog("BLEManager: No connected device found, scanning...")
-        centralManager.scanForPeripherals(withServices: nil, options: nil)
+        // No connected device found — wait for system auto-reconnect (HID keyboard)
+        // App should never initiate scan/connect; the device is paired as HID keyboard
+        // and macOS will auto-connect it. Reconnect timer will retry doConnect() periodically.
+        NSLog("BLEManager: No connected device found, waiting for system auto-reconnect...")
+        deviceState = .disconnected
+        connectingStartTime = nil
     }
 
     func disconnect() {
@@ -507,6 +513,21 @@ class BLEManager: NSObject {
         }
     }
 
+    /// Cancel active enrollment on device
+    func cancelEnrollment(completion: ((Bool) -> Void)? = nil) {
+        guard deviceState.isConnected else {
+            completion?(false)
+            return
+        }
+
+        NSLog("BLEManager: Cancelling enrollment")
+        sendCommand(.enrollCancel) { response in
+            let ok = response != nil && response!.count >= 1 && response![0] == ImmurokStatus.ok.rawValue
+            NSLog("BLEManager: Cancel enrollment result: %@", ok ? "OK" : "failed")
+            completion?(ok)
+        }
+    }
+
     /// Delete fingerprint
     func deleteFingerprint(slotId: UInt8, completion: @escaping (Bool) -> Void) {
         guard deviceState.isConnected else {
@@ -541,18 +562,42 @@ class BLEManager: NSObject {
 
     /// Start ECDH pairing with device
     func startPairing(completion: @escaping (Bool) -> Void) {
+        startPairingAttempt(retries: 3, completion: completion)
+    }
+
+    private func startPairingAttempt(retries: Int, completion: @escaping (Bool) -> Void) {
         guard deviceState.isConnected else {
             completion(false)
             return
         }
 
-        NSLog("BLEManager: Starting ECDH pairing...")
+        NSLog("BLEManager: Starting ECDH pairing (retries left: %d)...", retries)
 
         // Step 1: Send PAIR_INIT (no payload)
         sendCommand(.pairInit, timeout: 15.0) { [weak self] response in
-            // Response: [0x30][compressed_pubkey:33B] or [0x30][error:1B]
-            guard let self = self, let response = response, response.count >= 2 else {
+            // Response: [0x30][compressed_pubkey:33B] or [0x30][error:1B] or [0xE1] (param too short)
+            guard let self = self, let response = response, response.count >= 1 else {
                 NSLog("BLEManager: PAIR_INIT no response")
+                completion(false)
+                return
+            }
+
+            // 0xE1 = BLE supervision timeout too short for ECC — auto-retry
+            if response[0] == 0xE1 {
+                if retries > 0 {
+                    NSLog("BLEManager: PAIR_INIT rejected (param timeout too short), retrying in 5s...")
+                    self.queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                        self?.startPairingAttempt(retries: retries - 1, completion: completion)
+                    }
+                } else {
+                    NSLog("BLEManager: PAIR_INIT failed after retries (BLE params not accepted)")
+                    completion(false)
+                }
+                return
+            }
+
+            guard response.count >= 2 else {
+                NSLog("BLEManager: PAIR_INIT unexpected response: 0x%02x", response[0])
                 completion(false)
                 return
             }

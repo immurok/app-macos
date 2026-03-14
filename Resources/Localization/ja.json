@@ -69,6 +69,7 @@
   "enroll.place.finger": "センサーに指を置いてください...",
   "enroll.captured": "キャプチャ済み (%d/%d)",
   "enroll.lift.finger": "指を離してから、もう一度押してください...",
+  "enroll.adjust.angle": "指の角度を少し調整して、もう一度押してください...",
   "enroll.processing": "処理中...",
   "enroll.success": "成功",
   "enroll.success.message": "指紋の登録が完了しました！",

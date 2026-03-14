@@ -69,6 +69,7 @@
   "enroll.place.finger": "Coloca tu dedo en el sensor...",
   "enroll.captured": "Capturado (%d/%d)",
   "enroll.lift.finger": "Levanta el dedo y presiona de nuevo...",
+  "enroll.adjust.angle": "Ajusta ligeramente el ángulo del dedo y presiona de nuevo...",
   "enroll.processing": "Procesando...",
   "enroll.success": "Éxito",
   "enroll.success.message": "¡Huella registrada correctamente!",
