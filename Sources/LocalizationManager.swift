@@ -221,6 +221,7 @@ class LocalizationManager: ObservableObject {
         "device.pair": "配对",
         "device.reset.pairing": "重置配对",
         "device.not.paired.hint": "设备未配对。请点击「配对」并按下设备上的按钮。",
+        "device.not.verified": "设备验证失败，敏感操作已禁用",
 
         // Pairing
         "pairing.title": "安全配对",

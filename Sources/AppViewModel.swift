@@ -14,6 +14,7 @@ class AppViewModel: ObservableObject {
     @Published var deviceName: String?
     @Published var fingerprintCount = 0
     @Published var isDevicePaired = false  // Device-side pairing status (ECDH)
+    @Published var isDeviceVerified = false  // Challenge-response verification passed
     @Published var isPasswordConfigured = false  // Keychain has password
     var gateController = FingerprintGateController()
     @Published var isPairing = false  // ECDH pairing in progress
@@ -131,6 +132,7 @@ class AppViewModel: ObservableObject {
                 NSLog("Device connected: %@", name)
                 LogManager.shared.log("设备已连接: \(name)")
                 self?.isDeviceConnected = true
+                self?.isDeviceVerified = self?.bleManager.isDeviceVerified ?? false
                 self?.deviceName = name
 
                 // Invalidate FingerprintView cache on reconnect
@@ -162,6 +164,7 @@ class AppViewModel: ObservableObject {
                 NSLog("Device disconnected")
                 LogManager.shared.log("设备已断开")
                 self?.isDeviceConnected = false
+                self?.isDeviceVerified = false
                 self?.deviceName = nil
                 self?.firmwareVersion = nil
                 self?.batteryLevel = nil

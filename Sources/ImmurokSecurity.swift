@@ -104,6 +104,29 @@ class ImmurokSecurity {
         return (pageId, true)
     }
 
+    // MARK: - Challenge-Response Verification
+
+    /// Generate 8-byte random nonce for challenge
+    func generateChallenge() -> Data {
+        var nonce = Data(count: 8)
+        nonce.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 8, $0.baseAddress!) }
+        return nonce
+    }
+
+    /// Verify device's challenge response: HMAC-SHA256(shared_key, nonce)[0:8]
+    func verifyChallengeResponse(nonce: Data, response: Data) -> Bool {
+        guard let sharedKey = loadFromKeychain(service: keychainServiceSharedKey) else {
+            NSLog("ImmurokSecurity: No shared_key for challenge verification")
+            return false
+        }
+
+        let symmetricKey = SymmetricKey(data: sharedKey)
+        let expectedHmac = HMAC<SHA256>.authenticationCode(for: nonce, using: symmetricKey)
+        let expectedPrefix = Data(expectedHmac.prefix(8))
+
+        return response.elementsEqual(expectedPrefix)
+    }
+
     // MARK: - Pairing Status
 
     var isPaired: Bool {

@@ -127,6 +127,11 @@ struct DeviceTabView: View {
                                 Text(viewModel.isDevicePaired ? "pairing.status.paired".localized : "pairing.status.unpaired".localized)
                                     .font(.callout)
                                     .foregroundColor(viewModel.isDevicePaired ? .green : .orange)
+                                if viewModel.isDeviceConnected && viewModel.isDevicePaired && !viewModel.isDeviceVerified {
+                                    Text("device.not.verified".localized)
+                                        .font(.caption)
+                                        .foregroundColor(.red)
+                                }
                             }
 
                             Spacer()

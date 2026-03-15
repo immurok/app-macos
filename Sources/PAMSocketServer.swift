@@ -293,9 +293,14 @@ class PAMSocketServer {
             return
         }
 
-        // Check BLE device connection
+        // Check BLE device connection and verification
         guard bleManager.deviceState.isConnected else {
             NSLog("PAMSocketServer: BLE device not connected")
+            sendResponse(clientSocket, response: "DENY")
+            return
+        }
+        guard bleManager.isDeviceVerified else {
+            NSLog("PAMSocketServer: BLE device not verified, denying")
             sendResponse(clientSocket, response: "DENY")
             return
         }

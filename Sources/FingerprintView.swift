@@ -477,10 +477,12 @@ class FingerprintViewModel: ObservableObject {
                         Self.isCacheValid = true
                         NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
                     }
+                    self.currentEnrollSlot = nil
                     NSLog("FingerprintView: new bitmap=0x%02X (cached)", self.fingerprintBitmap)
                     self.showAlert(title: "enroll.success".localized, message: "enroll.success.message".localized)
                 case .failed:
                     self.isEnrolling = false
+                    self.currentEnrollSlot = nil
                     self.showAlert(title: "enroll.failed".localized, message: "enroll.failed.message".localized)
                 }
             }
@@ -603,6 +605,7 @@ class FingerprintViewModel: ObservableObject {
         isEnrolling = false
         enrollmentStatus = ""
         enrollmentProgress = 0
+        currentEnrollSlot = nil
         bleManager.cancelEnrollment()
     }
 

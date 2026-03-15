@@ -37,6 +37,7 @@ enum ImmurokCommand: UInt8 {
     case authRequest = 0x33
     case factoryReset = 0x36
     case gateCancel = 0x37
+    case challenge = 0x38
     case keyCount = 0x60
     case keyRead = 0x61
     case keyWrite = 0x62
@@ -132,6 +133,7 @@ class BLEManager: NSObject {
     private(set) var deviceState: BLEDeviceState = .disconnected
     private(set) var bluetoothAuthStatus: BluetoothAuthStatus = .notDetermined
     private(set) var firmwareVersion: String?
+    private(set) var isDeviceVerified: Bool = false
 
     // MARK: - Callbacks
 
@@ -648,6 +650,9 @@ class BLEManager: NSObject {
                 // Device pairing succeeded, now derive shared key on App side
                 let success = security.completePairing(deviceCompressedPubKey: Data(devicePubKey))
                 NSLog("BLEManager: Pairing %@", success ? "succeeded" : "failed (App-side)")
+                if success {
+                    self.isDeviceVerified = true
+                }
                 completion(success)
 
                 DispatchQueue.main.async { [weak self] in
@@ -1528,8 +1533,9 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        NSLog("BLEManager: Disconnected (displaySleeping=%d)", displaySleeping)
-        Task { @MainActor in LogManager.shared.log("BLE 已断开") }
+        let reason = error?.localizedDescription ?? "clean"
+        NSLog("BLEManager: Disconnected (displaySleeping=%d, reason=%@)", displaySleeping, reason)
+        Task { @MainActor in LogManager.shared.log("BLE 已断开: \(reason)") }
 
         responseCallback?(nil)
         responseCallback = nil
@@ -1538,6 +1544,7 @@ extension BLEManager: CBCentralManagerDelegate {
         otaReadCallback = nil
         otaCharacteristic = nil
         firmwareVersion = nil
+        isDeviceVerified = false
 
         // Flush command queue
         let pending = commandQueue
@@ -1589,6 +1596,46 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
+    /// Challenge-response verification after GATT ready.
+    /// Sends 8-byte nonce, verifies HMAC response, then triggers onDeviceConnected.
+    private func performChallengeVerification(name: String) {
+        guard ImmurokSecurity.shared.isPaired else {
+            // Not paired yet — skip challenge, mark unverified
+            NSLog("BLEManager: No pairing key, skipping challenge")
+            isDeviceVerified = false
+            onDeviceConnected?(name)
+            return
+        }
+
+        let nonce = ImmurokSecurity.shared.generateChallenge()
+        sendCommand(.challenge, payload: Array(nonce)) { [weak self] response in
+            guard let self = self else { return }
+
+            if let data = response, data.count >= 9, data[0] == ImmurokCommand.challenge.rawValue {
+                let hmac = data[1..<9]
+                if ImmurokSecurity.shared.verifyChallengeResponse(nonce: nonce, response: Data(hmac)) {
+                    NSLog("BLEManager: Challenge verification OK")
+                    self.isDeviceVerified = true
+                    Task { @MainActor in LogManager.shared.log("设备验证通过") }
+                } else {
+                    NSLog("BLEManager: Challenge verification FAILED — HMAC mismatch")
+                    self.isDeviceVerified = false
+                    Task { @MainActor in LogManager.shared.log("设备验证失败: HMAC 不匹配") }
+                }
+            } else if let data = response, data.count >= 2, data[0] == ImmurokCommand.challenge.rawValue, data[1] == 0xFF {
+                NSLog("BLEManager: Device reports not paired")
+                self.isDeviceVerified = false
+                Task { @MainActor in LogManager.shared.log("设备验证失败: 设备未配对") }
+            } else {
+                NSLog("BLEManager: Challenge timeout or invalid response")
+                self.isDeviceVerified = false
+                Task { @MainActor in LogManager.shared.log("设备验证失败: 超时") }
+            }
+
+            self.onDeviceConnected?(name)
+        }
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let characteristics = service.characteristics else { return }
 
@@ -1622,7 +1669,7 @@ extension BLEManager: CBPeripheralDelegate {
                 deviceState = .connected(name: name)
                 NSLog("BLEManager: Ready - %@", name)
                 Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
-                onDeviceConnected?(name)
+                performChallengeVerification(name: name)
             }
         }
     }
@@ -1645,7 +1692,7 @@ extension BLEManager: CBPeripheralDelegate {
 
         NSLog("BLEManager: Ready - %@", name)
         Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
-        onDeviceConnected?(name)
+        performChallengeVerification(name: name)
     }
 
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {

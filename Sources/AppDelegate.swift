@@ -175,6 +175,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Fingerprint Match Handler
 
     private func handleFingerprintMatch(pageId: UInt16) {
+        // Reject if device not verified (challenge-response failed)
+        guard BLEManager.shared.isDeviceVerified else {
+            NSLog("Fingerprint match ignored: device not verified")
+            Task { @MainActor in LogManager.shared.log("指纹匹配被忽略: 设备未验证") }
+            return
+        }
+
         // Check if there's a pending PAM request
         if pamSocketServer?.hasPendingRequest() == true {
             NSLog("Approving pending PAM request")
