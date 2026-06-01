@@ -3,20 +3,18 @@
   "app.settings": "Настройки immurok",
   "app.version": "Версия 4.0",
   "app.description": "Система аутентификации по отпечатку пальца Bluetooth для macOS",
-
   "menu.settings": "Настройки...",
   "menu.quit": "Выход",
   "menu.connected": "Подключено",
   "menu.disconnected": "Отключено",
   "menu.status.ok": "Статус ОК",
   "menu.status.error": "Ошибка статуса",
-
   "tab.fingerprint": "Отпечаток",
   "tab.device": "Устройство",
   "tab.permissions": "Аутентификация",
   "tab.status": "Статус",
   "tab.about": "О программе",
-
+  "battery.refresh.tooltip": "Обновить уровень батареи",
   "device.connected": "Подключено",
   "device.disconnected": "Отключено",
   "device.connected.name": "Подключено: %@",
@@ -30,7 +28,6 @@
   "device.pair": "Сопрячь",
   "device.reset.pairing": "Сбросить сопряжение",
   "device.not.paired.hint": "Устройство не сопряжено. Нажмите «Сопрячь» и нажмите кнопку на устройстве.",
-
   "pairing.press.button": "Нажмите кнопку на устройстве для подтверждения...",
   "pairing.success": "Сопряжение успешно",
   "pairing.success.message": "Устройство успешно сопряжено.",
@@ -42,14 +39,14 @@
   "pairing.timeout.short": "Время сопряжения истекло. Нажмите кнопку для подтверждения.",
   "pairing.other.host": "Устройство сопряжено с другим хостом.\n\nУдерживайте кнопку 5 секунд для сброса, затем попробуйте снова.",
   "pairing.failed.code": "Ошибка сопряжения (0x%@)",
-
-  "reset.title": "Сброс к заводским настройкам",
-  "reset.message": "Это удалит всю информацию о сопряжении и отпечатках. Продолжить?",
-  "reset.confirm": "Сбросить",
-  "reset.hold.button": "Удерживайте кнопку 3 секунды...",
-  "reset.done": "Сброс завершен",
-  "reset.done.message": "Локальные данные сопряжения удалены.",
-
+  "pairing.stale.local.title": "Обнаружены устаревшие данные сопряжения",
+  "pairing.stale.local.message": "На этом Mac сохранились ключ сопряжения и пароль экрана блокировки от предыдущего устройства, но текущее устройство больше не сопряжено (возможно, заменено или сброшено).\n\nПродолжите, чтобы очистить локальные данные и выполнить сопряжение с текущим устройством.",
+  "pairing.stale.local.continue": "Очистить и сопрячь",
+  "unpair.title": "Разорвать сопряжение",
+  "unpair.message": "Это удалит только локально сохранённые данные сопряжения и пароль экрана блокировки. Само устройство затронуто не будет.\n\nЧтобы выполнить сопряжение устройства с другим хостом, после разрыва нажмите и удерживайте его кнопку не менее 5 секунд для сброса к заводским настройкам.",
+  "unpair.confirm": "Разорвать",
+  "unpair.done": "Сопряжение разорвано",
+  "unpair.done.message": "Локальные данные сопряжения удалены.\n\nЧтобы выполнить сопряжение устройства с другим хостом, нажмите и удерживайте его кнопку не менее 5 секунд для сброса к заводским настройкам.",
   "fingerprint.title": "Отпечаток immurok",
   "fingerprint.description": "immurok позволяет использовать отпечаток пальца для разблокировки Mac и авторизации sudo.",
   "fingerprint.count": "Зарегистрировано отпечатков: %d (макс. 5)",
@@ -65,7 +62,6 @@
   "fingerprint.delete.confirm": "Удалить «Палец %d»?",
   "fingerprint.delete.failed": "Ошибка удаления",
   "fingerprint.delete.failed.message": "Не удалось удалить отпечаток.",
-
   "enroll.place.finger": "Поместите палец на датчик...",
   "enroll.captured": "Захвачено (%d/%d)",
   "enroll.lift.finger": "Поднимите палец и нажмите снова...",
@@ -77,7 +73,6 @@
   "enroll.failed.message": "Регистрация отпечатка не удалась. Попробуйте снова.",
   "enroll.failed.start": "Не удалось начать регистрацию. Проверьте подключение.",
   "enroll.in.progress": "Регистрация, следуйте за светодиодом...",
-
   "permission.screen.unlock": "Разблокировка экрана",
   "permission.unlock.password": "Пароль",
   "permission.configured": "Настроено",
@@ -90,7 +85,6 @@
   "permission.ssh.agent.hint": "Служба подписи SSH-ключей (~/.immurok/agent.sock)",
   "permission.cli": "imk CLI",
   "permission.cli.hint": "Разрешить imk CLI чтение ключей (~/.immurok/cli.sock)",
-
   "password.title": "Настроить пароль",
   "password.message": "Введите пароль Mac для разблокировки:",
   "password.placeholder": "Пароль",
@@ -101,14 +95,12 @@
   "password.error.empty": "Пароль не может быть пустым.",
   "password.error.mismatch": "Пароли не совпадают.",
   "password.error.save": "Ошибка сохранения: %@",
-
   "alert.error": "Ошибка",
   "alert.cancel": "Отмена",
   "alert.delete": "Удалить",
   "alert.install": "Установить",
   "alert.enable": "Включить",
   "alert.authorize": "Авторизовать",
-
   "alert.need.accessibility": "Требуется разрешение универсального доступа",
   "alert.need.accessibility.message": "Для разблокировки экрана требуется разрешение универсального доступа.\n\nПредоставьте его в Системных настройках.",
   "alert.go.settings": "Открыть настройки",
@@ -119,7 +111,6 @@
   "alert.install.failed": "Ошибка установки",
   "alert.enable.failed": "Ошибка включения",
   "alert.disable.failed": "Ошибка отключения",
-
   "status.device.connection": "Подключение устройства",
   "status.security.pairing": "Безопасное сопряжение",
   "status.fingerprint.count": "Отпечатки",
@@ -134,7 +125,6 @@
   "status.tap.configure": "Нажмите «Настроить» для установки пароля",
   "status.tap.authorize": "Нажмите «Авторизовать» для включения универсального доступа",
   "status.all.ready": "Всё готово! Коснитесь для аутентификации",
-
   "wizard.title": "Мастер настройки immurok",
   "wizard.subtitle": "Завершите настройку для первого использования",
   "wizard.step": "Шаг %d/%d",
@@ -164,18 +154,15 @@
   "wizard.complete.pam": "Модуль PAM",
   "wizard.complete.accessibility": "Универсальный доступ",
   "wizard.complete.hint": "Вы можете включить «Авторизация sudo» в настройках.",
-
   "feature.unlock.mac": "Использовать immurok для разблокировки",
   "feature.sudo": "Использовать immurok для sudo",
   "feature.system.auth": "Использовать immurok для системных настроек",
-
   "about.uninstall": "Удалить immurok",
   "about.uninstall.confirm": "Подтвердить удаление",
   "about.uninstall.message": "Это удалит модуль PAM и все данные. Приложение нужно удалить вручную.",
   "about.uninstall.done": "Удаление завершено",
   "about.uninstall.done.message": "Модуль PAM и данные удалены.\n\nПереместите immurok.app в корзину.",
   "about.uninstall.failed": "Ошибка удаления",
-
   "test.title": "Тест аутентификации",
   "test.device.not.connected": "Устройство не подключено",
   "test.connect.first": "Сначала подключите устройство.",
@@ -184,7 +171,6 @@
   "test.success.message": "Аутентификация подтверждена!",
   "test.failed": "Ошибка",
   "test.failed.message": "Время истекло или ошибка.",
-
   "error.device.not.connected": "Устройство не подключено",
   "error.communication.failed": "Ошибка связи",
   "error.save.pairing.failed": "Ошибка сохранения",
@@ -198,11 +184,8 @@
   "error.cannot.remove.sudo": "Не удалось удалить sudo: %@",
   "error.cannot.remove.pam": "Не удалось удалить PAM: %@",
   "error.need.pam.first": "Сначала установите модуль PAM",
-
   "notification.need.accessibility": "Предоставьте разрешение универсального доступа",
   "notification.cannot.unlock": "Не удалось разблокировать",
-
   "ssh.generate.success": "Ключ сгенерирован",
-
   "settings.language": "Язык"
 }

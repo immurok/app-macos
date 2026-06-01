@@ -16,11 +16,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalHotKey: GlobalHotKey?
     private var quickFillPanel: QuickFillPanel?
 
+    // Suppress 0x23 long-press lock if it arrives in the tail of an actual
+    // auth flow. Firmware schedules the LOCK_HOLD timer on TOUCH rising edge
+    // and does NOT clear it on FP match (R599S DETECT misbehaves), so a
+    // finger held ~1.6s after a successful auth would otherwise lock the
+    // screen the user just unlocked into. Only set when we actually enter an
+    // auth branch — a bare match with no auth context (e.g. long-press to
+    // lock with no dialog visible) leaves this nil so the lock can fire.
+    private var lastAuthFlowAt: Date?
+    private static let lockSuppressWindow: TimeInterval = 3.0
+
     // (Password now stored in Keychain, not received via BLE)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("immurok App launched (v5.0 - Menu Bar)")
-        Task { @MainActor in LogManager.shared.log("App 启动") }
+        // Ignore SIGPIPE process-wide. Without this, send() on a Unix socket
+        // whose peer has just closed (e.g. ota-update.py interrupted with
+        // Ctrl+C mid-session) delivers SIGPIPE and terminates the app — and
+        // mid-OTA termination also strands the device in OTA mode (LED stuck
+        // blinking fast blue). We check for errors at each send() site
+        // instead.
+        signal(SIGPIPE, SIG_IGN)
+
+        NSLog("immurok App launched (v1.6 - Menu Bar)")
+        Task { @MainActor in LogManager.shared.log("App started") }
 
         // Initialize BLE Manager and start connecting
         let bleManager = BLEManager.shared
@@ -28,6 +46,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Set up BLE callbacks
         setupBLECallbacks(bleManager)
+
 
         // Start PAM socket server
         startPAMServer(bleManager)
@@ -118,8 +137,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         bleManager.onFingerprintMatch = { [weak self] pageId in
             NSLog("Fingerprint matched! page_id=%d", pageId)
-            Task { @MainActor in LogManager.shared.log("指纹匹配 id=\(pageId)") }
+            Task { @MainActor in LogManager.shared.log("FP matched id=\(pageId)") }
             self?.handleFingerprintMatch(pageId: pageId)
+        }
+
+        bleManager.onLockRequest = { [weak self] in
+            self?.handleLockRequest()
         }
 
         bleManager.onEnrollStatus = { [weak self] event, current, total in
@@ -140,6 +163,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startPAMServer(_ bleManager: BLEManager) {
         pamSocketServer = PAMSocketServer(bleManager: bleManager)
+        // Refresh lock-suppression window on any AUTH OK so that a held finger
+        // during BLE-backed sudo (which never sees a 0x21 proactive match)
+        // still suppresses the trailing 0x23 long-press lock.
+        pamSocketServer?.onAuthSuccess = { [weak self] in
+            self?.lastAuthFlowAt = Date()
+        }
 
         do {
             try pamSocketServer?.start()
@@ -178,14 +207,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Reject if device not verified (challenge-response failed)
         guard BLEManager.shared.isDeviceVerified else {
             NSLog("Fingerprint match ignored: device not verified")
-            Task { @MainActor in LogManager.shared.log("指纹匹配被忽略: 设备未验证") }
+            Task { @MainActor in LogManager.shared.log("FP match ignored: device not verified") }
             return
         }
 
         // Check if there's a pending PAM request
         if pamSocketServer?.hasPendingRequest() == true {
             NSLog("Approving pending PAM request")
-            Task { @MainActor in LogManager.shared.log("PAM 认证通过") }
+            Task { @MainActor in LogManager.shared.log("PAM auth passed") }
+            lastAuthFlowAt = Date()
             pamSocketServer?.approvePendingRequest()
             return
         }
@@ -193,7 +223,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Check if screen is locked
         if isScreenLocked() {
             NSLog("Screen is locked, unlocking...")
-            Task { @MainActor in LogManager.shared.log("解锁屏幕") }
+            Task { @MainActor in LogManager.shared.log("Unlocking screen") }
+            lastAuthFlowAt = Date()
+            // Audible cue: typing the password + window animation can take ~2s
+            // and the screen often goes black mid-flow. Configurable via
+            // Features tab; empty string = silent.
+            let soundName = UserDefaults.standard.string(forKey: "immurok.unlockSound") ?? "Glass"
+            if !soundName.isEmpty {
+                NSSound(named: soundName)?.play()
+            }
             unlockScreen()
             return
         }
@@ -209,27 +247,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let hasPasswordField = self.isSecureInputFocused()
 
             if hasPasswordField {
-                NSLog("Password field focused, sending Enter and pre-authorization (10s)...")
-                LogManager.shared.log("密码框已聚焦 → 发送 Enter + 预授权")
+                // Any focused password field at this point is GUI auth, not
+                // terminal sudo: terminal sudo runs through pam_immurok which
+                // arms BLE-backed AUTH on the device, so the user's touch is
+                // consumed as AUTH_OK by the BLE layer and never reaches
+                // handleFingerprintMatch. The remaining cases (System
+                // Settings sheet, SecurityAgent standalone window for
+                // Chrome/etc.) all map to the `authorization` PAM service.
+                NSLog("Password field focused, sending Enter + pre-auth (3s, authorization)")
+                LogManager.shared.log("Password field focused → send Enter + pre-auth authorization 3s")
+                self.lastAuthFlowAt = Date()
                 self.sendEnterKey()
-                // Could be sudo or authorization — don't restrict service
-                self.pamSocketServer?.setPreAuthorization(duration: 10.0)
+                self.pamSocketServer?.setPreAuthorization(duration: 3.0, services: ["authorization"])
             } else if let result = self.findUsePasswordButton() {
                 let desc = result.sheetTexts.joined(separator: " | ")
                 NSLog("TouchID dialog in [%@]: %@", result.appName, desc)
-                LogManager.shared.log("认证窗口 [\(result.appName)] \(desc)")
+                LogManager.shared.log("Auth window [\(result.appName)] \(desc)")
+                self.lastAuthFlowAt = Date()
                 AXUIElementPerformAction(result.button, kAXPressAction as CFString)
-                LogManager.shared.log("→ 点击「使用密码…」+ 提交空密码")
-                // TouchID dialog → must be authorization
-                self.pamSocketServer?.setPreAuthorization(duration: 10.0, service: "authorization")
+                LogManager.shared.log("→ Click 'Use Password...' + submit empty password")
+                // TouchID dialog → authorization service
+                self.pamSocketServer?.setPreAuthorization(duration: 3.0, services: ["authorization"])
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     self?.sendEnterKey()  // 提交空密码 → 触发 PAM
                 }
             } else {
-                NSLog("No auth dialog detected, setting pre-authorization only (10s)...")
-                LogManager.shared.log("无认证窗口 → 仅预授权 10s")
-                // No context — don't restrict service
-                self.pamSocketServer?.setPreAuthorization(duration: 10.0)
+                // No identified auth context — do NOT pre-authorize.
+                // Previously set a 10s any-service window here, which was the
+                // most exploitable path: a finger touch with no UI intent
+                // would silently authorize the next sudo from any same-UID
+                // process. Refuse to grant authority without explicit context.
+                NSLog("No auth dialog detected, ignoring fingerprint (no pre-auth)")
+                LogManager.shared.log("No auth window → skip pre-auth (avoid consumption by unrelated processes)")
             }
         }
     }
@@ -270,7 +319,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        Task { @MainActor in LogManager.shared.log("解锁开始 +0ms") }
+        Task { @MainActor in LogManager.shared.log("Unlock start +0ms") }
 
         // Device's HID CTRL key already wakes the screen and dismisses screensaver.
         // Just wait for the lock screen to appear, then type password.
@@ -278,28 +327,168 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // on an already-awake lock screen, causing failed login attempts.
         waitForScreensaverWindow(timeout: 10.0) { [weak self] found in
             let ms1 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-            Task { @MainActor in LogManager.shared.log("锁屏窗口检测: \(found ? "找到" : "超时") +\(ms1)ms") }
-            if found {
-                // loginwindow's password field is ready as soon as the window is on screen.
-                // AX API cannot detect it (not exposed as AXSecureTextField), so type immediately.
-                self?.fakeKeyStrokes(password)
-                let ms2 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-                Task { @MainActor in LogManager.shared.log("密码已输入 +\(ms2)ms") }
-
-                // Verify unlock after 2s, retry once if still locked
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    if self?.isScreenLocked() == true {
-                        Task { @MainActor in LogManager.shared.log("仍锁定，重试") }
-                        self?.fakeKeyStrokes(password)
-                    } else {
-                        let ms3 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-                        Task { @MainActor in LogManager.shared.log("解锁完成 +\(ms3)ms") }
-                    }
-                    // Password stays in Keychain (no BLE-based pendingPassword to clear)
+            Task { @MainActor in LogManager.shared.log("Lock screen window detect: \(found ? "found" : "timeout") +\(ms1)ms") }
+            guard found, let self = self else {
+                if !found {
+                    Task { @MainActor in LogManager.shared.log("Lock screen window not detected (timeout)") }
                 }
-            } else {
-                Task { @MainActor in LogManager.shared.log("锁屏窗口未检测到（超时）") }
+                return
             }
+            // Re-confirm loginwindow owns the focus before posting key events.
+            // CGEvent keystrokes go to whatever currently has key focus; if a
+            // race or attacker process held focus past our window-visible
+            // detection, the password would land in the wrong window.
+            guard self.isLoginWindowFrontmost() else {
+                Task { @MainActor in LogManager.shared.log("Aborting unlock: loginwindow not frontmost") }
+                return
+            }
+            // loginwindow's password field is ready as soon as the window is on screen.
+            // AX API cannot detect it (not exposed as AXSecureTextField), so type immediately.
+            self.fakeKeyStrokes(password)
+            let ms2 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            Task { @MainActor in LogManager.shared.log("Password entered +\(ms2)ms") }
+
+            // Verify unlock after 2s: check lock screen window (not session state,
+            // which updates slower). If loginwindow is gone, unlock succeeded.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self = self else { return }
+                if self.isScreensaverWindowVisible() {
+                    // Same frontmost check on retry — if focus moved to some
+                    // other process during the 2s window, abort.
+                    guard self.isLoginWindowFrontmost() else {
+                        Task { @MainActor in LogManager.shared.log("Aborting retry: loginwindow not frontmost") }
+                        return
+                    }
+                    Task { @MainActor in LogManager.shared.log("Still locked, retrying") }
+                    self.fakeKeyStrokes(password)
+                } else {
+                    let ms3 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                    Task { @MainActor in LogManager.shared.log("Unlock done +\(ms3)ms") }
+                }
+                // Password stays in Keychain (no BLE-based pendingPassword to clear)
+            }
+        }
+    }
+
+    /// Confirm the lock-screen process owns the keyboard focus right now.
+    /// Used as a guard before fakeKeyStrokes types the password — keystrokes
+    /// are routed by frontmost focus, not by which window we just detected.
+    private func isLoginWindowFrontmost() -> Bool {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+            return false
+        }
+        switch frontApp.bundleIdentifier {
+        case "com.apple.loginwindow", "com.apple.ScreenSaver.Engine":
+            return true
+        default:
+            // Fall back to executable name. Both processes are Apple-signed
+            // so spoofing the bundle id would require a separate exploit.
+            return frontApp.localizedName == "loginwindow"
+                || frontApp.localizedName == "ScreenSaverEngine"
+        }
+    }
+
+    // MARK: - Lock Request (long-press on touch sensor)
+
+    /// Routes a 0x23 long-press lock request from the device.
+    /// Per protocol spec: if screen is already locked we ignore (the preceding
+    /// 0x21 unlock notify is in flight). If unlocked we cancel any pre-auth
+    /// the 0x21 may have armed and then lock the screen.
+    /// Gated by `immurok.screenLockEnabled` (default off) — opt-in feature.
+    private func handleLockRequest() {
+        let enabled = UserDefaults.standard.bool(forKey: "immurok.screenLockEnabled")
+        guard enabled else {
+            NSLog("Lock request ignored: feature disabled (immurok.screenLockEnabled=false)")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (feature disabled)") }
+            return
+        }
+        if isScreenLocked() {
+            NSLog("Lock request ignored: screen already locked")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (already locked)") }
+            return
+        }
+        // Suppress lock if an auth flow just started. Firmware fires the
+        // LOCK_HOLD timer 1.6s after touch rising edge regardless of match
+        // outcome, so a successful auth where the user's finger lingers on the
+        // pad would otherwise lock the screen the user just unlocked into.
+        // Only suppresses when a real auth branch ran — bare matches with no
+        // auth context (long-press to lock with no dialog) leave this nil.
+        if let lastFlow = lastAuthFlowAt,
+           Date().timeIntervalSince(lastFlow) < Self.lockSuppressWindow {
+            NSLog("Lock request ignored: recent auth flow (tail)")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (recent auth flow)") }
+            return
+        }
+        // immurok's own auth surfaces (agent-approval overlay from
+        // `imk run --agent`, and the QuickFill panel from Ctrl+\) are custom
+        // NSPanels, not OS AXSecureTextField/SecurityAgent — the AX probes
+        // below would miss them. Firmware's pending_auth check also doesn't
+        // help: AUTH_REQUEST's pending_auth clears at match (~600ms), so by
+        // the time LOCK_HOLD fires at 1s the firmware sees an idle state
+        // and emits the lock. Catch them here instead.
+        //
+        // BLEManager dispatches onLockRequest via DispatchQueue.main.async
+        // so we're already on the main thread; assertion lets us reach the
+        // @MainActor-isolated state without an awaited hop that would let
+        // the lock decision race the overlay state.
+        let immurokAuthVisible = MainActor.assumeIsolated {
+            AuthRequestOverlay.shared.isShowing
+                || (self.quickFillPanel?.isVerifying ?? false)
+        }
+        if immurokAuthVisible {
+            NSLog("Lock request ignored: immurok auth surface active")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (immurok auth surface active)") }
+            return
+        }
+        // Live re-check: the host might be currently requesting authentication
+        // (focused password field or visible TouchID/SecurityAgent sheet) but
+        // the lastAuthFlowAt timestamp didn't get set in time. The 0x21 match
+        // arrives ~600ms after touch and the AX queries that detect auth
+        // context can take 100-500ms; the 0x23 long-press arrives at 1s.
+        // When AX is still in flight at 1s, lastAuthFlowAt is nil and the
+        // long-press would lock the screen the user is trying to unlock into.
+        // Re-querying AX here (we're on main, callback dispatched via
+        // BLEManager's DispatchQueue.main.async) catches that race.
+        if isSecureInputFocused() {
+            NSLog("Lock request ignored: password field focused")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (password field active)") }
+            return
+        }
+        if findUsePasswordButton() != nil {
+            NSLog("Lock request ignored: TouchID/auth dialog active")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (auth dialog visible)") }
+            return
+        }
+        NSLog("Lock request: locking screen")
+        Task { @MainActor in LogManager.shared.log("Locking screen (long press)") }
+        // Drop any pre-authorization a preceding 0x21 may have set; locking
+        // makes that auth context invalid anyway.
+        pamSocketServer?.clearPreAuthorization()
+        lockScreen()
+    }
+
+    /// Lock the macOS user session.
+    /// Uses CGSession's `-suspend` action which is the same operation triggered
+    /// by Ctrl-Cmd-Q, requires no admin privileges, and ignores user-customized
+    /// keyboard shortcuts.
+    private func lockScreen() {
+        let cgSession = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cgSession)
+        process.arguments = ["-suspend"]
+        do {
+            try process.run()
+        } catch {
+            NSLog("lockScreen: CGSession failed (%@), falling back to keystroke", error.localizedDescription)
+            // Fallback: synthesize Ctrl-Cmd-Q. May fail if user has rebound
+            // the shortcut or doesn't have accessibility permission.
+            let src = CGEventSource(stateID: .hidSystemState)
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0x0C /* Q */, keyDown: true)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0x0C, keyDown: false)
+            down?.flags = [.maskCommand, .maskControl]
+            up?.flags = [.maskCommand, .maskControl]
+            down?.post(tap: .cghidEventTap)
+            up?.post(tap: .cghidEventTap)
         }
     }
 
@@ -448,6 +637,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func fakeKeyStrokes(_ string: String) {
         let src = CGEventSource(stateID: .hidSystemState)
+
+        // Clear any stuck modifier keys (e.g. CTRL from BLE HID wake key)
+        // by posting flagsChanged with empty flags before typing
+        if let flagsEvent = CGEvent(source: src) {
+            flagsEvent.type = .flagsChanged
+            flagsEvent.flags = []
+            flagsEvent.post(tap: .cghidEventTap)
+        }
+
         let PER = 20
         let uniCharCount = string.utf16.count
         var strIndex = string.utf16.startIndex
@@ -576,8 +774,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if quickFillPanel?.isVisible == true {
             quickFillPanel?.close()
         } else {
-            quickFillPanel = QuickFillPanel()
-            quickFillPanel?.show()
+            let p = QuickFillPanel()
+            // Mirror the PAM `onAuthSuccess` hookup so QuickFill's
+            // fingerprint-gated reads (OTP / API / SSH) refresh
+            // lastAuthFlowAt — needed because the trailing 0x23
+            // LOCK_REQUEST arrives milliseconds after the OTP response
+            // on the same BLE callback queue, and isVerifying flips to
+            // false before handleLockRequest can read it.
+            p.onAuthSuccess = { [weak self] in
+                self?.lastAuthFlowAt = Date()
+            }
+            p.show()
+            quickFillPanel = p
         }
     }
 

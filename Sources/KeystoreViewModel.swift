@@ -28,7 +28,22 @@ class KeystoreViewModel: ObservableObject {
     var gateController = FingerprintGateController()
 
     private let bleManager = BLEManager.shared
-    private var currentCat: KeystoreCategory?
+    private(set) var currentCat: KeystoreCategory?
+
+    /// True when the currently displayed category has reached its firmware
+    /// max entry count. UI should disable add / import in this state — the
+    /// firmware silently rejects writes past the cap (commit returns -1).
+    var isAtMaxCapacity: Bool {
+        guard let cat = currentCat else { return false }
+        return entries.count >= cat.maxEntries
+    }
+
+    /// Number of additional entries that can still be added to the current
+    /// category. Returns 0 when at max.
+    var remainingCapacity: Int {
+        guard let cat = currentCat else { return 0 }
+        return max(0, cat.maxEntries - entries.count)
+    }
     private var gateObserver: Any?
     private var gateCancellable: AnyCancellable?
     private var loadingTimeoutTask: Task<Void, Never>?
@@ -43,7 +58,11 @@ class KeystoreViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self,
-                      self.isAdding || self.isDeleting || self.isImporting || self.isExporting
+                      // isLoading included so a cold-start API list fetch
+                      // (which returns WAIT_FP per entry) can pop the FP
+                      // sheet and let the user authorize the read.
+                      self.isAdding || self.isDeleting || self.isImporting
+                          || self.isExporting || self.isLoading
                 else { return }
                 self.gateController.onGateRequired()
             }
@@ -63,13 +82,26 @@ class KeystoreViewModel: ObservableObject {
 
         let categoryChanged = currentCat != cat
         currentCat = cat
+        clearError()
+
+        // Phase 1: paint from cache immediately (if any). Switching tabs
+        // becomes instant when a previous sync populated the cache.
+        let cached = KeyNameCache.shared.entries(for: cat)
+        if !cached.isEmpty {
+            entries = cached.map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        } else if categoryChanged {
+            entries = []
+        }
+
+        // Phase 2: digest verify in the background. KeyNameCache.syncCategory
+        // first does a 6-byte KEY_COUNT — if the firmware checksum matches the
+        // cached digest, it returns without any KEY_READ. Only on miss does
+        // it kick off the full N×KEY_READ chain.
         isLoading = true
         loadingProgress = 0
         loadingTotal = 0
-        if categoryChanged { entries = [] }
-        clearError()
 
-        // Safety timeout scales with expected entry count (min 10s)
         loadingTimeoutTask?.cancel()
         loadingTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000_000)
@@ -77,42 +109,134 @@ class KeystoreViewModel: ObservableObject {
             self.isLoading = false
         }
 
-        let progressCallback: (Int, Int) -> Void = { [weak self] current, total in
+        KeyNameCache.shared.syncCategory(cat) { [weak self] in
             Task { @MainActor in
                 guard let self = self, self.currentCat == cat else { return }
-                self.loadingProgress = current
-                self.loadingTotal = total
+                self.loadingTimeoutTask?.cancel()
+                self.entries = KeyNameCache.shared.entries(for: cat)
+                    .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                    .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+
+                // API names require FP gate (firmware refuses KEY_READ with
+                // SEC_ERR_WAIT_FP unless AUTH or KEYSTORE cooldown is active).
+                // Cold-start sync silently returns nil for every name, so the
+                // cache stays incomplete (KeyNameCache.isCacheComplete=false).
+                // Run AUTH_REQUEST to refresh AUTH cooldown then resync. The
+                // existing FP-gate sheet pops via fingerprintGateRequiredNotification.
+                if cat == .api && !KeyNameCache.shared.isCacheComplete(for: .api) {
+                    self.unlockAndResyncAPI()
+                    return  // isLoading stays true until retry completes
+                }
+
+                self.isLoading = false
             }
         }
+    }
 
-        // KEY_COUNT + KEY_READ chain runs entirely on BLE queue (no MainActor hops between commands)
-        if cat == .otp {
-            // OTP: read name + service in one pass
-            bleManager.getKeyEntryNamesAndService(cat: cat, progress: progressCallback) { [weak self] result in
-                // Update KeyNameCache directly with the data we already have
-                KeyNameCache.shared.replaceCategory(cat, with: result.map {
-                    KeyNameCache.Entry(index: $0.index, name: $0.name, service: $0.service, category: cat)
-                })
-                Task { @MainActor in
-                    guard let self = self, self.currentCat == cat else { return }
-                    self.loadingTimeoutTask?.cancel()
-                    self.entries = result.map { Entry(index: $0.index, name: $0.name, service: $0.service) }
-                        .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+    /// Trigger AUTH_REQUEST to satisfy API KEY_READ FP gate, then resync.
+    /// Called when the cold-start API list fetch came back incomplete.
+    private func unlockAndResyncAPI() {
+        bleManager.requestUnlock(timeout: 30.0) { [weak self] success in
+            Task { @MainActor in
+                guard let self = self, self.currentCat == .api else {
+                    self?.isLoading = false
+                    return
+                }
+                guard success else {
+                    // User cancelled or FP gate timed out — leave list empty,
+                    // user can re-trigger by switching tabs or refresh action.
                     self.isLoading = false
+                    return
+                }
+                // AUTH cooldown is now active; fetch will succeed.
+                KeyNameCache.shared.syncCategory(.api) {
+                    Task { @MainActor in
+                        guard self.currentCat == .api else {
+                            self.isLoading = false
+                            return
+                        }
+                        self.entries = KeyNameCache.shared.entries(for: .api)
+                            .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                            .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+                        self.isLoading = false
+                    }
                 }
             }
-        } else {
-            bleManager.getKeyEntryNames(cat: cat, progress: progressCallback) { [weak self] result in
-                // Update KeyNameCache directly with the data we already have
-                KeyNameCache.shared.replaceCategory(cat, with: result.map {
-                    KeyNameCache.Entry(index: $0.index, name: $0.name, service: "", category: cat)
-                })
+        }
+    }
+
+    /// Import an SSH ECDSA P-256 private key from a parsed SSHKeyImporter result.
+    /// Builds the 112B SSH entry layout (name[16] + pubkey_LE[64] + privkey[32]),
+    /// writes via writeKeyEntry idx=0xFF, then aligns SSHKeyCache + KeyNameCache
+    /// digests with the firmware's new checksum. No full re-sync required.
+    func importSSHKey(name: String, imported: SSHKeyImporter.ImportedKey,
+                      completion: @escaping (Bool) -> Void) {
+        isAdding = true
+        gateController.title = "keys.add".localized
+        clearError()
+
+        // uECC on the device is built with NATIVE_LITTLE_ENDIAN=1 — it expects
+        // both the public key (x || y) and private scalar in little-endian
+        // byte order. CryptoKit returns big-endian, so reverse both before
+        // sending. (Earlier version of this method only reversed pubkey,
+        // which produced a key pair the device couldn't sign with — pubkey
+        // looked right to ssh-keygen but the privkey scalar was 32-bytes
+        // backwards in flash, yielding signatures that didn't validate.)
+        let pubkeyLE = bleManager.convertEndianness64(imported.publicKeyRaw)
+        let privkeyLE = Data(imported.privateKeyRaw.reversed())
+
+        // Build 112B entry: name[16] + pubkey_LE[64] + privkey_LE[32]
+        var entryData = Data(count: 16)
+        let nameBytes = Array(name.utf8.prefix(16))
+        for (i, b) in nameBytes.enumerated() { entryData[i] = b }
+        entryData.append(pubkeyLE)
+        entryData.append(privkeyLE)
+
+        // Diagnostic: log fingerprint of the parsed pair so user can verify
+        // the entry that ends up on flash matches the source file. Also dumps
+        // first/last 4B of pubkey/privkey for byte-order spot check.
+        NSLog("SSH import: name=%@ fp=%@ pub_be_first=%@ priv_be_first=%@",
+              name, imported.openSSHFingerprint,
+              imported.publicKeyRaw.prefix(4).map { String(format: "%02x", $0) }.joined(),
+              imported.privateKeyRaw.prefix(4).map { String(format: "%02x", $0) }.joined())
+
+        bleManager.writeKeyEntry(cat: .ssh, idx: 0xFF, data: entryData) { [weak self] success in
+            guard let self = self else { return }
+            if !success {
                 Task { @MainActor in
-                    guard let self = self, self.currentCat == cat else { return }
-                    self.loadingTimeoutTask?.cancel()
-                    self.entries = result.map { Entry(index: $0.index, name: $0.name, service: "") }
+                    self.isAdding = false
+                    if self.gateController.isPresented {
+                        self.gateController.reportFailed()
+                    } else {
+                        self.showError("keys.add.failed".localized)
+                    }
+                    completion(false)
+                }
+                return
+            }
+
+            // Compute SSH pubkey blob + fingerprint for cache (BE pubkey from CryptoKit)
+            let blob = SSHKeyCache.buildSSHPublicKeyBlob(publicKey: imported.publicKeyRaw)
+            let fp = SSHKeyCache.computeFingerprint(blob: blob)
+
+            // Align both caches with firmware's new digest
+            self.bleManager.getKeyCountAndChecksum(cat: .ssh) { count, checksum in
+                let newIdx = max(0, count - 1)
+                SSHKeyCache.shared.applyAdd(SSHKeyCacheEntry(
+                    index: newIdx, name: name, publicKeyBlob: blob, fingerprint: fp
+                ))
+                SSHKeyCache.shared.setChecksum(count: count, checksum: checksum)
+                _ = KeyNameCache.shared.applyAdd(cat: .ssh, name: name, service: "")
+                KeyNameCache.shared.setChecksum(cat: .ssh, count: count, checksum: checksum)
+                Task { @MainActor in
+                    self.isAdding = false
+                    if self.gateController.isPresented {
+                        self.gateController.reportSuccess()
+                    }
+                    self.entries = KeyNameCache.shared.entries(for: .ssh)
+                        .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
                         .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
-                    self.isLoading = false
+                    completion(true)
                 }
             }
         }
@@ -123,21 +247,80 @@ class KeystoreViewModel: ObservableObject {
         gateController.title = "keys.add".localized
         clearError()
 
+        // Parse name/service from the entry data (matches firmware layout).
+        // For SSH we'd need to also derive pubkey blob — the existing
+        // KEY_GENERATE flow handles that separately, so here we only cover
+        // the cache-level name field. SSH "add via writeKeyEntry" is unusual
+        // (manual import), full re-sync via SSHKeyCache.sync remains the
+        // safe path for SSH content beyond name.
+        let (parsedName, parsedService) = Self.parseNameAndService(cat: cat, data: data)
+
         bleManager.writeKeyEntry(cat: cat, idx: 0xFF, data: data) { [weak self] success in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.isAdding = false
-                if self.gateController.isPresented {
-                    success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
+            guard let self = self else { return }
+            if success {
+                // Append locally + fetch new firmware checksum to align cache.
+                // Skips the previous loadEntries(cat:) full refetch.
+                let newIdx = KeyNameCache.shared.applyAdd(cat: cat, name: parsedName,
+                                                          service: parsedService)
+                self.bleManager.getKeyCountAndChecksum(cat: cat) { count, checksum in
+                    KeyNameCache.shared.setChecksum(cat: cat, count: count, checksum: checksum)
+                    if cat == .ssh {
+                        // SSH cache stores pubkey blobs; can't reconstruct without
+                        // re-reading the entry. Fall back to full sync for SSH.
+                        SSHKeyCache.shared.sync {
+                            Task { @MainActor in self.finishAddUI(cat: cat, success: true, completion: completion) }
+                        }
+                    } else {
+                        Task { @MainActor in self.finishAddUI(cat: cat, success: true, completion: completion) }
+                    }
                 }
-                if success {
-                    self.loadEntries(cat: cat)
-                } else if !self.gateController.isPresented {
-                    self.showError("keys.add.failed".localized)
-                }
-                completion(success)
+                _ = newIdx  // currently unused; kept for future "select newly-added"
+                return
             }
+            // Failure
+            Task { @MainActor in self.finishAddUI(cat: cat, success: false, completion: completion) }
         }
+    }
+
+    @MainActor
+    private func finishAddUI(cat: KeystoreCategory, success: Bool, completion: @escaping (Bool) -> Void) {
+        self.isAdding = false
+        if self.gateController.isPresented {
+            success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
+        }
+        if success {
+            // Repaint from cache (already updated)
+            self.entries = KeyNameCache.shared.entries(for: cat)
+                .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        } else if !self.gateController.isPresented {
+            self.showError("keys.add.failed".localized)
+        }
+        completion(success)
+    }
+
+    /// Parse name and service fields from a writeKeyEntry data blob, matching
+    /// firmware's struct layout (immurok_keystore.h):
+    ///   SSH: name[16] + pubkey[64] + privkey[32]
+    ///   OTP: name[30] + service[30] + secret[32]
+    ///   API: name[32] + key[128]
+    private static func parseNameAndService(cat: KeystoreCategory, data: Data) -> (name: String, service: String) {
+        let nameLen: Int
+        let serviceRange: Range<Int>?
+        switch cat {
+        case .ssh: nameLen = 16; serviceRange = nil
+        case .otp: nameLen = 30; serviceRange = 30..<60
+        case .api: nameLen = 32; serviceRange = nil
+        }
+        guard data.count >= nameLen else { return ("", "") }
+        let nameRaw = data.prefix(nameLen).prefix(while: { $0 != 0 })
+        let name = String(data: nameRaw, encoding: .utf8) ?? ""
+        var service = ""
+        if let r = serviceRange, data.count >= r.upperBound {
+            let serviceRaw = data.subdata(in: r).prefix(while: { $0 != 0 })
+            service = String(data: serviceRaw, encoding: .utf8) ?? ""
+        }
+        return (name, service)
     }
 
     func updateEntry(cat: KeystoreCategory, idx: UInt8, name: String, service: String,
@@ -146,45 +329,54 @@ class KeystoreViewModel: ObservableObject {
         gateController.title = "keys.add".localized
         clearError()
 
-        bleManager.readKeyEntry(cat: cat, idx: idx) { [weak self] data in
-            guard let self = self, var entryData = data else {
-                Task { @MainActor in
-                    self?.isAdding = false
-                    self?.showError("keys.edit.failed".localized)
-                }
-                completion(false)
-                return
-            }
-            switch cat {
-            case .ssh:
-                let nameData = Self.buildField(name, size: 16)
-                entryData.replaceSubrange(0..<16, with: nameData)
-            case .otp:
-                let nameData = Self.buildField(name, size: 30)
-                let serviceData = Self.buildField(service, size: 30)
-                entryData.replaceSubrange(0..<30, with: nameData)
-                entryData.replaceSubrange(30..<60, with: serviceData)
-            case .api:
-                let nameData = Self.buildField(name, size: 32)
-                entryData.replaceSubrange(0..<32, with: nameData)
-            }
-            self.bleManager.writeKeyEntry(cat: cat, idx: idx, data: entryData) { [weak self] success in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    self.isAdding = false
-                    if self.gateController.isPresented {
-                        success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
-                    }
-                    if success {
+        // Build a minimal write payload that contains ONLY the editable
+        // fields (name [+ service for OTP]). Firmware staging (1.2.8+)
+        // preloads the existing entry into s_stage_buf before applying
+        // chunked writes, so any bytes we don't send are preserved from
+        // flash — this lets us rename API entries WITHOUT first reading
+        // the full entry. The previous "read full → modify → write full"
+        // flow was broken on FW 1.2.13+ for API: KEY_READ off>=32 requires
+        // FP gate (secret region), so the read step would fail without a
+        // recent AUTH cooldown.
+        let payload: Data
+        switch cat {
+        case .ssh:
+            payload = Self.buildField(name, size: 16)
+        case .otp:
+            payload = Self.buildField(name, size: 30) + Self.buildField(service, size: 30)
+        case .api:
+            payload = Self.buildField(name, size: 32)
+        }
+
+        bleManager.writeKeyEntry(cat: cat, idx: idx, data: payload) { [weak self] success in
+            guard let self = self else { return }
+            if success {
+                // Local rename + fetch new checksum to align (skip refetch).
+                KeyNameCache.shared.applyUpdate(cat: cat, index: Int(idx),
+                                                name: name, service: service)
+                self.bleManager.getKeyCountAndChecksum(cat: cat) { count, checksum in
+                    KeyNameCache.shared.setChecksum(cat: cat, count: count, checksum: checksum)
+                    Task { @MainActor in
+                        self.isAdding = false
+                        if self.gateController.isPresented {
+                            self.gateController.reportSuccess()
+                        }
                         if let i = self.entries.firstIndex(where: { $0.index == Int(idx) }) {
                             self.entries[i] = Entry(index: Int(idx), name: name, service: service)
                         }
-                        KeyNameCache.shared.updateEntry(cat: cat, index: Int(idx), name: name, service: service)
-                    } else if !self.gateController.isPresented {
-                        self.showError("keys.edit.failed".localized)
+                        completion(true)
                     }
-                    completion(success)
                 }
+                return
+            }
+            Task { @MainActor in
+                self.isAdding = false
+                if self.gateController.isPresented {
+                    self.gateController.reportFailed()
+                } else {
+                    self.showError("keys.edit.failed".localized)
+                }
+                completion(false)
             }
         }
     }
@@ -195,16 +387,34 @@ class KeystoreViewModel: ObservableObject {
         clearError()
 
         bleManager.deleteKeyEntry(cat: cat, idx: idx) { [weak self] success in
+            guard let self = self else { return }
+            if success {
+                // Mirror firmware's swap-delete locally + fetch new checksum.
+                // Saves N-1 KEY_READs vs the old loadEntries(cat:) refetch.
+                KeyNameCache.shared.applySwapDelete(cat: cat, deletedIdx: Int(idx))
+                if cat == .ssh { SSHKeyCache.shared.applySwapDelete(deletedIdx: Int(idx)) }
+                self.bleManager.getKeyCountAndChecksum(cat: cat) { count, checksum in
+                    KeyNameCache.shared.setChecksum(cat: cat, count: count, checksum: checksum)
+                    if cat == .ssh { SSHKeyCache.shared.setChecksum(count: count, checksum: checksum) }
+                    Task { @MainActor in
+                        self.isDeleting = false
+                        if self.gateController.isPresented {
+                            self.gateController.reportSuccess()
+                        }
+                        // Repaint local entries from the just-updated cache
+                        self.entries = KeyNameCache.shared.entries(for: cat)
+                            .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                            .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+                    }
+                }
+                return
+            }
+            // Failure path
             Task { @MainActor in
-                guard let self = self else { return }
                 self.isDeleting = false
                 if self.gateController.isPresented {
-                    success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
-                }
-                if success {
-                    self.entries.removeAll { $0.index == Int(idx) }
-                    self.loadEntries(cat: cat)
-                } else if !self.gateController.isPresented {
+                    self.gateController.reportFailed()
+                } else {
                     self.showError("keys.delete.failed".localized)
                 }
             }
@@ -222,19 +432,30 @@ class KeystoreViewModel: ObservableObject {
     }
 
     private func deleteEntriesSequentially(cat: KeystoreCategory, indices: [UInt8], completion: @escaping () -> Void) {
+        // Descending order so each delete is either "delete last" (no swap) or
+        // a swap from the current max — both cases are correctly mirrored by
+        // applySwapDelete since it always uses the latest cached count.
         let sorted = indices.sorted(by: >)
         func deleteNext(i: Int) {
             guard i < sorted.count else {
-                Task { @MainActor in
-                    let deletedSet = Set(indices.map { Int($0) })
-                    self.entries.removeAll { deletedSet.contains($0.index) }
-                    KeyNameCache.shared.removeEntries(cat: cat, indices: deletedSet)
-                    self.isDeleting = false
-                    self.gateController.reset()
-                    self.deleteProgress = 0
-                    self.deleteTotal = 0
+                // Batch done: apply final checksum once (firmware reports new
+                // digest after all deletes). Avoids N KEY_READ chain vs the
+                // old loadEntries(cat:) approach.
+                self.bleManager.getKeyCountAndChecksum(cat: cat) { count, checksum in
+                    KeyNameCache.shared.setChecksum(cat: cat, count: count, checksum: checksum)
+                    if cat == .ssh { SSHKeyCache.shared.setChecksum(count: count, checksum: checksum) }
+                    Task { @MainActor in
+                        self.isDeleting = false
+                        self.gateController.reset()
+                        self.deleteProgress = 0
+                        self.deleteTotal = 0
+                        // Repaint from cache (already swap-updated entry-by-entry)
+                        self.entries = KeyNameCache.shared.entries(for: cat)
+                            .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                            .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+                    }
+                    completion()
                 }
-                completion()
                 return
             }
             Task { @MainActor in
@@ -244,6 +465,12 @@ class KeystoreViewModel: ObservableObject {
                 Task { @MainActor in
                     if let self = self, self.gateController.isPresented {
                         success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
+                    }
+                }
+                if success {
+                    KeyNameCache.shared.applySwapDelete(cat: cat, deletedIdx: Int(sorted[i]))
+                    if cat == .ssh {
+                        SSHKeyCache.shared.applySwapDelete(deletedIdx: Int(sorted[i]))
                     }
                 }
                 deleteNext(i: i + 1)
@@ -341,12 +568,28 @@ class KeystoreViewModel: ObservableObject {
         var successCount = 0
         func writeNext(index: Int) {
             guard index < entries.count else {
+                // SwiftUI render race guard: ensure final 128/128 paints
+                // before isImporting=false hides the progress bar.
                 Task { @MainActor in
-                    self.isImporting = false
-                    self.gateController.reset()
-                    self.loadEntries(cat: .otp)
+                    self.importProgress = self.importTotal
                 }
-                completion(successCount)
+                // Batch done — fetch new firmware checksum once to align cache
+                // (each entry has been applyAdd'd locally below).
+                ble.getKeyCountAndChecksum(cat: .otp) { count, checksum in
+                    KeyNameCache.shared.setChecksum(cat: .otp, count: count, checksum: checksum)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                        Task { @MainActor in
+                            guard let self = self else { return }
+                            self.isImporting = false
+                            self.gateController.reset()
+                            // Repaint from cache (already populated by applyAdd)
+                            self.entries = KeyNameCache.shared.entries(for: .otp)
+                                .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
+                                .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+                        }
+                    }
+                    completion(successCount)
+                }
                 return
             }
             Task { @MainActor in
@@ -366,7 +609,12 @@ class KeystoreViewModel: ObservableObject {
                         success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
                     }
                 }
-                if success { successCount += 1 }
+                if success {
+                    successCount += 1
+                    // Append to cache locally — saves one full refetch at end.
+                    _ = KeyNameCache.shared.applyAdd(cat: .otp, name: e.name,
+                                                     service: e.service)
+                }
                 writeNext(index: index + 1)
             }
         }

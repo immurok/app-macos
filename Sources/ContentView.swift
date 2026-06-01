@@ -13,7 +13,7 @@ enum SettingsTab: String, CaseIterable {
         switch self {
         case .device: return "antenna.radiowaves.left.and.right"
         case .keys: return "key.fill"
-        case .permissions: return "person.badge.key"
+        case .permissions: return "slider.horizontal.3"
         case .status: return "list.bullet.rectangle"
         case .about: return "info.circle"
         }
@@ -39,7 +39,9 @@ struct ContentView: View {
     @State private var selectedTab: SettingsTab = .device
 
     private let tabBarHeight: CGFloat = 70
-    private let contentHeight: CGFloat = 420  // 固定高度，取最大值
+    // 每个 tab 自适应内容高度，window 跟随调整（windowResizability(.contentSize) 在 immurokApp.swift 已设）。
+    // 加 minHeight 防止内容很少（如关于页）时窗口太矮。
+    private let minContentHeight: CGFloat = 360
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,17 +51,9 @@ struct ContentView: View {
 
             Divider()
 
-            // Tab Content - 固定高度容器，内容顶部对齐
-            ZStack(alignment: .top) {
-                // 透明占位，保持固定高度
-                Color.clear
-                    .frame(height: contentHeight)
-
-                // 实际内容
-                tabContent
-            }
-            .frame(height: contentHeight)
-            .clipped()
+            // Tab Content - 自适应高度，按当前 tab 内容自然撑开
+            tabContent
+                .frame(minHeight: minContentHeight, alignment: .top)
         }
         .frame(width: 500)
         .background(Color(NSColor.windowBackgroundColor))

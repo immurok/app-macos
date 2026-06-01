@@ -1,24 +1,21 @@
 {
   "_comment": "This is a template file. Copy this to hi.json, ar.json, or bn.json and translate the values.",
-
   "app.name": "immurok",
   "app.settings": "",
   "app.version": "",
   "app.description": "",
-
   "menu.settings": "",
   "menu.quit": "",
   "menu.connected": "",
   "menu.disconnected": "",
   "menu.status.ok": "",
   "menu.status.error": "",
-
   "tab.fingerprint": "",
   "tab.device": "",
   "tab.permissions": "",
   "tab.status": "",
   "tab.about": "",
-
+  "battery.refresh.tooltip": "",
   "device.connected": "",
   "device.disconnected": "",
   "device.connected.name": "",
@@ -32,7 +29,6 @@
   "device.pair": "",
   "device.reset.pairing": "",
   "device.not.paired.hint": "",
-
   "pairing.press.button": "",
   "pairing.success": "",
   "pairing.success.message": "",
@@ -44,14 +40,14 @@
   "pairing.timeout.short": "",
   "pairing.other.host": "",
   "pairing.failed.code": "",
-
-  "reset.title": "",
-  "reset.message": "",
-  "reset.confirm": "",
-  "reset.hold.button": "",
-  "reset.done": "",
-  "reset.done.message": "",
-
+  "pairing.stale.local.title": "",
+  "pairing.stale.local.message": "",
+  "pairing.stale.local.continue": "",
+  "unpair.title": "",
+  "unpair.message": "",
+  "unpair.confirm": "",
+  "unpair.done": "",
+  "unpair.done.message": "",
   "fingerprint.title": "",
   "fingerprint.description": "",
   "fingerprint.count": "",
@@ -67,7 +63,6 @@
   "fingerprint.delete.confirm": "",
   "fingerprint.delete.failed": "",
   "fingerprint.delete.failed.message": "",
-
   "enroll.place.finger": "",
   "enroll.captured": "",
   "enroll.lift.finger": "",
@@ -79,7 +74,6 @@
   "enroll.failed.message": "",
   "enroll.failed.start": "",
   "enroll.in.progress": "",
-
   "permission.screen.unlock": "",
   "permission.unlock.password": "",
   "permission.configured": "",
@@ -92,7 +86,6 @@
   "permission.ssh.agent.hint": "",
   "permission.cli": "",
   "permission.cli.hint": "",
-
   "password.title": "",
   "password.message": "",
   "password.placeholder": "",
@@ -103,14 +96,12 @@
   "password.error.empty": "",
   "password.error.mismatch": "",
   "password.error.save": "",
-
   "alert.error": "",
   "alert.cancel": "",
   "alert.delete": "",
   "alert.install": "",
   "alert.enable": "",
   "alert.authorize": "",
-
   "alert.need.accessibility": "",
   "alert.need.accessibility.message": "",
   "alert.go.settings": "",
@@ -121,7 +112,6 @@
   "alert.install.failed": "",
   "alert.enable.failed": "",
   "alert.disable.failed": "",
-
   "status.device.connection": "",
   "status.security.pairing": "",
   "status.fingerprint.count": "",
@@ -136,7 +126,6 @@
   "status.tap.configure": "",
   "status.tap.authorize": "",
   "status.all.ready": "",
-
   "wizard.title": "",
   "wizard.subtitle": "",
   "wizard.step": "",
@@ -166,18 +155,15 @@
   "wizard.complete.pam": "",
   "wizard.complete.accessibility": "",
   "wizard.complete.hint": "",
-
   "feature.unlock.mac": "",
   "feature.sudo": "",
   "feature.system.auth": "",
-
   "about.uninstall": "",
   "about.uninstall.confirm": "",
   "about.uninstall.message": "",
   "about.uninstall.done": "",
   "about.uninstall.done.message": "",
   "about.uninstall.failed": "",
-
   "test.title": "",
   "test.device.not.connected": "",
   "test.connect.first": "",
@@ -186,7 +172,6 @@
   "test.success.message": "",
   "test.failed": "",
   "test.failed.message": "",
-
   "error.device.not.connected": "",
   "error.communication.failed": "",
   "error.save.pairing.failed": "",
@@ -200,11 +185,8 @@
   "error.cannot.remove.sudo": "",
   "error.cannot.remove.pam": "",
   "error.need.pam.first": "",
-
   "notification.need.accessibility": "",
   "notification.cannot.unlock": "",
-
   "ssh.generate.success": "",
-
   "settings.language": ""
 }

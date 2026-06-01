@@ -51,6 +51,14 @@ class QuickFillViewModel: ObservableObject {
     @Published var visibleRowCount = 0
 
     var onDismiss: (() -> Void)?
+    /// Fires the moment a fingerprint-gated read succeeds (OTP response back,
+    /// AUTH_REQUEST FP matched). Used by AppDelegate to mark `lastAuthFlowAt`
+    /// so the trailing 0x23 LOCK_REQUEST that the device sends 1s after touch
+    /// — and which arrives milliseconds AFTER the OTP response — gets
+    /// suppressed by the existing 3s lock-suppress window. Without this the
+    /// race between "BLE main.async clears isVerifying" and "BLE main.async
+    /// handles LOCK_REQUEST" lets the lock fire.
+    var onAuthSuccess: (() -> Void)?
     var isConfirming = false
 
     static let maxVisible = 6
@@ -203,6 +211,14 @@ class QuickFillViewModel: ObservableObject {
 
             DispatchQueue.main.async {
                 guard let self = self, self.isVerifying else { return }
+                if code != nil {
+                    // Mark auth flow active BEFORE stopVerification clears
+                    // isVerifying, so the trailing 0x23 LOCK_REQUEST (sent
+                    // by firmware at 1s after touch — typically arrives
+                    // milliseconds after this OTP response) finds either
+                    // isVerifying=true or lastAuthFlowAt fresh.
+                    self.onAuthSuccess?()
+                }
                 self.stopVerification()
                 if let code = code {
                     self.typeAndClose(code)
@@ -254,6 +270,11 @@ class QuickFillViewModel: ObservableObject {
                 guard let self = self, self.isVerifying else { return }
 
                 if approved {
+                    // Same race as OTP: trailing 0x23 LOCK_REQUEST may
+                    // arrive after the readValue completes. Mark flow active
+                    // now so handleLockRequest's lastAuthFlowAt window covers
+                    // it regardless of where in the post-match path we are.
+                    self.onAuthSuccess?()
                     // Fingerprint matched — read value and paste
                     Task {
                         let value = await QuickFillBLEHelper.readValue(entry: entry)
@@ -377,13 +398,37 @@ enum QuickFillBLEHelper {
     }
 
     private static func readAPI(entry: QuickFillEntry) async -> String? {
+        // First attempt — if KEYSTORE/AUTH cooldown still active from a prior
+        // op (recent sudo / OTP_GET / etc.) the firmware lets the secret
+        // chunk through without prompting. Otherwise the second chunk
+        // (off=32, into key region) returns SEC_ERR_WAIT_FP → readKeyEntry
+        // returns nil. In that case fall back to AUTH_REQUEST + retry.
+        if let secret = await readAPIChunked(idx: UInt8(entry.index)) {
+            return secret
+        }
+
+        // Trigger FP gate via AUTH_REQUEST (existing infrastructure pops the
+        // gate sheet on fingerprintGateRequiredNotification).
+        let authed: Bool = await withCheckedContinuation { cont in
+            BLEManager.shared.requestUnlock(timeout: 30.0) { ok in
+                cont.resume(returning: ok)
+            }
+        }
+        guard authed else { return nil }
+
+        // After AUTH success, AUTH cooldown is fresh — retry.
+        return await readAPIChunked(idx: UInt8(entry.index))
+    }
+
+    private static func readAPIChunked(idx: UInt8) async -> String? {
         let data: Data? = await withCheckedContinuation { cont in
-            BLEManager.shared.readKeyEntry(cat: .api, idx: UInt8(entry.index)) { data in
+            BLEManager.shared.readKeyEntry(cat: .api, idx: idx) { data in
                 cont.resume(returning: data)
             }
         }
-        guard let data = data, data.count > 16 else { return nil }
-        let trimmed = data[16...].prefix(while: { $0 != 0 })
+        // api_entry_t in firmware: name[32] + key[128] = 160 bytes
+        guard let data = data, data.count > 32 else { return nil }
+        let trimmed = data[32...].prefix(while: { $0 != 0 })
         return String(data: trimmed, encoding: .utf8)
     }
 }
@@ -685,10 +730,27 @@ class QuickFillPanel {
     private var panelTopY: CGFloat?
     private var cancellable: AnyCancellable?
 
+    /// Forwarded to the underlying QuickFillViewModel on `show()`. AppDelegate
+    /// sets this so `lastAuthFlowAt` updates when a fingerprint-gated read
+    /// returns — see the comment on QuickFillViewModel.onAuthSuccess for why
+    /// timing-wise this matters versus the existing isVerifying guard.
+    var onAuthSuccess: (() -> Void)?
+
     private static let panelWidth: CGFloat = 520
 
     var isVisible: Bool {
         panel?.isVisible ?? false
+    }
+
+    /// True between selection (AUTH_REQUEST sent) and verification completion.
+    /// Used by AppDelegate.handleLockRequest to suppress the long-press lock
+    /// while the user is in the middle of fingerprint-gated password access:
+    /// the firmware clears pending_auth at match (~600ms) so its own
+    /// LOCK_HOLD suppression doesn't fire, and there's no `lastAuthFlowAt`
+    /// set until pasteAndClose runs much later.
+    @MainActor
+    var isVerifying: Bool {
+        viewModel?.isVerifying ?? false
     }
 
     func show() {
@@ -698,6 +760,7 @@ class QuickFillPanel {
         vm.onDismiss = { [weak self] in
             self?.close()
         }
+        vm.onAuthSuccess = onAuthSuccess
         self.viewModel = vm
 
         let hostingView = NSHostingView(rootView: QuickFillView(viewModel: vm))

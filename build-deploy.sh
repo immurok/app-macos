@@ -132,10 +132,22 @@ build_pam_pkg() {
 
 # Build app (Menu Bar App with integrated BLE/PAM)
 build_app() {
-    log_info "Building app (v4.0 - Menu Bar)..."
+    log_info "Building app (v4.0 - Menu Bar) [universal arm64 + x86_64]..."
     cd "$SCRIPT_DIR"
-    swift build -c release
-    log_info "App build complete"
+    # swift build's `--arch arm64 --arch x86_64` flag needs the xcbuild backend
+    # which only ships with full Xcode.app. To stay CLT-friendly we build each
+    # arch separately and lipo-combine. Cross-compile from arm64 host to
+    # x86_64 works fine on Apple Silicon + CLT.
+    swift build -c release --arch arm64
+    swift build -c release --arch x86_64
+    mkdir -p .build/universal/release
+    lipo -create -output .build/universal/release/immurokApp \
+        .build/arm64-apple-macosx/release/immurokApp \
+        .build/x86_64-apple-macosx/release/immurokApp
+    lipo -create -output .build/universal/release/imk \
+        .build/arm64-apple-macosx/release/imk \
+        .build/x86_64-apple-macosx/release/imk
+    log_info "App build complete (universal: $(lipo -archs .build/universal/release/immurokApp))"
 }
 
 # Sign and deploy
@@ -146,8 +158,9 @@ sign_deploy() {
     # Ensure app bundle structure exists
     mkdir -p immurok.app/Contents/{MacOS,Resources}
 
-    # Copy executable (must be named "immurok" per Info.plist)
-    cp .build/release/immurokApp immurok.app/Contents/MacOS/immurok
+    # Copy executable (must be named "immurok" per Info.plist).
+    # Source is the lipo'd universal binary from build_app.
+    cp .build/universal/release/immurokApp immurok.app/Contents/MacOS/immurok
 
     # Copy Info.plist
     cp Resources/Info.plist immurok.app/Contents/
@@ -172,6 +185,12 @@ sign_deploy() {
     if [ -f "Resources/AppIcon.icns" ]; then
         cp Resources/AppIcon.icns immurok.app/Contents/Resources/
         log_info "App icon bundled"
+    fi
+
+    # Copy About-page logo (template PNG, tinted by accent color)
+    if [ -f "Resources/icon.png" ]; then
+        cp Resources/icon.png immurok.app/Contents/Resources/
+        log_info "About logo bundled"
     fi
 
     # Copy status bar icon template
@@ -213,10 +232,10 @@ sign_deploy() {
     log_info "App deployed to /Applications/immurok.app"
 
     # Install imk CLI
-    if [ -f ".build/release/imk" ]; then
+    if [ -f ".build/universal/release/imk" ]; then
         log_info "Installing imk CLI to /usr/local/bin..."
         sudo mkdir -p /usr/local/bin
-        sudo cp .build/release/imk /usr/local/bin/imk
+        sudo cp .build/universal/release/imk /usr/local/bin/imk
         sudo chmod 755 /usr/local/bin/imk
         log_info "imk CLI installed"
     fi

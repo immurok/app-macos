@@ -1,6 +1,49 @@
 import SwiftUI
 import ServiceManagement
 import UniformTypeIdentifiers
+import AppKit
+
+// MARK: - andOTP backup JSON entry
+//
+// andOTP (https://github.com/andOTP/andOTP) 的 plain-JSON 备份格式. 数组,
+// 每元素一条 OTP. 固件只支持 HMAC-SHA1 TOTP / 6 位 / 30 秒, 其他参数 (HOTP /
+// STEAM / SHA256 / 7-8 位 / 非 30s period) 一律 skip + 在 import confirm
+// dialog 里告知用户多少条被跳过.
+fileprivate struct AndOTPEntry: Decodable {
+    let secret: String
+    let issuer: String?
+    let label: String?
+    let digits: Int?
+    let type: String?
+    let algorithm: String?
+    let period: Int?
+}
+
+// MARK: - AppKit-backed Tooltip
+//
+// SwiftUI's `.help(_:)` doesn't reliably surface a tooltip on plain Image
+// views (no Button wrapper) on macOS 13+. We attach an NSView with
+// `toolTip` set via the standard AppKit mechanism, which always works.
+
+private struct TooltipBacking: NSViewRepresentable {
+    let text: String
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        v.toolTip = text
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.toolTip = text
+    }
+}
+
+extension View {
+    /// macOS-native tooltip on hover (~1s delay). Works on any view because
+    /// it overlays a transparent NSView with `toolTip` set.
+    func nsTooltip(_ text: String) -> some View {
+        background(TooltipBacking(text: text))
+    }
+}
 
 private func batteryIconName(level: Int) -> String {
     switch level {
@@ -12,11 +55,24 @@ private func batteryIconName(level: Int) -> String {
     }
 }
 
+/// Battery tooltip text. Shows raw voltage when firmware reports it (≥ 1.3.4),
+/// useful for cross-checking the displayed percentage against the actual cell
+/// voltage during curve calibration.
+private func batteryTooltipText(level: Int, mv: Int?) -> String {
+    let refresh = "battery.refresh.tooltip".localized
+    if let mv = mv, mv > 0 {
+        let volts = Double(mv) / 1000.0
+        return String(format: "%d%% / %.3fV — %@", level, volts, refresh)
+    }
+    return "\(level)% — \(refresh)"
+}
+
 // MARK: - Device Tab
 
 struct DeviceTabView: View {
     @ObservedObject var viewModel: AppViewModel
     @StateObject private var fpViewModel = FingerprintViewModel()
+    @State private var isRefreshingBattery = false
 
     var body: some View {
         ScrollView {
@@ -37,17 +93,37 @@ struct DeviceTabView: View {
                                 .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
                                 .frame(width: 10, height: 10)
 
-                            Text(viewModel.deviceStatusText)
+                            Text(viewModel.deviceStatusTextWithFirmware)
                                 .foregroundColor(.secondary)
 
                             Spacer()
 
                             if let level = viewModel.batteryLevel {
-                                Image(systemName: batteryIconName(level: level))
+                                Button {
+                                    guard !isRefreshingBattery else { return }
+                                    isRefreshingBattery = true
+                                    viewModel.refreshDeviceStatus {
+                                        isRefreshingBattery = false
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        if isRefreshingBattery {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .scaleEffect(0.6)
+                                                .frame(width: 14, height: 14)
+                                        } else {
+                                            Image(systemName: batteryIconName(level: level))
+                                        }
+                                        Text("\(level)%")
+                                            .font(.callout)
+                                    }
                                     .foregroundColor(level <= 10 ? .red : .secondary)
-                                Text("\(level)%")
-                                    .font(.callout)
-                                    .foregroundColor(level <= 10 ? .red : .secondary)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(batteryTooltipText(level: level, mv: viewModel.batteryVoltageMv))
+                                .disabled(!viewModel.isDeviceConnected)
                             }
                         }
                     }
@@ -116,7 +192,7 @@ struct DeviceTabView: View {
                     .padding(4)
                 }
 
-                // Pairing & Factory Reset
+                // Pairing & Unpair
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("pairing.title".localized, systemImage: "lock.shield")
@@ -141,21 +217,21 @@ struct DeviceTabView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .disabled(!viewModel.isDeviceConnected || viewModel.isPairing)
+                            .disabled(!viewModel.isDeviceConnected || viewModel.isPairing || viewModel.isDevicePaired)
 
-                            Button("reset.confirm".localized) {
-                                viewModel.factoryReset()
+                            Button("unpair.confirm".localized) {
+                                viewModel.unpair()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .disabled(!viewModel.isDeviceConnected)
+                            .disabled(!viewModel.hasLocalPairing)
                         }
 
                         if viewModel.isPairing {
                             HStack(spacing: 6) {
                                 ProgressView()
                                     .scaleEffect(0.6)
-                                Text("pairing.in.progress".localized)
+                                Text(viewModel.pairingPrompt ?? "pairing.in.progress".localized)
                                     .font(.caption)
                                     .foregroundColor(.blue)
                             }
@@ -417,7 +493,8 @@ struct KeysTabView: View {
                                 Image(systemName: "plus")
                             }
                             .buttonStyle(.borderless)
-                            .disabled(!viewModel.isDeviceConnected || keystoreVM.isAdding)
+                            .disabled(!viewModel.isDeviceConnected || keystoreVM.isAdding || keystoreVM.isAtMaxCapacity)
+                            .help(keystoreVM.isAtMaxCapacity ? "keys.full".localized : "")
 
                             Spacer()
 
@@ -474,7 +551,18 @@ struct KeysTabView: View {
                                     }
                                 }
                                 .buttonStyle(.borderless)
-                                .disabled(!viewModel.isDeviceConnected || keystoreVM.isAdding)
+                                .disabled(!viewModel.isDeviceConnected || keystoreVM.isAdding || keystoreVM.isAtMaxCapacity)
+                                .help(keystoreVM.isAtMaxCapacity ? "keys.full".localized : "")
+
+                                Button(action: { importSSHKey() }) {
+                                    HStack(spacing: 2) {
+                                        Image(systemName: "square.and.arrow.down")
+                                        Text("ssh.import".localized)
+                                    }
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(!viewModel.isDeviceConnected || keystoreVM.isAdding || keystoreVM.isAtMaxCapacity)
+                                .help(keystoreVM.isAtMaxCapacity ? "keys.full".localized : "")
                             }
 
                             if selectedCategory == .otp {
@@ -485,7 +573,8 @@ struct KeysTabView: View {
                                     }
                                 }
                                 .buttonStyle(.borderless)
-                                .disabled(!viewModel.isDeviceConnected || keystoreVM.isImporting)
+                                .disabled(!viewModel.isDeviceConnected || keystoreVM.isImporting || keystoreVM.isAtMaxCapacity)
+                                .help(keystoreVM.isAtMaxCapacity ? "keys.full".localized : "")
 
                                 Button(action: { exportOTP() }) {
                                     HStack(spacing: 2) {
@@ -724,6 +813,61 @@ struct KeysTabView: View {
         showCopiedNotification("ssh.copied".localized)
     }
 
+    private func importSSHKey() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "选择 SSH ECDSA P-256 私钥文件（OpenSSH 或 PEM 格式）"
+        // Allow any file — SSH keys often have no extension
+        panel.allowedContentTypes = []
+        panel.showsHiddenFiles = true  // ~/.ssh is hidden by default
+        guard panel.runModalOverSettings() == .OK, let url = panel.url else { return }
+
+        let imported: SSHKeyImporter.ImportedKey
+        do {
+            imported = try SSHKeyImporter.parse(fileURL: url)
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "ssh.import.failed".localized
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.runModalOverSettings()
+            return
+        }
+
+        // Prompt for a name (default to filename without extension)
+        let alert = NSAlert()
+        alert.messageText = "ssh.import".localized
+        alert.informativeText = "fingerprint: \(imported.openSSHFingerprint)\n\n请输入名称（最长 16 字节）："
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "alert.cancel".localized)
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.placeholderString = "imported-key"
+        input.stringValue = url.deletingPathExtension().lastPathComponent
+        alert.accessoryView = input
+        guard alert.runModalOverSettings() == .alertFirstButtonReturn else { return }
+        let name = input.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        // 16-byte UTF-8 cap (firmware SSH name field)
+        guard name.utf8.count <= 16 else {
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "ssh.import.failed".localized
+            a.informativeText = "名称超过 16 字节（当前 \(name.utf8.count) 字节）"
+            a.addButton(withTitle: "OK")
+            a.runModalOverSettings()
+            return
+        }
+
+        keystoreVM.gateController.successMessage = "ssh.generate.success".localized
+        keystoreVM.importSSHKey(name: name, imported: imported) { success in
+            if success {
+                showCopiedNotification("ssh.import.success".localized)
+            }
+        }
+    }
+
     private func generateSSHKey() {
         // Prompt for key name
         let alert = NSAlert()
@@ -736,7 +880,7 @@ struct KeysTabView: View {
         input.placeholderString = "my-key"
         alert.accessoryView = input
 
-        let response = alert.runModal()
+        let response = alert.runModalOverSettings()
         guard response == .alertFirstButtonReturn else { return }
 
         let name = input.stringValue.trimmingCharacters(in: .whitespaces)
@@ -782,7 +926,7 @@ struct KeysTabView: View {
                 let panel = NSSavePanel()
                 panel.allowedContentTypes = [UTType.commaSeparatedText]
                 panel.nameFieldStringValue = "otp_export.csv"
-                guard panel.runModal() == .OK, let url = panel.url else { return }
+                guard panel.runModalOverSettings() == .OK, let url = panel.url else { return }
 
                 var csv = "name,url\n"
                 for e in entries {
@@ -798,47 +942,127 @@ struct KeysTabView: View {
 
     private func importOTP() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType.commaSeparatedText]
+        panel.allowedContentTypes = [UTType.commaSeparatedText, UTType.json]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModalOverSettings() == .OK, let url = panel.url else { return }
 
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
-        let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
-
-        let startIndex = lines.first?.lowercased().starts(with: "name") == true ? 1 : 0
+        let isJSON = url.pathExtension.lowercased() == "json"
 
         var parsed: [(name: String, service: String, secret: Data)] = []
-        for line in lines[startIndex...] {
-            guard let range = line.range(of: "otpauth://") else { continue }
-            let uri = String(line[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
-            guard let components = URLComponents(string: uri),
-                  let secret = components.queryItems?.first(where: { $0.name == "secret" })?.value,
-                  let secretData = base32Decode(secret) else { continue }
+        var skippedCount = 0
 
-            let issuer = components.queryItems?.first(where: { $0.name == "issuer" })?.value ?? ""
-            let path = (components.path as NSString).lastPathComponent
-            let parts = path.split(separator: ":", maxSplits: 1)
-            let name: String
-            let service: String
-            if parts.count == 2 {
-                service = issuer.isEmpty ? String(parts[0]).removingPercentEncoding ?? String(parts[0]) : issuer
-                name = String(parts[1]).removingPercentEncoding ?? String(parts[1])
-            } else {
-                name = path.removingPercentEncoding ?? path
-                service = issuer
+        if isJSON {
+            guard let data = try? Data(contentsOf: url) else { return }
+            guard let entries = try? JSONDecoder().decode([AndOTPEntry].self, from: data) else {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "keys.import.failed".localized
+                alert.informativeText = "keys.import.unknown.format".localized
+                alert.addButton(withTitle: "OK")
+                alert.runModalOverSettings()
+                return
             }
+            for entry in entries {
+                // 固件仅支持标准 TOTP / HMAC-SHA1 / 6 位 / 30 秒, 其他 skip.
+                let type = (entry.type ?? "TOTP").uppercased()
+                let algo = (entry.algorithm ?? "SHA1").uppercased()
+                guard type == "TOTP",
+                      algo == "SHA1",
+                      (entry.digits ?? 6) == 6,
+                      (entry.period ?? 30) == 30 else {
+                    skippedCount += 1
+                    continue
+                }
+                // andOTP secret 有时带 base32 padding "=", 去掉再解码.
+                let cleaned = entry.secret.replacingOccurrences(of: "=", with: "")
+                guard let secretData = base32Decode(cleaned), !secretData.isEmpty else {
+                    skippedCount += 1
+                    continue
+                }
+                let label = (entry.label ?? "").trimmingCharacters(in: .whitespaces)
+                let issuer = (entry.issuer ?? "").trimmingCharacters(in: .whitespaces)
+                let name: String
+                let service: String
+                if !issuer.isEmpty {
+                    service = issuer
+                    name = label
+                } else if let colonIdx = label.firstIndex(of: ":") {
+                    // 没 issuer 时尝试从 label "Service:Account" 拆分,
+                    // 跟 otpauth://path 的语义一致.
+                    service = String(label[..<colonIdx]).trimmingCharacters(in: .whitespaces)
+                    name = String(label[label.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+                } else {
+                    service = ""
+                    name = label
+                }
+                parsed.append((name: name, service: service, secret: secretData))
+            }
+        } else {
+            // CSV with otpauth:// URI per line (existing format)
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else { return }
+            let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+            let startIndex = lines.first?.lowercased().starts(with: "name") == true ? 1 : 0
 
-            parsed.append((name: name, service: service, secret: secretData))
+            for line in lines[startIndex...] {
+                guard let range = line.range(of: "otpauth://") else { continue }
+                let uri = String(line[range.lowerBound...]).trimmingCharacters(in: .whitespaces)
+                guard let components = URLComponents(string: uri),
+                      let secret = components.queryItems?.first(where: { $0.name == "secret" })?.value,
+                      let secretData = base32Decode(secret) else { continue }
+
+                let issuer = components.queryItems?.first(where: { $0.name == "issuer" })?.value ?? ""
+                let path = (components.path as NSString).lastPathComponent
+                let parts = path.split(separator: ":", maxSplits: 1)
+                let name: String
+                let service: String
+                if parts.count == 2 {
+                    service = issuer.isEmpty ? String(parts[0]).removingPercentEncoding ?? String(parts[0]) : issuer
+                    name = String(parts[1]).removingPercentEncoding ?? String(parts[1])
+                } else {
+                    name = path.removingPercentEncoding ?? path
+                    service = issuer
+                }
+
+                parsed.append((name: name, service: service, secret: secretData))
+            }
         }
 
-        guard !parsed.isEmpty else { return }
+        guard !parsed.isEmpty else {
+            if skippedCount > 0 {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "keys.import.failed".localized
+                alert.informativeText = "keys.import.all.skipped".localized(skippedCount)
+                alert.addButton(withTitle: "OK")
+                alert.runModalOverSettings()
+            }
+            return
+        }
+
+        // Pre-check: would this exceed the firmware cap (KEYSTORE_OTP_MAX = 128)?
+        // Without this, writes past the cap silently fail (commit returns -1)
+        // but the App still walks through "import" UI showing apparent success.
+        let remaining = keystoreVM.remainingCapacity
+        if parsed.count > remaining {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "keys.import.exceeds.title".localized
+            alert.informativeText = "keys.import.exceeds.message".localized(parsed.count, remaining, KeystoreCategory.otp.maxEntries)
+            alert.addButton(withTitle: "OK")
+            alert.runModalOverSettings()
+            return
+        }
 
         let alert = NSAlert()
         alert.messageText = "keys.import.confirm".localized
-        alert.informativeText = "keys.import.count".localized(parsed.count)
+        var info = "keys.import.count".localized(parsed.count)
+        if skippedCount > 0 {
+            info += " " + "keys.import.skipped".localized(skippedCount)
+        }
+        alert.informativeText = info
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "alert.cancel".localized)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModalOverSettings() == .alertFirstButtonReturn else { return }
 
         keystoreVM.importOTPEntries(parsed) { count in
             DispatchQueue.main.async {
@@ -1509,171 +1733,218 @@ struct PermissionsTabView: View {
 
     // Feature toggles stored in UserDefaults
     @AppStorage("immurok.screenUnlockEnabled") private var screenUnlockEnabled = true
+    @AppStorage("immurok.screenLockEnabled") private var screenLockEnabled = false
     @AppStorage("immurok.sudoAuthEnabled") private var sudoAuthEnabled = false
     @AppStorage("immurok.authorizationEnabled") private var authorizationEnabled = false
     @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
     @AppStorage("immurok.cliEnabled") private var cliEnabled = true
     @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
+    // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
+    @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
+
+    // macOS built-in system sounds (/System/Library/Sounds/*.aiff)
+    private static let systemSounds = [
+        "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero",
+        "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"
+    ]
 
     var body: some View {
         VStack(spacing: 16) {
             // 屏幕解锁
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Header with toggle
-                    HStack {
-                        Image(systemName: "lock.open")
-                            .frame(width: 20)
-                            .foregroundColor(.accentColor)
-                        Text("permission.screen.unlock".localized)
-                            .font(.headline)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { screenUnlockEnabled },
-                            set: { tryEnableScreenUnlock($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-                }
-                .padding(4)
+                permissionRow(
+                    icon: "lock.open",
+                    titleKey: "permission.screen.unlock",
+                    trailing: {
+                        if screenUnlockEnabled {
+                            unlockSoundPicker
+                        }
+                    },
+                    isOn: Binding(
+                        get: { screenUnlockEnabled },
+                        set: { tryEnableScreenUnlock($0) }
+                    )
+                )
+            }
+
+            // 屏幕锁定（长按 ~2s）
+            GroupBox {
+                permissionRow(
+                    icon: "lock",
+                    titleKey: "permission.screen.lock",
+                    hintKey: "permission.screen.lock.hint",
+                    isOn: $screenLockEnabled
+                )
             }
 
             // 终端 sudo 授权
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Header with toggle
-                    HStack {
-                        Image(systemName: "terminal")
-                            .frame(width: 20)
-                            .foregroundColor(.accentColor)
-                        Text("permission.sudo".localized)
-                            .font(.headline)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { sudoAuthEnabled },
-                            set: { tryEnableSudoAuth($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-                }
-                .padding(4)
+                permissionRow(
+                    icon: "terminal",
+                    titleKey: "permission.sudo",
+                    isOn: Binding(
+                        get: { sudoAuthEnabled },
+                        set: { tryEnableSudoAuth($0) }
+                    )
+                )
             }
 
             // 界面认证授权（系统设置等）
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Header with toggle
-                    HStack {
-                        Image(systemName: "macwindow.badge.plus")
-                            .frame(width: 20)
-                            .foregroundColor(.accentColor)
-                        Text("permission.authorization".localized)
-                            .font(.headline)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { authorizationEnabled },
-                            set: { tryEnableSystemAuth($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-                }
-                .padding(4)
+                permissionRow(
+                    icon: "macwindow.badge.plus",
+                    titleKey: "permission.authorization",
+                    hintKey: "permission.authorization.hint",
+                    isOn: Binding(
+                        get: { authorizationEnabled },
+                        set: { tryEnableSystemAuth($0) }
+                    )
+                )
             }
 
-            // SSH Agent
+            // SSH Agent — info icon shows export command + click copies it
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "network")
-                            .frame(width: 20)
-                            .foregroundColor(.accentColor)
-                        Text("permission.ssh.agent".localized)
-                            .font(.headline)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { sshAgentEnabled },
-                            set: { toggleSSHAgent($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-
-                    HStack(spacing: 4) {
-                        Text("export SSH_AUTH_SOCK=\(SSHAgentServer.shared.socketPath)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        Button(action: {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString("export SSH_AUTH_SOCK=\(SSHAgentServer.shared.socketPath)", forType: .string)
-                        }) {
-                            Image(systemName: "doc.on.doc")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-                .padding(4)
+                permissionRow(
+                    icon: "network",
+                    titleKey: "permission.ssh.agent",
+                    hint: "export SSH_AUTH_SOCK=\(SSHAgentServer.shared.socketPath)",
+                    onInfoClick: {
+                        let cmd = "export SSH_AUTH_SOCK=\(SSHAgentServer.shared.socketPath)"
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(cmd, forType: .string)
+                    },
+                    isOn: Binding(
+                        get: { sshAgentEnabled },
+                        set: { toggleSSHAgent($0) }
+                    )
+                )
             }
 
             // imk CLI
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "command")
-                            .frame(width: 20)
-                            .foregroundColor(.accentColor)
-                        Text("permission.cli".localized)
-                            .font(.headline)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { cliEnabled },
-                            set: { toggleCLI($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-                }
-                .padding(4)
+                permissionRow(
+                    icon: "command",
+                    titleKey: "permission.cli",
+                    isOn: Binding(
+                        get: { cliEnabled },
+                        set: { toggleCLI($0) }
+                    )
+                )
             }
 
-            // Quick Fill (Ctrl+\)
+            // Quick Fill (hotkey recorder sits left of the toggle)
             GroupBox {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Image(systemName: "command.square")
-                            .frame(width: 20)
-                            .foregroundColor(.accentColor)
-                        Text("permission.quickfill".localized)
-                            .font(.headline)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { quickFillEnabled },
-                            set: { toggleQuickFill($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                    }
-
-                    HStack {
-                        Text("permission.quickfill.hint".localized)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        HotkeyRecorderButton()
-                    }
-                }
-                .padding(4)
+                permissionRow(
+                    icon: "command.square",
+                    titleKey: "permission.quickfill",
+                    hintKey: "permission.quickfill.hint",
+                    trailing: { HotkeyRecorderButton() },
+                    isOn: Binding(
+                        get: { quickFillEnabled },
+                        set: { toggleQuickFill($0) }
+                    )
+                )
             }
-
-            Spacer()
         }
-        .padding(20)
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 20)
+    }
+
+    // MARK: - Unlock Sound Picker
+
+    /// Inline picker shown next to the screen-unlock toggle. Selecting a
+    /// non-silent option triggers an immediate preview play.
+    private var unlockSoundPicker: some View {
+        Picker("", selection: $unlockSound) {
+            Text("permission.screen.unlock.sound.silent".localized).tag("")
+            Divider()
+            ForEach(Self.systemSounds, id: \.self) { name in
+                Text(name).tag(name)
+            }
+        }
+        .labelsHidden()
+        .frame(maxWidth: 130)
+        .onChange(of: unlockSound) { newValue in
+            if !newValue.isEmpty {
+                NSSound(named: newValue)?.play()
+            }
+        }
+    }
+
+    // MARK: - Row Layout
+
+    /// Standard permission row: icon · title · info-tooltip · [trailing] · toggle
+    /// - `hintKey`: localized hint shown as hover tooltip on the (i) icon
+    /// - `hint`: raw hint string (overrides hintKey when both given; for
+    ///           dynamic content like file paths)
+    /// - `onInfoClick`: makes the (i) clickable; common use is "click to
+    ///                  copy the hint to clipboard"
+    /// - `trailing`: optional view rendered just before the toggle (e.g.
+    ///               HotkeyRecorderButton for quick-fill)
+    @ViewBuilder
+    private func permissionRow<Trailing: View>(
+        icon: String,
+        titleKey: String,
+        hintKey: String? = nil,
+        hint: String? = nil,
+        onInfoClick: (() -> Void)? = nil,
+        @ViewBuilder trailing: () -> Trailing,
+        isOn: Binding<Bool>
+    ) -> some View {
+        HStack {
+            Image(systemName: icon)
+                .frame(width: 20)
+                .foregroundColor(.accentColor)
+            Text(titleKey.localized)
+                .font(.headline)
+            let resolvedHint = hint ?? hintKey?.localized
+            if let resolvedHint = resolvedHint {
+                // Use AppKit-backed tooltip (nsTooltip) — SwiftUI .help()
+                // doesn't reliably show on plain Image views.
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .nsTooltip(resolvedHint)
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .onTapGesture {
+                        onInfoClick?()
+                    }
+            }
+            Spacer()
+            trailing()
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+        }
+        .padding(4)
+    }
+
+    /// Convenience overload without trailing view.
+    @ViewBuilder
+    private func permissionRow(
+        icon: String,
+        titleKey: String,
+        hintKey: String? = nil,
+        hint: String? = nil,
+        onInfoClick: (() -> Void)? = nil,
+        isOn: Binding<Bool>
+    ) -> some View {
+        permissionRow(
+            icon: icon,
+            titleKey: titleKey,
+            hintKey: hintKey,
+            hint: hint,
+            onInfoClick: onInfoClick,
+            trailing: { EmptyView() },
+            isOn: isOn
+        )
     }
 
     // MARK: - Toggle Handlers
@@ -1737,7 +2008,7 @@ struct PermissionsTabView: View {
         alert.addButton(withTitle: actionTitle)
         alert.addButton(withTitle: "alert.cancel".localized)
 
-        if alert.runModal() == .alertFirstButtonReturn {
+        if alert.runModalOverSettings() == .alertFirstButtonReturn {
             action()
         }
     }
@@ -1746,7 +2017,7 @@ struct PermissionsTabView: View {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.runModal()
+        alert.runModalOverSettings()
     }
 }
 
@@ -1989,36 +2260,41 @@ struct AboutTabView: View {
     @State private var isHoveringGitHub = false
     @State private var isHoveringUninstall = false
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0"
+    }
+
     private var versionText: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        return "v\(version) (\(build))"
+        return "v\(appVersion) (\(build))"
+    }
+
+    private var logoImage: NSImage {
+        if let url = Bundle.main.url(forResource: "icon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            img.isTemplate = true
+            return img
+        }
+        return NSApplication.shared.applicationIconImage
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // App Icon and Info - compact
             VStack(spacing: 8) {
-                Image(systemName: "touchid")
-                    .font(.system(size: 48))
+                Image(nsImage: logoImage)
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .frame(width: 56, height: 56)
                     .foregroundColor(.accentColor)
 
-                Text("immurok")
+                Text("immurok app (ver \(appVersion))")
                     .font(.title2)
                     .fontWeight(.bold)
 
                 Text(versionText)
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                if let fwVersion = viewModel.firmwareVersion {
-                    Text("firmware.version".localized(fwVersion))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Text("app.description".localized)
-                    .font(.caption)
                     .foregroundColor(.secondary)
             }
             .padding(.top, 16)
@@ -2126,7 +2402,7 @@ struct AboutTabView: View {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.runModal()
+        alert.runModalOverSettings()
     }
 }
 

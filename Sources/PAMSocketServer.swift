@@ -7,6 +7,13 @@
 
 import Foundation
 
+/// Whether the overlay's Reject button was clicked. Timeout is folded into
+/// reject by the server response logic — the user-visible behavior matches.
+enum UserAuthIntent {
+    case none
+    case reject
+}
+
 class PAMSocketServer {
     private let socketPath: String
     private var serverSocket: Int32 = -1
@@ -20,8 +27,15 @@ class PAMSocketServer {
 
     // Pre-authorization: auto-approve PAM requests within a time window
     private var preAuthExpiry: Date?
-    private var preAuthService: String?  // nil = any service
+    private var preAuthServices: Set<String>?  // nil = any service (legacy; new code should always pass services)
     private let preAuthLock = NSLock()
+
+    // Serialize PAM AUTH requests. Concurrent requests overwrite the global
+    // pendingRequestSemaphore / onFingerprintAttemptFailed handler, causing
+    // wrong-socket RETRY routing and DoS on the earlier request. Only one
+    // AUTH at a time; the second is rejected with BUSY (PAM module retries).
+    private var authInFlight: Bool = false
+    private let authInFlightLock = NSLock()
 
     // Enrollment status tracking
     private var enrollStatus: EnrollEvent = .waiting
@@ -29,6 +43,12 @@ class PAMSocketServer {
     private var enrollTotal: Int = 0
     private var enrollActive: Bool = false
     private let enrollLock = NSLock()
+
+    /// Fired right before an OK response is written for any AUTH path
+    /// (pre-auth consumed OR BLE-backed AUTH success). AppDelegate uses this
+    /// to refresh its lock-suppression window so a held finger after a sudo
+    /// auth doesn't fall into the 0x23 long-press lock.
+    var onAuthSuccess: (() -> Void)?
 
     init(bleManager: BLEManager) {
         self.bleManager = bleManager
@@ -56,16 +76,31 @@ class PAMSocketServer {
     /// Set pre-authorization window (auto-approve PAM requests within duration)
     /// - Parameters:
     ///   - duration: Time window in seconds
-    ///   - service: If non-nil, only consume for this PAM service
-    func setPreAuthorization(duration: TimeInterval = 3.0, service: String? = nil) {
+    ///   - services: Set of PAM service names that may consume this window.
+    ///               nil means "any service" (legacy/unused — callers should
+    ///               always pass an explicit set to avoid cross-service drift).
+    func setPreAuthorization(duration: TimeInterval = 3.0, services: Set<String>? = nil) {
         preAuthLock.lock()
         defer { preAuthLock.unlock() }
         preAuthExpiry = Date().addingTimeInterval(duration)
-        preAuthService = service
-        if let s = service {
-            NSLog("PAMSocketServer: Pre-authorization set for %.1f seconds (service=%@)", duration, s)
+        preAuthServices = services
+        if let s = services {
+            NSLog("PAMSocketServer: Pre-authorization set for %.1f s (services=%@)", duration, s.sorted().joined(separator: ","))
         } else {
-            NSLog("PAMSocketServer: Pre-authorization set for %.1f seconds", duration)
+            NSLog("PAMSocketServer: Pre-authorization set for %.1f s (any service)", duration)
+        }
+    }
+
+    /// Cancel any active pre-authorization without consuming it.
+    /// Used when a long-press lock request supersedes a just-armed pre-auth
+    /// from a 0x21 fingerprint match.
+    func clearPreAuthorization() {
+        preAuthLock.lock()
+        defer { preAuthLock.unlock() }
+        if preAuthExpiry != nil {
+            preAuthExpiry = nil
+            preAuthServices = nil
+            NSLog("PAMSocketServer: Pre-authorization cleared")
         }
     }
 
@@ -75,17 +110,17 @@ class PAMSocketServer {
         defer { preAuthLock.unlock() }
         guard let expiry = preAuthExpiry else { return false }
         if Date() < expiry {
-            // If a specific service is required, check it matches
-            if let required = preAuthService, required != service {
-                return false  // Service mismatch — don't consume
+            // If a specific set of services is required, check membership
+            if let allowed = preAuthServices, !allowed.contains(service) {
+                return false  // Service not in allowed set — don't consume
             }
             preAuthExpiry = nil  // Consume the pre-auth
-            preAuthService = nil
+            preAuthServices = nil
             NSLog("PAMSocketServer: Pre-authorization consumed (service=%@)", service)
             return true
         }
         preAuthExpiry = nil  // Expired
-        preAuthService = nil
+        preAuthServices = nil
         return false
     }
 
@@ -120,7 +155,7 @@ class PAMSocketServer {
         enrollActive = true
         enrollStatus = .waiting
         enrollCurrent = 0
-        enrollTotal = 6  // Match firmware ENROLL_CAPTURE_COUNT
+        enrollTotal = 12  // Match firmware FP_ENROLL_CAPTURES (overwritten by first 0x11 status frame anyway)
     }
 
     func endEnrollment() {
@@ -261,6 +296,12 @@ class PAMSocketServer {
             return
         case "AUTH":
             break  // Continue to auth handling below
+        case "AGENT_APPROVE":
+            // Body is everything after the first colon — the command may
+            // legitimately contain ':', so we re-join the split parts.
+            let cmdString = parts.dropFirst().joined(separator: ":")
+            handleAgentApprove(clientSocket, command: cmdString)
+            return
         default:
             NSLog("PAMSocketServer: Unknown command: %@", command)
             sendResponse(clientSocket, response: "ERROR")
@@ -289,8 +330,28 @@ class PAMSocketServer {
         // Check pre-authorization first (user already verified fingerprint)
         if consumePreAuthorization(service: service) {
             NSLog("PAMSocketServer: Auth approved via pre-authorization for %@", user)
+            onAuthSuccess?()
             sendResponse(clientSocket, response: "OK")
             return
+        }
+
+        // Serialize AUTH path: only one BLE-backed AUTH at a time. Concurrent
+        // requests previously overwrote pendingRequestSemaphore /
+        // onFingerprintAttemptFailed, causing wrong-socket RETRY routing and
+        // DoS on whichever AUTH started first. PAM module retries on BUSY.
+        authInFlightLock.lock()
+        if authInFlight {
+            authInFlightLock.unlock()
+            NSLog("PAMSocketServer: AUTH busy (another request in flight), denying")
+            sendResponse(clientSocket, response: "BUSY")
+            return
+        }
+        authInFlight = true
+        authInFlightLock.unlock()
+        defer {
+            authInFlightLock.lock()
+            authInFlight = false
+            authInFlightLock.unlock()
         }
 
         // Check BLE device connection and verification
@@ -312,10 +373,58 @@ class PAMSocketServer {
         pendingRequestApproved = false
         pendingLock.unlock()
 
-        // Hook fingerprint failure to send RETRY to PAM module
+        // Classify the originator. We only show the on-screen overlay when the
+        // request comes from an AI agent (`imk run --agent ...` marker, or a
+        // known agent binary in the parent chain). Manual sudo / ssh from a
+        // terminal already implies the user knows what they initiated; an
+        // extra HUD would just be noise.
+        let caller = AuthCallerClassifier.classify(socketFD: clientSocket)
+        let showOverlay: Bool
+        let agentCommand: String?
+        switch caller {
+        case .agent(let cmd):
+            showOverlay = true
+            agentCommand = cmd
+            NSLog("PAMSocketServer: Auth originated from AI agent — showing overlay (cmd=%@)",
+                  cmd ?? "<unknown>")
+        case .manual:
+            showOverlay = false
+            agentCommand = nil
+            NSLog("PAMSocketServer: Auth originated from manual user action — overlay suppressed")
+        }
+
+        // User-action intent — captured by overlay button callbacks, read
+        // after BLE wait returns. Wrapped so closures can mutate. Memory
+        // ordering is provided by the semaphore signal that follows
+        // cancelUnlock().
+        final class IntentBox { var value: UserAuthIntent = .none }
+        let intent = IntentBox()
+
+        if showOverlay {
+            DispatchQueue.main.async { [weak self] in
+                AuthRequestOverlay.shared.show(
+                    user: user,
+                    service: service,
+                    command: agentCommand,
+                    timeout: 30.0,
+                    onReject: { [weak self] in
+                        NSLog("PAMSocketServer: Auth REJECTED by user — will kill sudo")
+                        intent.value = .reject
+                        self?.bleManager.cancelUnlock()
+                    }
+                )
+            }
+        }
+
+        // Hook fingerprint failure to send RETRY to PAM module + update overlay
         let previousAttemptFailed = bleManager.onFingerprintAttemptFailed
         bleManager.onFingerprintAttemptFailed = { [weak self] remaining in
             self?.sendResponse(clientSocket, response: "RETRY:\(remaining)")
+            if showOverlay {
+                DispatchQueue.main.async {
+                    AuthRequestOverlay.shared.reportRetry(remaining: remaining)
+                }
+            }
         }
 
         // Request unlock from device (wait for fingerprint)
@@ -352,6 +461,9 @@ class PAMSocketServer {
 
         if waitResult == .timedOut && !approved {
             NSLog("PAMSocketServer: Auth timeout waiting for device")
+            if showOverlay {
+                DispatchQueue.main.async { AuthRequestOverlay.shared.dismiss(status: .timedOut) }
+            }
             sendResponse(clientSocket, response: "TIMEOUT")
             return
         }
@@ -364,10 +476,28 @@ class PAMSocketServer {
         let response: String
         if authResult {
             response = "OK"
-        } else if isTimeout {
-            response = "TIMEOUT"
+            onAuthSuccess?()
+        } else if intent.value == .reject || isTimeout {
+            // User clicked Reject OR didn't act in time — both kill sudo.
+            // Treating timeout as reject matches user expectation: "I walked
+            // away, I don't want this agent's command to run".
+            response = "REJECT"
         } else {
+            // Fingerprint mismatch exhausted retries / device error / other
+            // failure — fall through to password (sudo's normal fallback).
             response = "DENY"
+        }
+
+        if showOverlay {
+            DispatchQueue.main.async {
+                let status: AuthRequestState.Status
+                switch response {
+                case "OK":              status = .approved
+                case "TIMEOUT":         status = .timedOut
+                default:                status = .denied
+                }
+                AuthRequestOverlay.shared.dismiss(status: status)
+            }
         }
 
         NSLog("PAMSocketServer: Auth result for %@: %@", user, response)
@@ -378,6 +508,110 @@ class PAMSocketServer {
         _ = response.withCString { ptr in
             send(socket, ptr, strlen(ptr), 0)
         }
+    }
+
+    // MARK: - Agent Approval Command
+
+    /// `imk run --agent` calls this BEFORE launching the wrapped command. We
+    /// surface the overlay with the command string, wait for fingerprint
+    /// match (or close-button reject / timeout), then arm a 10-second sudo
+    /// pre-auth window. Required because firmware's CMD_AUTH_REQUEST (used
+    /// by sudo PAM) unconditionally re-enters the FP gate even when
+    /// FP_CAT_AUTH cooldown is active — without this software window,
+    /// every wrapped sudo would prompt for a second touch right after the
+    /// AGENT_APPROVE overlay completes. 10s is tight enough that
+    /// `sudo -k` outside the launch burst restores fresh-fingerprint
+    /// behavior.
+    private func handleAgentApprove(_ clientSocket: Int32, command: String) {
+        NSLog("PAMSocketServer: AGENT_APPROVE for command: %@", command)
+
+        guard bleManager.deviceState.isConnected, bleManager.isDeviceVerified else {
+            NSLog("PAMSocketServer: AGENT_APPROVE rejected — device not ready")
+            sendResponse(clientSocket, response: "ERROR")
+            return
+        }
+
+        // Reuse the AUTH busy lock so we never run two auths concurrently.
+        authInFlightLock.lock()
+        if authInFlight {
+            authInFlightLock.unlock()
+            sendResponse(clientSocket, response: "BUSY")
+            return
+        }
+        authInFlight = true
+        authInFlightLock.unlock()
+        defer {
+            authInFlightLock.lock()
+            authInFlight = false
+            authInFlightLock.unlock()
+        }
+
+        final class IntentBox { var value: UserAuthIntent = .none }
+        let intent = IntentBox()
+
+        // Heuristic: if the wrapped command is `imk get`, `imk run -- imk get`,
+        // or otherwise looks like a direct secret read, surface it with the
+        // secret-access overlay variant (key icon + amber accent + distinct
+        // copy) so the user notices it's a key access, not a benign command
+        // run. Anything else stays on the default command-run treatment.
+        let kind = AuthRequestOverlay.classify(command: command)
+
+        DispatchQueue.main.async { [weak self] in
+            AuthRequestOverlay.shared.show(
+                user: NSUserName(),
+                service: "agent",
+                command: command,
+                kind: kind,
+                timeout: 30.0,
+                onReject: { [weak self] in
+                    NSLog("PAMSocketServer: AGENT_APPROVE rejected by user")
+                    intent.value = .reject
+                    self?.bleManager.cancelUnlock()
+                }
+            )
+        }
+
+        // Wait for fingerprint result via BLE.
+        let semaphore = DispatchSemaphore(value: 0)
+        var bleResult = false
+        bleManager.requestUnlock(timeout: 30.0) { success in
+            bleResult = success
+            semaphore.signal()
+        }
+        let waitResult = semaphore.wait(timeout: .now() + 35)
+
+        let approved = (waitResult == .success)
+            && bleResult
+            && intent.value != .reject
+
+        let response: String
+        if approved {
+            response = "OK"
+            // 10s sudo pre-auth bridge: covers the latency between
+            // AGENT_APPROVE returning and the wrapped command's sudo
+            // hitting PAM. Firmware does NOT short-circuit
+            // CMD_AUTH_REQUEST on cooldown (only KEY_SIGN etc. ride
+            // FP_CAT_AUTH cooldown via the && check), so without
+            // this software window every wrapped sudo would
+            // re-prompt for fingerprint right after the overlay.
+            // 10s is tight enough that sudo -k outside the launch
+            // burst restores fresh-fingerprint behavior.
+            setPreAuthorization(
+                duration: 10,
+                services: ["sudo", "sudo_local", "auth-gui"]
+            )
+        } else {
+            response = "REJECT"
+        }
+
+        DispatchQueue.main.async {
+            AuthRequestOverlay.shared.dismiss(
+                status: approved ? .approved : .denied
+            )
+        }
+
+        NSLog("PAMSocketServer: AGENT_APPROVE result: %@", response)
+        sendResponse(clientSocket, response: response)
     }
 
     // MARK: - Status Command

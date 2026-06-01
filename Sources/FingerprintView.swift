@@ -254,28 +254,137 @@ struct FingerprintIconView: View {
     }
 }
 
+// MARK: - Enrollment Step Helpers
+
+/// 12-step guided enrollment offset map (椭圆偏移量，px).
+/// progress 1..4: 正中 / 5..7: 左偏 / 8..10: 右偏 / 11: 上偏 / 12: 下偏
+/// Out-of-range progress (0 pre-start, >12 post-complete) returns .zero.
+fileprivate func enrollOffsetForStep(_ progress: Int) -> CGSize {
+    switch progress {
+    case 1...4:  return .zero
+    case 5...7:  return CGSize(width: -16, height: 0)
+    case 8...10: return CGSize(width: 16, height: 0)
+    case 11:     return CGSize(width: 0, height: -16)
+    case 12:     return CGSize(width: 0, height: 16)
+    default:     return .zero
+    }
+}
+
+/// SF Symbol name for direction arrow at given step.
+fileprivate func enrollArrowSymbolForStep(_ progress: Int) -> String {
+    switch progress {
+    case 1...4:  return "arrow.up"
+    case 5...7:  return "arrow.left"
+    case 8...10: return "arrow.right"
+    case 11:     return "arrow.up"
+    case 12:     return "arrow.down"
+    default:     return "arrow.up"
+    }
+}
+
+/// Arrow position offset relative to the 60×80 ellipse (椭圆外侧).
+/// Direction-aware: arrow sits outside the ellipse in the same direction
+/// the user should tilt toward.
+fileprivate func enrollArrowOffsetForStep(_ progress: Int) -> CGSize {
+    switch progress {
+    case 1...4:  return CGSize(width: 0, height: -55)   // 顶部居中
+    case 5...7:  return CGSize(width: -55, height: 0)   // 左侧
+    case 8...10: return CGSize(width: 55, height: 0)    // 右侧
+    case 11:     return CGSize(width: 0, height: -55)   // 顶部
+    case 12:     return CGSize(width: 0, height: 55)    // 底部
+    default:     return CGSize(width: 0, height: -55)
+    }
+}
+
+/// Localization key for the step's primary title text.
+fileprivate func enrollTitleKeyForStep(_ progress: Int) -> String {
+    switch progress {
+    case 1:      return "enroll.step.center.first"
+    case 2...4:  return "enroll.step.center.keep"
+    case 5:      return "enroll.step.left.first"
+    case 6...7:  return "enroll.step.left.keep"
+    case 8:      return "enroll.step.right.first"
+    case 9...10: return "enroll.step.right.keep"
+    case 11:     return "enroll.step.up"
+    case 12:     return "enroll.step.down"
+    default:     return "enroll.step.center.first"
+    }
+}
+
+/// True for the 4 steps where the angle category changes (用于颜色闪烁触发).
+/// Step 5: 正中→左, Step 8: 左→右, Step 11: 右→上, Step 12: 上→下.
+fileprivate func enrollIsTransitionStep(_ progress: Int) -> Bool {
+    progress == 5 || progress == 8 || progress == 11 || progress == 12
+}
+
 // MARK: - Enrollment Sheet
 
 struct EnrollmentSheet: View {
     @ObservedObject var viewModel: FingerprintViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var arrowOpacity: Double = 1.0
+    @State private var transitionFlash: Bool = false
+
+    /// Step the user should perform NEXT (1..12).
+    /// `enrollmentProgress` 是已完成捕获帧数; UI 要提示下一帧姿势, 所以 +1.
+    /// progress=0 (init) → 1; progress=12 (完成) → 12.
+    private var animProgress: Int {
+        min(max(viewModel.enrollmentProgress + 1, 1), 12)
+    }
+
+    private var isTransitionStep: Bool {
+        enrollIsTransitionStep(animProgress)
+    }
+
+    /// 正中阶段 (1..4) 不显示方向箭头, 避免被误读为"向上偏移".
+    private var showArrow: Bool {
+        animProgress >= 5
+    }
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Fingerprint animation area
+        VStack(spacing: 20) {
+            // sensor 圆 + 偏移椭圆 + 方向箭头
             ZStack {
+                // 背景圆（不变）
                 Circle()
                     .fill(Color(NSColor.controlBackgroundColor))
                     .frame(width: 120, height: 120)
 
-                Image(systemName: "touchid")
-                    .font(.system(size: 56))
-                    .foregroundColor(viewModel.enrollmentProgress > 0 ? .accentColor : .secondary)
-                    .opacity(viewModel.isEnrolling ? 1.0 : 0.5)
+                // pulse 圆（不变，等待手指视觉提示）
+                Circle()
+                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
+                    .frame(width: 60, height: 60)
+                    .scaleEffect(pulseScale)
+                    .opacity(2.0 - Double(pulseScale))
+
+                // 手指椭圆（按 progress 偏移）
+                RoundedRectangle(cornerRadius: 30)
+                    .fill(transitionFlash ? Color.orange : Color.accentColor)
+                    .frame(width: 60, height: 80)
+                    .offset(enrollOffsetForStep(animProgress))
+                    .opacity(viewModel.enrollmentProgress > 0 ? 1.0 : 0.5)
+                    .animation(.easeInOut(duration: 0.3), value: animProgress)
+
+                // 方向箭头（位置 + symbol 都按 progress 切换, 正中阶段隐藏）
+                Image(systemName: enrollArrowSymbolForStep(animProgress))
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.accentColor)
+                    .offset(enrollArrowOffsetForStep(animProgress))
+                    .opacity(showArrow ? arrowOpacity : 0)
+                    .animation(.easeInOut(duration: 0.3), value: animProgress)
             }
 
-            Text(viewModel.enrollmentStatus)
+            // 主步骤标题（切换步加粗）
+            Text(enrollTitleKeyForStep(animProgress).localized)
                 .font(.headline)
+                .fontWeight(isTransitionStep ? .semibold : .regular)
+                .multilineTextAlignment(.center)
+
+            // 现有 status text（waiting / captured / lift_finger 等动态文案）
+            Text(viewModel.enrollmentStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
             ProgressView(value: Double(viewModel.enrollmentProgress), total: Double(viewModel.enrollmentTotal))
@@ -285,16 +394,35 @@ struct EnrollmentSheet: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            HStack(spacing: 16) {
-                Button("alert.cancel".localized) {
-                    viewModel.cancelEnrollment()
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
+            Button("alert.cancel".localized) {
+                viewModel.cancelEnrollment()
+                dismiss()
             }
+            .keyboardShortcut(.cancelAction)
         }
         .padding(32)
-        .frame(width: 300, height: 320)
+        .frame(width: 300, height: 380)
+        .onChange(of: viewModel.enrollmentProgress) { newProgress in
+            if enrollIsTransitionStep(newProgress) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    transitionFlash = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        transitionFlash = false
+                    }
+                }
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                pulseScale = 1.6
+            }
+            // 箭头脉动节奏（0.8s 周期）
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                arrowOpacity = 0.4
+            }
+        }
     }
 }
 
@@ -308,7 +436,7 @@ class FingerprintViewModel: ObservableObject {
     @Published var isEnrolling = false
     @Published var enrollmentStatus = ""
     @Published var enrollmentProgress = 0
-    @Published var enrollmentTotal = 12  // Dual-slot: 2 rounds × 6 captures
+    @Published var enrollmentTotal = 12  // Single-slot: 12 captures per enrollment
 
     var gateController = FingerprintGateController()
 
@@ -459,9 +587,6 @@ class FingerprintViewModel: ObservableObject {
                 case .liftFinger:
                     self.enrollmentStatus = "enroll.lift.finger".localized
                     self.enrollmentProgress = current
-                case .adjust:
-                    self.enrollmentStatus = "enroll.adjust.angle".localized
-                    self.enrollmentProgress = current
                 case .processing:
                     self.enrollmentStatus = "enroll.processing".localized
                     self.enrollmentProgress = current
@@ -562,6 +687,10 @@ class FingerprintViewModel: ObservableObject {
                     self.isEnrolling = true
                     self.enrollmentStatus = "enroll.place.finger".localized
                 } else {
+                    // 用户主动 cancel 时 controller.cancel() 的 onCancel 已经
+                    // 把 currentEnrollSlot 清空; cancelGateAndRelease 会用
+                    // false invoke 这个 completion. 不弹错误也不 reportFailed.
+                    guard self.currentEnrollSlot != nil else { return }
                     if self.gateController.isPresented {
                         self.gateController.reportFailed()
                     } else {
@@ -629,6 +758,6 @@ class FingerprintViewModel: ObservableObject {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.runModal()
+        alert.runModalOverSettings()
     }
 }

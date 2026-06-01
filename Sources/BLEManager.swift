@@ -1,7 +1,7 @@
 /*
  * BLEManager.swift - BLE communication with immurok device
  *
- * Connects to ESP32H2 via custom GATT service for authentication
+ * Connects to CH592F via custom GATT service for authentication
  */
 
 import AppKit
@@ -10,22 +10,38 @@ import Foundation
 
 // MARK: - BLE UUIDs
 
-let IMMUROK_SERVICE_UUID = CBUUID(string: "12340010-0000-1000-8000-00805f9b34fb")
-let IMMUROK_CMD_CHAR_UUID = CBUUID(string: "12340011-0000-1000-8000-00805f9b34fb")
-let IMMUROK_RSP_CHAR_UUID = CBUUID(string: "12340012-0000-1000-8000-00805f9b34fb")
+// 128-bit random v4 UUIDs — original 12340010-...-00805f9b34fb pattern
+// piggybacked on the SIG Bluetooth Base UUID, which is reserved for
+// SIG-assigned values; non-conformant for a vendor service. Replaced as
+// part of the pre-mass-production cleanup before SIG QDID issuance.
+let IMMUROK_SERVICE_UUID = CBUUID(string: "45529919-7668-48f9-b9fe-e4eabe6595d9")
+let IMMUROK_CMD_CHAR_UUID = CBUUID(string: "8a537e1f-3992-4b2c-8b77-8d4e778186e1")
+let IMMUROK_RSP_CHAR_UUID = CBUUID(string: "76a1660d-8cf6-44d1-b3fc-70486028e289")
 
 // Device Information Service (standard BLE 0x180A)
 let DEVICE_INFO_SERVICE_UUID = CBUUID(string: "180A")
 let FIRMWARE_REV_CHAR_UUID = CBUUID(string: "2A26")
 
-// OTA Service
-let OTA_SERVICE_UUID = CBUUID(string: "FEE0")
-let OTA_CHAR_UUID = CBUUID(string: "FEE1")
+// Battery Service (standard BLE 0x180F) — subscribed for push-driven
+// battery level updates. Firmware already runs Batt_MeasLevel every 5 min
+// regardless of subscribers (macOS HID UI subscribes by default), so this
+// adds zero device-side power cost; we just receive the same notify the
+// system menu bar receives.
+let BATTERY_SERVICE_UUID = CBUUID(string: "180F")
+let BATTERY_LEVEL_CHAR_UUID = CBUUID(string: "2A19")
+
+// OTA Service — moved off 0xFEE0/FEE1 (SIG Member Service UUID range
+// already allocated to other companies — Anhui Huami / Xiaomi cluster)
+// to 128-bit random v4 UUIDs to avoid both the cross-vendor scan
+// collision and the technical allocation issue.
+let OTA_SERVICE_UUID = CBUUID(string: "d29005de-1391-4a54-8168-bf4e3c080430")
+let OTA_CHAR_UUID = CBUUID(string: "c75f4c30-9a2d-4445-92e0-0e034c53d092")
 
 // MARK: - Commands
 
 enum ImmurokCommand: UInt8 {
     case getStatus = 0x01
+    case getBattRaw = 0x02
     case enrollStart = 0x10
     case enrollCancel = 0x11
     case deleteFP = 0x12
@@ -35,7 +51,8 @@ enum ImmurokCommand: UInt8 {
     case pairConfirm = 0x31
     case pairStatus = 0x32
     case authRequest = 0x33
-    case factoryReset = 0x36
+    // Notification cmd from device: [0x34, 0x00=timeout, 0x01=confirmed, 0x02=cancel]
+    case pairButton = 0x34
     case gateCancel = 0x37
     case challenge = 0x38
     case keyCount = 0x60
@@ -80,21 +97,29 @@ enum ImmurokStatus: UInt8 {
     case errTimeout = 0x06
     case errFpNotMatch = 0x07
     case waitFingerprint = 0x11
+    case errWaitButton = 0xF0     // PAIR_INIT: waiting for physical button confirm
+    case errNeedsReset = 0xF1     // PAIR_INIT: device still has fingerprints
     case errBusy = 0xFD
     case errInvalidParam = 0xFE
     case errUnknown = 0xFF
 }
 
+enum PairFailureReason: Error {
+    case generic
+    case needsReset       // Device still has fingerprints; user must factory reset first
+    case buttonTimeout    // 30s elapsed without button press
+    case buttonCancelled  // User long-pressed to cancel
+}
+
 // Enrollment status notifications (from device)
-// Must match firmware fingerprint.h: FP_ENROLL_WAITING=0, CAPTURED=1, PROCESSING=2, LIFT_FINGER=3
 // Must match firmware fingerprint.h fp_enroll_event_t
+// Single-slot enrollment: 12 captures → merge → store (no dual-slot adjust)
 enum EnrollEvent: UInt8 {
     case waiting = 0x00
     case captured = 0x01
     case processing = 0x02
     case liftFinger = 0x03
     case complete = 0x04
-    case adjust = 0x05          // Adjust finger angle for second slot
     case failed = 0xFF
 }
 
@@ -141,10 +166,22 @@ class BLEManager: NSObject {
     var onDeviceDisconnected: (() -> Void)?
     var onUnlockResult: ((Bool) -> Void)?
     var onFingerprintMatch: ((UInt16) -> Void)?
+    /// Long-press lock-screen request from device (held >= 2s on touch sensor).
+    /// Fires regardless of FP match outcome — AppDelegate gates on screen state.
+    var onLockRequest: (() -> Void)?
+    /// PAIR_INIT accepted: user must press the device button within 30s to confirm.
+    var onPairWaitButton: (() -> Void)?
+    /// User pressed the button — ECDH key exchange is now running on the device.
+    var onPairButtonConfirmed: (() -> Void)?
     var onPairingCompleted: ((Bool) -> Void)?
     var onEnrollStatus: ((EnrollEvent, Int, Int) -> Void)?
     var onBluetoothStatusChanged: ((BluetoothAuthStatus) -> Void)?
     var onFirmwareVersionRead: ((String) -> Void)?
+    /// Fired on every push-notify from the Battery Service (0x180F → 0x2A19).
+    /// The firmware sends this only when its computed battLevel actually
+    /// changes (every ~5 min on the periodic ADC sample), so this is a low-
+    /// frequency, zero-poll source of fresh battery percentage.
+    var onBatteryLevelNotified: ((Int) -> Void)?
     /// Called when fingerprint doesn't match during FP gate or AUTH — parameter is remaining attempts
     var onFingerprintAttemptFailed: ((Int) -> Void)?
     var onFingerprintGateApproved: (() -> Void)?
@@ -165,12 +202,19 @@ class BLEManager: NSObject {
     private var pendingGateCompletion: ((Bool) -> Void)?  // Waiting for FP gate result
     private var pendingGateDataCompletion: ((Data?) -> Void)?  // Waiting for FP gate result with data (OTP)
     private var gateGeneration: UInt = 0  // Increments per startGateTimeout, scopes gate timeouts
+
+    // Pair-button state machine. Set after PAIR_INIT returns WAIT_BUTTON
+    // and the device is waiting for the user to physically press its button.
+    // Two later inputs end this state:
+    //   1) device sends 0x34 (timeout/cancel) → invoke completion(.failed)
+    //   2) device sends 0x30 + 33B pubkey      → continue ECDH (PAIR_CONFIRM)
+    private var pendingPairButton: ((Result<Data, PairFailureReason>) -> Void)?
+    private var pendingPairButtonGeneration: UInt = 0
     private var fpFailureCount = 0  // FP_NOT_MATCH counter, max 2 then deny
     private var otaReadCallback: ((Data?) -> Void)?
     private var otaWriteReadyCallback: (() -> Void)?
     private var reconnectTimer: DispatchSourceTimer?
-    private var resubscribeTimer: DispatchSourceTimer?
-    private var napActivity: NSObjectProtocol?
+    private var sleepActivity: NSObjectProtocol?
     private var displaySleeping = false
     private var connectingStartTime: Date?  // Tracks when .connecting state began
     private static let connectingTimeout: TimeInterval = 10  // Max time in .connecting before reset
@@ -180,6 +224,15 @@ class BLEManager: NSObject {
 
     // Command queue — serializes BLE command/response pairs
     private var commandInFlight = false
+    // Opcode of the in-flight command. Used by the 0x11 enrollment-status
+    // handler to decide whether to hijack `responseCallback` — only the
+    // very first status frame after ENROLL_START is meant to complete the
+    // command's pending callback (device doesn't send a separate OK ack
+    // for ENROLL_START). For ANY other in-flight command, the device's
+    // enrollment keep-alive [0x11, WAITING, ...] frames must NOT touch
+    // the callback; the wrong command would otherwise be "completed" with
+    // bogus data and report success.
+    private var currentCommand: ImmurokCommand?
     private var commandQueue: [(command: ImmurokCommand, payload: [UInt8], timeout: TimeInterval, completion: (Data?) -> Void)] = []
 
     private var isOnBLEQueue: Bool {
@@ -205,73 +258,44 @@ class BLEManager: NSObject {
             nc.addObserver(self, selector: #selector(self.onScreenDidWake),
                            name: NSWorkspace.screensDidWakeNotification, object: nil)
 
-            // System wake (including DarkWake) - re-subscribe GATT notifications
-            nc.addObserver(self, selector: #selector(self.onSystemWake),
-                           name: NSWorkspace.didWakeNotification, object: nil)
         }
     }
 
     @objc private func onScreenDidSleep() {
         NSLog("BLEManager: Screen did sleep")
-        Task { @MainActor in LogManager.shared.log("屏幕已休眠") }
+        Task { @MainActor in LogManager.shared.log("Screen sleep") }
         displaySleeping = true
         stopReconnectTimer()
-        startResubscribeTimer()
+        // Prevent system from entering deep power saving that kills BLE connection.
+        // Without this, macOS drops BLE after ~1 min of sleep, device re-advertises,
+        // macOS reconnects HID keyboard → screen wakes → sleep → disconnect → repeat.
+        if sleepActivity == nil {
+            sleepActivity = ProcessInfo.processInfo.beginActivity(
+                options: .idleSystemSleepDisabled,
+                reason: "Keep BLE connection alive during screen sleep")
+        }
     }
 
     @objc private func onScreenDidWake() {
-        NSLog("BLEManager: Screen did wake (deviceState.isConnected=%d)", deviceState.isConnected ? 1 : 0)
-        Task { @MainActor in LogManager.shared.log("屏幕已唤醒") }
+        NSLog("BLEManager: Screen did wake (deviceState.isConnected=%d, verified=%d)",
+              deviceState.isConnected ? 1 : 0, isDeviceVerified ? 1 : 0)
+        Task { @MainActor in LogManager.shared.log("Screen wake") }
         displaySleeping = false
-        stopResubscribeTimer()
+        if let activity = sleepActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepActivity = nil
+        }
         queue.async { [weak self] in
             guard let self = self else { return }
-            self.resubscribeNotifications()
             if !self.deviceState.isConnected {
                 self.deviceState = .disconnected
                 self.startReconnectTimer()
+            } else if !self.isDeviceVerified {
+                // Connected but not verified — reconnected during sleep without
+                // completing challenge. Re-run verification now.
+                let name = self.peripheral?.name ?? "immurok"
+                self.performChallengeVerification(name: name)
             }
-        }
-    }
-
-    @objc private func onSystemWake() {
-        NSLog("BLEManager: System wake (displaySleeping=%d)", displaySleeping ? 1 : 0)
-        queue.async { [weak self] in
-            self?.resubscribeNotifications()
-        }
-    }
-
-    private func resubscribeNotifications() {
-        guard let p = peripheral, p.state == .connected,
-              let rspChar = rspCharacteristic, rspChar.properties.contains(.notify) else {
-            return
-        }
-        NSLog("BLEManager: Re-subscribing RSP notifications")
-        Task { @MainActor in LogManager.shared.log("重新订阅 GATT 通知") }
-        p.setNotifyValue(true, for: rspChar)
-    }
-
-    private func startResubscribeTimer() {
-        stopResubscribeTimer()
-        // Prevent App Nap so the timer keeps firing during screen sleep
-        napActivity = ProcessInfo.processInfo.beginActivity(
-            options: .userInitiated,
-            reason: "BLE GATT resubscription during screen sleep")
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 10.0, repeating: 10.0)
-        timer.setEventHandler { [weak self] in
-            self?.resubscribeNotifications()
-        }
-        resubscribeTimer = timer
-        timer.resume()
-    }
-
-    private func stopResubscribeTimer() {
-        resubscribeTimer?.cancel()
-        resubscribeTimer = nil
-        if let activity = napActivity {
-            ProcessInfo.processInfo.endActivity(activity)
-            napActivity = nil
         }
     }
 
@@ -309,13 +333,13 @@ class BLEManager: NSObject {
         deviceState = .connecting
         connectingStartTime = Date()
         NSLog("BLEManager: Looking for immurok device...")
-        Task { @MainActor in LogManager.shared.log("BLE 查找已连接设备...") }
+        Task { @MainActor in LogManager.shared.log("BLE: searching for connected devices...") }
 
         // Strategy 1: Check if our known peripheral is already connected (system auto-reconnect)
         if let p = peripheral, p.state == .connected {
             NSLog("BLEManager: Known peripheral already connected, re-discovering services")
             p.delegate = self
-            p.discoverServices([IMMUROK_SERVICE_UUID, OTA_SERVICE_UUID, DEVICE_INFO_SERVICE_UUID])
+            p.discoverServices([IMMUROK_SERVICE_UUID, OTA_SERVICE_UUID, DEVICE_INFO_SERVICE_UUID, BATTERY_SERVICE_UUID])
             return
         }
 
@@ -348,11 +372,63 @@ class BLEManager: NSObject {
     }
 
     /// Request unlock via AUTH_REQUEST - device waits for fingerprint
-    /// Cancel a pending fingerprint-gated command on the device
+    /// Cancel a pending fingerprint-gated command on the device.
+    /// 仅发命令, 不释放队列 hold — 仅用于队列没被 hold 的场景.
+    /// 大部分 sheet cancel 路径应该用 cancelGateAndRelease().
     func cancelGate() {
         guard deviceState.isConnected else { return }
         NSLog("BLEManager: Sending GATE_CANCEL")
         sendCommand(.gateCancel) { _ in }
+    }
+
+    /// Cancel + release hold + clear pending gate completion. 用于 sheet
+    /// 主动取消路径 (controller.cancel / sheet.onDisappear).
+    /// 根因: AUTH_REQUEST / ENROLL_START / DELETE_FP / KEY_SIGN 等返回
+    /// WAIT_FP 后 commandInFlight 被故意保持 true (handleData line 2271)
+    /// 锁住后续命令队列, 让 gate notification 不被错路由. cancelGate()
+    /// 调用 sendCommand 进队但不会 dequeue, 固件永远收不到 GATE_CANCEL.
+    /// 必须释放 hold 才能让 gateCancel 命令真正发出.
+    func cancelGateAndRelease() {
+        guard deviceState.isConnected else { return }
+        NSLog("BLEManager: cancelGateAndRelease — GATE_CANCEL + release hold")
+        sendCommand(.gateCancel) { _ in }
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            // 清 pending gate completion 防止 25s 后超时回调误触发 showAlert
+            // (用户已主动 cancel, 不应再弹任何错误对话框).
+            let gateCb = self.pendingGateCompletion
+            let gateDataCb = self.pendingGateDataCompletion
+            self.pendingGateCompletion = nil
+            self.pendingGateDataCompletion = nil
+            self.releaseAuthHold()  // commandInFlight=false, drain queue
+            gateCb?(false)
+            gateDataCb?(nil)
+        }
+    }
+
+    /// User-initiated cancel of an in-flight `requestUnlock`. Tells the device
+    /// to stop blinking + clear its pending gate, then immediately resolves
+    /// the local completion with false so callers (PAM, etc.) can return DENY
+    /// without waiting for the 30s timeout.
+    func cancelUnlock() {
+        NSLog("BLEManager: Cancelling unlock request (user reject)")
+        cancelGate()
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.fingerprintTimeoutWorkItem?.cancel()
+            self.fingerprintTimeoutWorkItem = nil
+            // fingerprintResultCompletion is the wrapper that signals the
+            // PAM socket semaphore. Calling with false drives the response
+            // path to "DENY".
+            let cb = self.fingerprintResultCompletion
+            self.fingerprintResultCompletion = nil
+            cb?(false)
+            // Release the AUTH_REQUEST queue hold so the gateCancel command
+            // queued by cancelGate() above actually drains and reaches the
+            // device — otherwise the device keeps blinking / waiting for
+            // fingerprint and the user sees no effect from clicking cancel.
+            self.releaseAuthHold()
+        }
     }
 
     func requestUnlock(timeout: TimeInterval = 30.0, completion: @escaping (Bool) -> Void) {
@@ -363,24 +439,33 @@ class BLEManager: NSObject {
         }
 
         NSLog("BLEManager: Requesting unlock (AUTH_REQUEST)...")
+        // QuickFill / agent-overlay diagnostic: capture wall time on the call
+        // path so we can pin where the user-visible "wait for green LED"
+        // delay sits — queue (commandInFlight=true from a prior op?), BLE
+        // slave-latency wakeup (~1.26s worst case with latency=20, interval
+        // 30-60ms), or device-side processing.
+        let authReqStart = Date()
+        Task { @MainActor in LogManager.shared.log("AUTH_REQUEST start (t0)") }
 
         sendCommand(.authRequest) { [weak self] response in
             guard let self = self else {
                 completion(false)
                 return
             }
+            let dt = Date().timeIntervalSince(authReqStart) * 1000
             guard let response = response, response.count >= 1 else {
-                NSLog("BLEManager: No AUTH_REQUEST response")
+                NSLog("BLEManager: No AUTH_REQUEST response (%.0f ms)", dt)
+                Task { @MainActor in LogManager.shared.log("AUTH_REQUEST no response (\(Int(dt)) ms)") }
                 completion(false)
                 return
             }
 
             let status = response[0]
+            NSLog("BLEManager: AUTH_REQUEST resp 0x%02x in %.0f ms", status, dt)
+            Task { @MainActor in LogManager.shared.log("AUTH_REQUEST resp 0x\(String(format: "%02x", status)) (\(Int(dt)) ms — green LED visible to user)") }
             if status == ImmurokStatus.waitFingerprint.rawValue {
-                NSLog("BLEManager: Waiting for fingerprint...")
                 self.waitForFingerprintResult(timeout: timeout, completion: completion)
             } else {
-                NSLog("BLEManager: AUTH_REQUEST failed: 0x%02x", status)
                 completion(false)
             }
         }
@@ -409,9 +494,14 @@ class BLEManager: NSObject {
         }
 
         let timeoutItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
             NSLog("BLEManager: Fingerprint timeout")
-            self?.fingerprintResultCompletion?(false)
-            self?.onUnlockResult = previousCallback
+            // Wrapped completion (line 418-422) clears fingerprintResultCompletion
+            // itself when fired; just release the BLE-queue hold here.
+            let hadHold = self.fingerprintResultCompletion != nil
+            self.fingerprintResultCompletion?(false)
+            self.onUnlockResult = previousCallback
+            if hadHold { self.releaseAuthHold() }
         }
         fingerprintTimeoutWorkItem = timeoutItem
         queue.asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
@@ -562,25 +652,29 @@ class BLEManager: NSObject {
         }
     }
 
-    /// Start ECDH pairing with device
-    func startPairing(completion: @escaping (Bool) -> Void) {
+    /// Start ECDH pairing with device. The device requires the user to
+    /// physically press its button to confirm; UI should listen to
+    /// onPairWaitButton / onPairButtonConfirmed for status updates.
+    func startPairing(completion: @escaping (PairFailureReason?) -> Void) {
         startPairingAttempt(retries: 3, completion: completion)
     }
 
-    private func startPairingAttempt(retries: Int, completion: @escaping (Bool) -> Void) {
+    private func startPairingAttempt(retries: Int, completion: @escaping (PairFailureReason?) -> Void) {
         guard deviceState.isConnected else {
-            completion(false)
+            completion(.generic)
             return
         }
 
         NSLog("BLEManager: Starting ECDH pairing (retries left: %d)...", retries)
 
-        // Step 1: Send PAIR_INIT (no payload)
-        sendCommand(.pairInit, timeout: 15.0) { [weak self] response in
-            // Response: [0x30][compressed_pubkey:33B] or [0x30][error:1B] or [0xE1] (param too short)
+        // PAIR_INIT now returns WAIT_BUTTON immediately; the actual 33B
+        // device pubkey arrives later as a notification after the user
+        // presses the device button. Use a short timeout for the WAIT_BUTTON
+        // ack (5s) — the long wait is handled by pendingPairButton.
+        sendCommand(.pairInit, timeout: 5.0) { [weak self] response in
             guard let self = self, let response = response, response.count >= 1 else {
                 NSLog("BLEManager: PAIR_INIT no response")
-                completion(false)
+                completion(.generic)
                 return
             }
 
@@ -593,71 +687,96 @@ class BLEManager: NSObject {
                     }
                 } else {
                     NSLog("BLEManager: PAIR_INIT failed after retries (BLE params not accepted)")
-                    completion(false)
+                    completion(.generic)
                 }
                 return
             }
 
-            guard response.count >= 2 else {
+            guard response.count >= 2, response[0] == ImmurokCommand.pairInit.rawValue else {
                 NSLog("BLEManager: PAIR_INIT unexpected response: 0x%02x", response[0])
-                completion(false)
+                completion(.generic)
                 return
             }
 
-            if response[0] != ImmurokCommand.pairInit.rawValue {
-                NSLog("BLEManager: PAIR_INIT unexpected response: 0x%02x", response[0])
-                completion(false)
+            // Two-byte error / status response
+            if response.count == 2 {
+                let code = response[1]
+                if code == ImmurokStatus.errNeedsReset.rawValue {
+                    NSLog("BLEManager: PAIR_INIT rejected: device still has fingerprints")
+                    completion(.needsReset)
+                    return
+                }
+                if code == ImmurokStatus.errWaitButton.rawValue {
+                    NSLog("BLEManager: PAIR_INIT accepted, waiting for device button...")
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onPairWaitButton?()
+                    }
+                    self.startPairButtonWait(completion: completion)
+                    return
+                }
+                NSLog("BLEManager: PAIR_INIT error: 0x%02x", code)
+                completion(.generic)
                 return
             }
 
-            if response.count < 34 {
-                // Error response: [0x30][error_code]
-                NSLog("BLEManager: PAIR_INIT error: 0x%02x", response[1])
-                completion(false)
+            // Legacy/no-button-required path: [0x30][33B pubkey]
+            if response.count >= 34 {
+                self.continuePairing(devicePubKey: response[1..<34], completion: completion)
+            } else {
+                completion(.generic)
+            }
+        }
+    }
+
+    /// Install the pair-button waiter. Resolves when device sends:
+    ///   - [0x30][33B pubkey] — button pressed, ECDH done → continue PAIR_CONFIRM
+    ///   - [0x34, 0x00] timeout, [0x34, 0x02] cancel → fail with reason
+    /// Outer 45s safety timeout: 30s button window + ~5s ECC + headroom.
+    private func startPairButtonWait(completion: @escaping (PairFailureReason?) -> Void) {
+        pendingPairButtonGeneration &+= 1
+        let myGen = pendingPairButtonGeneration
+        pendingPairButton = { [weak self] result in
+            guard let self = self else { return }
+            self.pendingPairButton = nil
+            switch result {
+            case .success(let pubkey):
+                self.continuePairing(devicePubKey: pubkey, completion: completion)
+            case .failure(let reason):
+                completion(reason)
+            }
+        }
+        queue.asyncAfter(deadline: .now() + 45.0) { [weak self] in
+            guard let self = self, self.pendingPairButtonGeneration == myGen else { return }
+            if let cb = self.pendingPairButton {
+                NSLog("BLEManager: Pair button wait outer timeout (45s)")
+                self.pendingPairButton = nil
+                cb(.failure(.buttonTimeout))
+            }
+        }
+    }
+
+    private func continuePairing(devicePubKey: Data, completion: @escaping (PairFailureReason?) -> Void) {
+        NSLog("BLEManager: Got device pubkey, sending PAIR_CONFIRM")
+        let security = ImmurokSecurity.shared
+        let appPubKey = security.startPairing()
+        let payload = [UInt8](appPubKey)
+        sendCommand(.pairConfirm, payload: payload, timeout: 8.0) { [weak self] response in
+            guard let self = self else { return }
+            guard let response = response, response.count >= 2,
+                  response[0] == ImmurokCommand.pairConfirm.rawValue,
+                  response[1] == ImmurokStatus.ok.rawValue else {
+                NSLog("BLEManager: PAIR_CONFIRM failed")
+                completion(.generic)
                 return
             }
-
-            // Got device compressed pubkey (33 bytes at offset 1)
-            let devicePubKey = response[1..<34]
-            NSLog("BLEManager: Got device pubkey (prefix=0x%02x)", devicePubKey[1])
-
-            // Generate App key pair, get compressed pubkey
-            let security = ImmurokSecurity.shared
-            let appPubKey = security.startPairing()
-
-            // Step 2: Send PAIR_CONFIRM with App compressed pubkey
-            let payload = [UInt8](appPubKey)
-            self.sendCommand(.pairConfirm, payload: payload) { response in
-                // Response: [0x31][status:1B]
-                guard let response = response, response.count >= 2 else {
-                    NSLog("BLEManager: PAIR_CONFIRM no response")
-                    completion(false)
-                    return
-                }
-
-                if response[0] != ImmurokCommand.pairConfirm.rawValue {
-                    NSLog("BLEManager: PAIR_CONFIRM unexpected: 0x%02x", response[0])
-                    completion(false)
-                    return
-                }
-
-                if response[1] != ImmurokStatus.ok.rawValue {
-                    NSLog("BLEManager: PAIR_CONFIRM failed: 0x%02x", response[1])
-                    completion(false)
-                    return
-                }
-
-                // Device pairing succeeded, now derive shared key on App side
-                let success = security.completePairing(deviceCompressedPubKey: Data(devicePubKey))
-                NSLog("BLEManager: Pairing %@", success ? "succeeded" : "failed (App-side)")
-                if success {
-                    self.isDeviceVerified = true
-                }
-                completion(success)
-
-                DispatchQueue.main.async { [weak self] in
-                    self?.onPairingCompleted?(success)
-                }
+            let success = security.completePairing(deviceCompressedPubKey: Data(devicePubKey))
+            NSLog("BLEManager: Pairing %@", success ? "succeeded" : "failed (App-side)")
+            if success {
+                self.isDeviceVerified = true
+            }
+            completion(success ? nil : .generic)
+            DispatchQueue.main.async { [weak self] in
+                self?.onPairingCompleted?(success)
             }
         }
     }
@@ -730,33 +849,57 @@ class BLEManager: NSObject {
                     self?.onFirmwareVersionRead?(version)
                 }
             }
+
+            // Check for piggybacked pending FP match (byte 9 = separator, bytes 10+: 0x21 notification data)
+            if response.count >= 21, response[10] == 0x21 {
+                let matchData = Data(response[10..<21])  // [0x21][page_id:2B][hmac:8B]
+                let (pageId, valid) = ImmurokSecurity.shared.verifyFingerprintMatch(data: matchData)
+                if valid {
+                    NSLog("BLEManager: Pending FP match in GET_STATUS — page_id=%d", pageId)
+                    Task { @MainActor in LogManager.shared.log("Pending FP match id=\(pageId)") }
+                    self?.sendAck()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onFingerprintMatch?(pageId)
+                    }
+                }
+            }
+
             completion(bitmap, isPaired, batteryLevel, firmwareVersion)
         }
     }
 
-    /// Send factory reset command
-    func factoryReset(completion: @escaping (Bool) -> Void) {
+    /// Read raw battery voltage for calibration display.
+    /// Returns (mV, percentage, adcRaw) or nil on failure.
+    ///
+    /// `forceFresh` controls whether the device runs an ADC re-measurement
+    /// (firmware ≥ 1.3.8 honours the flag; older firmware always
+    /// re-measures because it ignores the unknown payload byte):
+    ///   - `true` (default) — force a fresh Batt_MeasLevel. Use for
+    ///     user-initiated refresh ("click to refresh" needs to feel
+    ///     responsive). Blocks ~500 ms on vbat_settle so caller sees a
+    ///     2–3 s round-trip; timeout is 5 s to cover BLE queue slack.
+    ///   - `false` — return whatever the firmware's own 5-min
+    ///     BATT_PERIODIC_EVT cycle last cached. Use for periodic
+    ///     background logging — adds zero ADC work on top of the
+    ///     device's natural cadence. Round-trip ~100–200 ms; 2 s
+    ///     timeout is plenty.
+    func getBatteryRaw(forceFresh: Bool = true, completion: @escaping ((mv: Int, pct: Int, adc: Int)?) -> Void) {
         guard deviceState.isConnected else {
-            completion(false)
+            completion(nil)
             return
         }
-
-        sendCommand(.factoryReset) { [weak self] response in
-            guard let response = response, response.count >= 1 else {
-                completion(false)
+        let payload: [UInt8] = forceFresh ? [] : [0x01]
+        let timeout: TimeInterval = forceFresh ? 5.0 : 2.0
+        sendCommand(.getBattRaw, payload: payload, timeout: timeout) { response in
+            guard let response = response, response.count >= 6,
+                  response[0] == ImmurokStatus.ok.rawValue else {
+                completion(nil)
                 return
             }
-            let status = response[0]
-            if status == ImmurokStatus.ok.rawValue {
-                completion(true)
-            } else if status == ImmurokStatus.waitFingerprint.rawValue {
-                NSLog("BLEManager: Factory reset waiting for FP gate")
-                self?.pendingGateCompletion = completion
-                self?.startGateTimeout()
-                DispatchQueue.main.async { NotificationCenter.default.post(name: BLEManager.fingerprintGateRequiredNotification, object: nil) }
-            } else {
-                completion(false)
-            }
+            let mv = Int(response[1]) | (Int(response[2]) << 8)
+            let pct = Int(response[3])
+            let adc = Int(response[4]) | (Int(response[5]) << 8)
+            completion((mv: mv, pct: pct, adc: adc))
         }
     }
 
@@ -764,18 +907,35 @@ class BLEManager: NSObject {
 
     /// Get entry count for a key category
     func getKeyCount(cat: KeystoreCategory, completion: @escaping (Int) -> Void) {
+        getKeyCountAndChecksum(cat: cat) { count, _ in completion(count) }
+    }
+
+    /// Get entry count AND content digest for a key category.
+    /// Firmware response (since FW 1.2.7): [OK][count:1B][checksum:4B LE]
+    /// Older firmware returns [OK][count:1B] — checksum reported as 0 here, so
+    /// any cached digest comparison treats it as "must refetch" (safe fallback).
+    func getKeyCountAndChecksum(cat: KeystoreCategory,
+                                 completion: @escaping (Int, UInt32) -> Void) {
         guard deviceState.isConnected else {
-            completion(0)
+            completion(0, 0)
             return
         }
 
         sendCommand(.keyCount, payload: [cat.rawValue]) { response in
             guard let response = response, response.count >= 2,
                   response[0] == ImmurokStatus.ok.rawValue else {
-                completion(0)
+                completion(0, 0)
                 return
             }
-            completion(Int(response[1]))
+            let count = Int(response[1])
+            var checksum: UInt32 = 0
+            if response.count >= 6 {
+                checksum = UInt32(response[2])
+                       | (UInt32(response[3]) << 8)
+                       | (UInt32(response[4]) << 16)
+                       | (UInt32(response[5]) << 24)
+            }
+            completion(count, checksum)
         }
     }
 
@@ -859,13 +1019,25 @@ class BLEManager: NSObject {
         }
     }
 
-    /// Read only the name (first 32 bytes) of a key entry via single KEY_READ
-    /// Uses a single BLE command — safe against responseCallback races
+    /// Read the name field of a key entry via single KEY_READ.
+    /// Name field size is per-category: SSH=16, OTP=30, API=32 — using a
+    /// fixed 32 spilled into OTP's adjacent service field, which (when
+    /// device padding is non-NUL) caused `findKeyIndex` to see a name
+    /// longer than what `imk list` showed via the 30-byte read path,
+    /// breaking exact-match lookups like `imk get imk://otp/eve+109`.
     func readKeyEntryName(cat: KeystoreCategory, idx: UInt8, completion: @escaping (String?) -> Void) {
         guard deviceState.isConnected else {
             completion(nil)
             return
         }
+
+        let nameFieldSize: Int = {
+            switch cat {
+            case .ssh: return 16
+            case .otp: return 30
+            case .api: return 32
+            }
+        }()
 
         sendCommand(.keyRead, payload: [cat.rawValue, idx, 0]) { response in
             // Response: [OK][total_lo:1B][off:1B][data...<=59B]
@@ -877,7 +1049,7 @@ class BLEManager: NSObject {
             }
 
             let chunkData = response.subdata(in: 3..<response.count)
-            let nameLen = min(32, chunkData.count)
+            let nameLen = min(nameFieldSize, chunkData.count)
             let nameData = chunkData.prefix(nameLen)
             let trimmed = nameData.prefix(while: { $0 != 0 })
             completion(String(data: trimmed, encoding: .utf8) ?? "")
@@ -1247,34 +1419,42 @@ class BLEManager: NSObject {
         let myGeneration = gateGeneration
         queue.asyncAfter(deadline: .now() + 30.0) { [weak self] in
             guard let self = self, self.gateGeneration == myGeneration else { return }
-            if let cb = self.pendingGateDataCompletion {
-                NSLog("BLEManager: FP gate data timeout")
-                self.pendingGateDataCompletion = nil
-                cb(nil)
+            let hadHold = self.pendingGateDataCompletion != nil || self.pendingGateCompletion != nil
+            let dataCb = self.pendingGateDataCompletion
+            let gateCb = self.pendingGateCompletion
+            self.pendingGateDataCompletion = nil
+            self.pendingGateCompletion = nil
+            if hadHold {
+                self.releaseGateHold {
+                    if let cb = dataCb {
+                        NSLog("BLEManager: FP gate data timeout")
+                        cb(nil)
+                    }
+                    if let cb = gateCb {
+                        NSLog("BLEManager: FP gate timeout")
+                        cb(false)
+                    }
+                }
             }
-            if let cb = self.pendingGateCompletion {
-                NSLog("BLEManager: FP gate timeout")
-                self.pendingGateCompletion = nil
-                cb(false)
-            }
-            // Notify device to stop LED blinking and cancel pending gate
+            // Notify device to stop LED blinking and cancel pending gate.
+            // Queues behind any chained command from the callbacks above.
             self.cancelGate()
         }
     }
 
     // MARK: - Private Methods
 
-    /// Send ACK for fingerprint match notification (fire-and-forget)
+    /// Send ACK for fingerprint match notification
+    /// Must go through the command queue to avoid response mismatch with in-flight commands.
     private func sendAck() {
-        guard let cmdChar = cmdCharacteristic, let peripheral = peripheral else {
+        guard deviceState.isConnected else {
             NSLog("BLEManager: Cannot send ACK - not connected")
             return
         }
 
-        // [cmd=0x22][len=0x00]
-        let data = Data([ImmurokCommand.fpMatchAck.rawValue, 0x00])
-        peripheral.writeValue(data, for: cmdChar, type: .withResponse)
-        NSLog("BLEManager: ACK sent")
+        sendCommand(.fpMatchAck, timeout: 3.0) { _ in
+            NSLog("BLEManager: ACK completed")
+        }
     }
 
     private func sendCommand(_ command: ImmurokCommand, payload: [UInt8] = [], timeout: TimeInterval = 5.0, completion: @escaping (Data?) -> Void) {
@@ -1292,6 +1472,11 @@ class BLEManager: NSObject {
     /// Enqueue or execute a command (must be called on BLE queue)
     private func enqueueOrExecute(_ command: ImmurokCommand, payload: [UInt8], timeout: TimeInterval, completion: @escaping (Data?) -> Void) {
         if commandInFlight {
+            let inFlight = currentCommand
+            let depth = commandQueue.count + 1
+            Task { @MainActor in
+                LogManager.shared.log("queued cmd=0x\(String(format: "%02x", command.rawValue)) behind 0x\(String(format: "%02x", inFlight?.rawValue ?? 0)) (depth \(depth))")
+            }
             commandQueue.append((command: command, payload: payload, timeout: timeout, completion: completion))
             return
         }
@@ -1307,6 +1492,7 @@ class BLEManager: NSObject {
         }
 
         commandInFlight = true
+        currentCommand = command
 
         // Build packet: [command][length][payload...]
         var data = Data(repeating: 0, count: 2 + payload.count)
@@ -1330,6 +1516,7 @@ class BLEManager: NSObject {
                 Task { @MainActor in LogManager.shared.log("TX timeout cmd=0x\(String(format: "%02x", command.rawValue))") }
                 self.responseCallback = nil
                 self.commandInFlight = false
+                self.currentCommand = nil
                 cb(nil)
                 if !self.commandInFlight {
                     self.dequeueNext()
@@ -1345,6 +1532,35 @@ class BLEManager: NSObject {
         guard !commandQueue.isEmpty else { return }
         let next = commandQueue.removeFirst()
         executeSend(next.command, payload: next.payload, timeout: next.timeout, completion: next.completion)
+    }
+
+    /// Release the commandInFlight hold taken when an FP gate was armed
+    /// (KEY_SIGN/KEY_GENERATE/KEY_OTP_GET WAIT_FP) and drain queued
+    /// commands. Mirrors the dispatcher's post-callback dance at the bottom
+    /// of handleData: chained sendCommand calls inside `body` re-take the
+    /// hold via executeSend, otherwise we drain. Must be called on BLE queue.
+    private func releaseGateHold(_ body: () -> Void) {
+        commandInFlight = false
+        currentCommand = nil
+        body()
+        if !commandInFlight {
+            dequeueNext()
+        }
+    }
+
+    /// Release the commandInFlight hold taken when AUTH_REQUEST returned
+    /// WAIT_FP. Called at AUTH_OK / 3-fail / timeout sites so any command
+    /// that got queued during the FP-wait window (e.g. battery refresh
+    /// GET_STATUS) can drain. Must be called on BLE queue. Caller must
+    /// NOT clear fingerprintResultCompletion before calling — that
+    /// completion is fired by onUnlockResult on the main thread and
+    /// clearing it here would skip the actual user callback.
+    private func releaseAuthHold() {
+        if commandInFlight {
+            commandInFlight = false
+            currentCommand = nil
+            dequeueNext()
+        }
     }
 
     private func startReconnectTimer() {
@@ -1479,6 +1695,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 responseCallback?(nil)
                 responseCallback = nil
                 commandInFlight = false
+                currentCommand = nil
                 let pending = commandQueue
                 commandQueue.removeAll()
                 for item in pending { item.completion(nil) }
@@ -1528,18 +1745,19 @@ extension BLEManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         NSLog("BLEManager: Connected to %@", peripheral.name ?? "unknown")
-        Task { @MainActor in LogManager.shared.log("BLE 已连接: \(peripheral.name ?? "unknown")") }
-        peripheral.discoverServices([IMMUROK_SERVICE_UUID, OTA_SERVICE_UUID, DEVICE_INFO_SERVICE_UUID])
+        Task { @MainActor in LogManager.shared.log("BLE connected: \(peripheral.name ?? "unknown")") }
+        peripheral.discoverServices([IMMUROK_SERVICE_UUID, OTA_SERVICE_UUID, DEVICE_INFO_SERVICE_UUID, BATTERY_SERVICE_UUID])
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let reason = error?.localizedDescription ?? "clean"
         NSLog("BLEManager: Disconnected (displaySleeping=%d, reason=%@)", displaySleeping, reason)
-        Task { @MainActor in LogManager.shared.log("BLE 已断开: \(reason)") }
+        Task { @MainActor in LogManager.shared.log("BLE disconnected: \(reason)") }
 
         responseCallback?(nil)
         responseCallback = nil
         commandInFlight = false
+        currentCommand = nil
         otaReadCallback?(nil)
         otaReadCallback = nil
         otaCharacteristic = nil
@@ -1557,13 +1775,21 @@ extension BLEManager: CBCentralManagerDelegate {
             cb(false)
         }
 
+        // Cancel pending pair-button wait
+        if let cb = pendingPairButton {
+            pendingPairButton = nil
+            cb(.failure(.generic))
+        }
+
         deviceState = .disconnected
         onDeviceDisconnected?()
 
         if !displaySleeping {
             startReconnectTimer()
         } else {
-            NSLog("BLEManager: Screen locked, defer reconnect until unlock")
+            // Don't reconnect during sleep — active BLE reconnection can wake macOS.
+            // Reconnection is deferred to onScreenDidWake.
+            NSLog("BLEManager: Screen locked, defer reconnect until wake")
         }
     }
 
@@ -1592,6 +1818,9 @@ extension BLEManager: CBPeripheralDelegate {
             } else if service.uuid == DEVICE_INFO_SERVICE_UUID {
                 NSLog("BLEManager: Found Device Information service")
                 peripheral.discoverCharacteristics([FIRMWARE_REV_CHAR_UUID], for: service)
+            } else if service.uuid == BATTERY_SERVICE_UUID {
+                NSLog("BLEManager: Found Battery service")
+                peripheral.discoverCharacteristics([BATTERY_LEVEL_CHAR_UUID], for: service)
             }
         }
     }
@@ -1607,6 +1836,18 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
+        // Fast path: if this device UUID was previously verified, trust it.
+        // BLE bond already authenticates the device; HMAC on every FP match
+        // provides ongoing verification.
+        if let uuid = self.peripheral?.identifier.uuidString,
+           ImmurokSecurity.shared.isVerifiedDevice(uuid: uuid) {
+            NSLog("BLEManager: Device %@ cached as verified, skipping challenge", uuid)
+            isDeviceVerified = true
+            Task { @MainActor in LogManager.shared.log("Device verified (cached)") }
+            onDeviceConnected?(name)
+            return
+        }
+
         let nonce = ImmurokSecurity.shared.generateChallenge()
         sendCommand(.challenge, payload: Array(nonce)) { [weak self] response in
             guard let self = self else { return }
@@ -1616,20 +1857,26 @@ extension BLEManager: CBPeripheralDelegate {
                 if ImmurokSecurity.shared.verifyChallengeResponse(nonce: nonce, response: Data(hmac)) {
                     NSLog("BLEManager: Challenge verification OK")
                     self.isDeviceVerified = true
-                    Task { @MainActor in LogManager.shared.log("设备验证通过") }
+                    // Cache device UUID for future fast-path verification
+                    if let uuid = self.peripheral?.identifier.uuidString {
+                        ImmurokSecurity.shared.saveVerifiedDevice(uuid: uuid)
+                    }
+                    Task { @MainActor in LogManager.shared.log("Device verified") }
                 } else {
                     NSLog("BLEManager: Challenge verification FAILED — HMAC mismatch")
                     self.isDeviceVerified = false
-                    Task { @MainActor in LogManager.shared.log("设备验证失败: HMAC 不匹配") }
+                    ImmurokSecurity.shared.clearVerifiedDevice()
+                    Task { @MainActor in LogManager.shared.log("Verify failed: HMAC mismatch") }
                 }
             } else if let data = response, data.count >= 2, data[0] == ImmurokCommand.challenge.rawValue, data[1] == 0xFF {
                 NSLog("BLEManager: Device reports not paired")
                 self.isDeviceVerified = false
-                Task { @MainActor in LogManager.shared.log("设备验证失败: 设备未配对") }
+                ImmurokSecurity.shared.clearVerifiedDevice()
+                Task { @MainActor in LogManager.shared.log("Verify failed: device not paired") }
             } else {
                 NSLog("BLEManager: Challenge timeout or invalid response")
                 self.isDeviceVerified = false
-                Task { @MainActor in LogManager.shared.log("设备验证失败: 超时") }
+                Task { @MainActor in LogManager.shared.log("Verify failed: timeout") }
             }
 
             self.onDeviceConnected?(name)
@@ -1652,6 +1899,17 @@ extension BLEManager: CBPeripheralDelegate {
             } else if char.uuid == FIRMWARE_REV_CHAR_UUID {
                 NSLog("BLEManager: Found Firmware Revision characteristic, reading...")
                 peripheral.readValue(for: char)
+            } else if char.uuid == BATTERY_LEVEL_CHAR_UUID {
+                // TEMP 2026-05-16: BAS push 验证测试
+                // 显式 setNotifyValue(false) — 必须主动写 CCCD = 0x0000 才真正退订，
+                // 因为旧版 app 订阅过的 CCCD 会被 GAPBondMgr 持久化到设备 EEPROM,
+                // 下次重连设备自动恢复 CCCD=1 继续发 notify (不写 false 就还在订阅).
+                // 仍然做 one-shot read 取连接时初值.
+                NSLog("BLEManager: Found Battery Level char — ONE-SHOT READ + EXPLICIT UNSUBSCRIBE (test)")
+                peripheral.readValue(for: char)
+                if char.properties.contains(.notify) {
+                    peripheral.setNotifyValue(false, for: char)  // ← 主动退订
+                }
             }
         }
 
@@ -1668,7 +1926,7 @@ extension BLEManager: CBPeripheralDelegate {
                 let name = peripheral.name ?? "immurok"
                 deviceState = .connected(name: name)
                 NSLog("BLEManager: Ready - %@", name)
-                Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
+                Task { @MainActor in LogManager.shared.log("GATT ready: \(name)") }
                 performChallengeVerification(name: name)
             }
         }
@@ -1691,7 +1949,7 @@ extension BLEManager: CBPeripheralDelegate {
         deviceState = .connected(name: name)
 
         NSLog("BLEManager: Ready - %@", name)
-        Task { @MainActor in LogManager.shared.log("GATT 就绪: \(name)") }
+        Task { @MainActor in LogManager.shared.log("GATT ready: \(name)") }
         performChallengeVerification(name: name)
     }
 
@@ -1732,6 +1990,7 @@ extension BLEManager: CBPeripheralDelegate {
             if let cb = responseCallback {
                 responseCallback = nil
                 commandInFlight = false
+                currentCommand = nil
                 cb(nil)
                 if !commandInFlight { dequeueNext() }
             }
@@ -1746,6 +2005,17 @@ extension BLEManager: CBPeripheralDelegate {
                 NSLog("BLEManager: Firmware version: %@", version)
                 DispatchQueue.main.async { [weak self] in
                     self?.onFirmwareVersionRead?(version)
+                }
+            }
+            return
+        }
+
+        // Handle Battery Level read + notify (standard BAS 0x2A19, 1 byte 0-100)
+        if characteristic.uuid == BATTERY_LEVEL_CHAR_UUID {
+            if let data = characteristic.value, let pct = data.first {
+                NSLog("BLEManager: Battery Level push: %d%%", pct)
+                DispatchQueue.main.async { [weak self] in
+                    self?.onBatteryLevelNotified?(Int(pct))
                 }
             }
             return
@@ -1770,6 +2040,7 @@ extension BLEManager: CBPeripheralDelegate {
             if let cb = responseCallback {
                 responseCallback = nil
                 commandInFlight = false
+                currentCommand = nil
                 cb(nil)
                 if !commandInFlight { dequeueNext() }
             }
@@ -1789,7 +2060,54 @@ extension BLEManager: CBPeripheralDelegate {
             let intervalMs = String(format: "%.1f", Double(interval) * 1.25)
             let timeoutMs = timeout * 10
             NSLog("BLEManager: Param update: interval=%@ms, latency=%d, timeout=%dms", intervalMs, latency, timeoutMs)
-            Task { @MainActor in LogManager.shared.log("BLE 参数更新: interval=\(intervalMs)ms latency=\(latency) timeout=\(timeoutMs)ms") }
+            Task { @MainActor in LogManager.shared.log("BLE params updated: interval=\(intervalMs)ms latency=\(latency) timeout=\(timeoutMs)ms") }
+            return
+        }
+
+        // PAIR button event notification: [0x34, status]
+        //   0x00 = 30s timeout, 0x01 = pressed (ECDH starting), 0x02 = cancelled
+        if data[0] == ImmurokCommand.pairButton.rawValue && data.count == 2 {
+            let status = data[1]
+            NSLog("BLEManager: Pair button event: 0x%02x", status)
+            switch status {
+            case 0x01:
+                DispatchQueue.main.async { [weak self] in
+                    self?.onPairButtonConfirmed?()
+                }
+            case 0x00:
+                if let cb = self.pendingPairButton {
+                    self.pendingPairButton = nil
+                    cb(.failure(.buttonTimeout))
+                }
+            case 0x02:
+                if let cb = self.pendingPairButton {
+                    self.pendingPairButton = nil
+                    cb(.failure(.buttonCancelled))
+                }
+            default:
+                break
+            }
+            return
+        }
+
+        // Delayed PAIR_INIT result while waiting for the device button:
+        // device sends [0x30][33B pubkey] only after the user presses the button.
+        if data[0] == ImmurokCommand.pairInit.rawValue && data.count >= 34,
+           let cb = self.pendingPairButton {
+            self.pendingPairButton = nil
+            cb(.success(data.subdata(in: 1..<34)))
+            return
+        }
+
+        // Long-press lock-screen request from device (no payload, single byte).
+        // Independent of any preceding 0x21 — AppDelegate decides whether to
+        // ignore (screen already locked) or execute (screen unlocked).
+        if data[0] == 0x23 && data.count == 1 {
+            NSLog("BLEManager: Lock request (long-press) received")
+            Task { @MainActor in LogManager.shared.log("Lock request received (long press)") }
+            DispatchQueue.main.async { [weak self] in
+                self?.onLockRequest?()
+            }
             return
         }
 
@@ -1800,7 +2118,7 @@ extension BLEManager: CBPeripheralDelegate {
 
             if valid {
                 NSLog("BLEManager: FP match verified - page_id=%d", pageId)
-                Task { @MainActor in LogManager.shared.log("FP匹配验签OK id=\(pageId)") }
+                Task { @MainActor in LogManager.shared.log("FP match verified OK id=\(pageId)") }
 
                 // Send ACK
                 self.sendAck()
@@ -1810,7 +2128,7 @@ extension BLEManager: CBPeripheralDelegate {
                 }
             } else {
                 NSLog("BLEManager: FP match HMAC verification FAILED")
-                Task { @MainActor in LogManager.shared.log("FP匹配验签失败！") }
+                Task { @MainActor in LogManager.shared.log("FP match verify failed!") }
             }
             return
         }
@@ -1823,12 +2141,12 @@ extension BLEManager: CBPeripheralDelegate {
                 let success = data[0] == ImmurokStatus.ok.rawValue
                 NSLog("BLEManager: FP gate data result: 0x%02x (%@)", data[0], success ? "OK" : "failed")
                 pendingGateDataCompletion = nil
-                dataCompletion(success ? data : nil)
+                releaseGateHold { dataCompletion(success ? data : nil) }
                 return
             }
         }
 
-        // Check for fingerprint gate result (after WAIT_FP for delete/enroll/setPassword/factoryReset)
+        // Check for fingerprint gate result (after WAIT_FP for delete/enroll/setPassword)
         // Device executes cached command after FP match and sends result notification
         if let gateCompletion = pendingGateCompletion, responseCallback == nil {
             // Enrollment status (0x11, 4 bytes) should fall through to enrollment handler
@@ -1846,7 +2164,7 @@ extension BLEManager: CBPeripheralDelegate {
                     if let cb = self.pendingGateCompletion {
                         NSLog("BLEManager: FP gate operation timeout (post-approve)")
                         self.pendingGateCompletion = nil
-                        cb(false)
+                        self.releaseGateHold { cb(false) }
                     }
                 }
                 onFingerprintGateApproved?()
@@ -1859,14 +2177,14 @@ extension BLEManager: CBPeripheralDelegate {
                 if fpFailureCount >= 3 {
                     NSLog("BLEManager: FP gate: max failures reached, denying")
                     pendingGateCompletion = nil
-                    gateCompletion(false)
+                    releaseGateHold { gateCompletion(false) }
                 }
                 return
             } else {
                 let success = data[0] == ImmurokStatus.ok.rawValue
                 NSLog("BLEManager: FP gate result: 0x%02x (%@)", data[0], success ? "OK" : "failed")
                 pendingGateCompletion = nil
-                gateCompletion(success)
+                releaseGateHold { gateCompletion(success) }
                 return
             }
         }
@@ -1875,7 +2193,16 @@ extension BLEManager: CBPeripheralDelegate {
         // Format: [0x00] = 1 byte OK
         if data.count == 1 && data[0] == ImmurokStatus.ok.rawValue && responseCallback == nil {
             NSLog("BLEManager: Received AUTH_OK notification")
-            Task { @MainActor in LogManager.shared.log("AUTH 认证通过") }
+            Task { @MainActor in LogManager.shared.log("AUTH passed") }
+            // Release queue hold (taken when AUTH_REQUEST returned WAIT_FP)
+            // so a queued command (e.g. battery refresh) can run.
+            // fingerprintResultCompletion is fired via onUnlockResult on the
+            // main thread — must NOT clear it here or the user callback
+            // never fires (regression: 1.11 broke active FP verification by
+            // clearing it pre-emptively).
+            if fingerprintResultCompletion != nil {
+                releaseAuthHold()
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.onUnlockResult?(true)
             }
@@ -1891,6 +2218,9 @@ extension BLEManager: CBPeripheralDelegate {
             onFingerprintAttemptFailed?(remaining)
             if fpFailureCount >= 3 {
                 NSLog("BLEManager: AUTH: max failures reached, denying")
+                if fingerprintResultCompletion != nil {
+                    releaseAuthHold()
+                }
                 DispatchQueue.main.async { [weak self] in
                     self?.onUnlockResult?(false)
                 }
@@ -1907,12 +2237,20 @@ extension BLEManager: CBPeripheralDelegate {
             let total = Int(data[3])
             NSLog("BLEManager: Enrollment status: %d, progress: %d/%d", status, current, total)
 
-            // If there's a pending responseCallback (waiting for ENROLL_START ACK),
-            // complete it with success since we're receiving enrollment updates
-            if let cb = responseCallback {
-                NSLog("BLEManager: Completing pending callback (enrollment started)")
+            // If a pending responseCallback IS waiting for ENROLL_START's
+            // ACK, complete it with success — device's first status frame
+            // doubles as that ack. ONLY hijack the callback when the
+            // in-flight command really is .enrollStart; firmware now also
+            // emits [0x11, WAITING, capture, total] as an enrollment-window
+            // keep-alive every ~3s, and the user can issue an unrelated
+            // command (GET_STATUS, FP_LIST, battery refresh) during enroll —
+            // those callbacks would otherwise be completed with bogus
+            // OK-shaped data and report fake success.
+            if let cb = responseCallback, currentCommand == .enrollStart {
+                NSLog("BLEManager: Completing pending ENROLL_START callback (first enroll status)")
                 responseCallback = nil
                 commandInFlight = false
+                currentCommand = nil
                 cb(Data([0x00]))  // Return OK status
                 if !commandInFlight { dequeueNext() }
             }
@@ -1946,7 +2284,22 @@ extension BLEManager: CBPeripheralDelegate {
             NSLog("BLEManager: Calling responseCallback with data")
             responseCallback = nil
             commandInFlight = false
+            currentCommand = nil
             callback(data)
+            // If the callback armed an FP gate (KEY_SIGN/KEY_GENERATE/
+            // KEY_OTP_GET/AUTH_REQUEST got WAIT_FP back), keep the queue
+            // held until the gate completes — otherwise a queued command
+            // (e.g. battery refresh GET_STATUS) executes during the gate
+            // window, sets a new responseCallback, and the device's
+            // gate/auth notifications (0x10 approve / 0x07 wrong-finger /
+            // OK-result) get misrouted to that command's callback.
+            // Released by releaseGateHold() at gate-completion sites and by
+            // releaseAuthHoldIfNeeded() at AUTH_OK/FAIL/timeout sites.
+            if pendingGateCompletion != nil
+                || pendingGateDataCompletion != nil
+                || fingerprintResultCompletion != nil {
+                commandInFlight = true
+            }
             // If callback chained a new command, commandInFlight is already true again.
             // Otherwise, dequeue next waiting command.
             if !commandInFlight {

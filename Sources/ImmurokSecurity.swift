@@ -13,6 +13,7 @@ class ImmurokSecurity {
 
     private let keychainServiceSharedKey = "com.immurok.shared-key"
     private let keychainServicePassword = "com.immurok.password"
+    private let keychainServiceVerifiedDevice = "com.immurok.verified-device"
     private let keychainAccount = "immurok"
 
     private static let hkdfSalt = "immurok-pairing-salt".data(using: .utf8)!
@@ -127,6 +128,27 @@ class ImmurokSecurity {
         return response.elementsEqual(expectedPrefix)
     }
 
+    // MARK: - Verified Device Cache
+
+    /// Save device UUID after successful challenge verification
+    func saveVerifiedDevice(uuid: String) {
+        guard let data = uuid.data(using: .utf8) else { return }
+        saveToKeychain(service: keychainServiceVerifiedDevice, data: data)
+    }
+
+    /// Check if a device UUID matches the previously verified device
+    func isVerifiedDevice(uuid: String) -> Bool {
+        guard let data = loadFromKeychain(service: keychainServiceVerifiedDevice),
+              let stored = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return stored == uuid
+    }
+
+    func clearVerifiedDevice() {
+        deleteFromKeychain(service: keychainServiceVerifiedDevice)
+    }
+
     // MARK: - Pairing Status
 
     var isPaired: Bool {
@@ -135,6 +157,7 @@ class ImmurokSecurity {
 
     func clearPairingData() {
         deleteFromKeychain(service: keychainServiceSharedKey)
+        clearVerifiedDevice()
         NSLog("ImmurokSecurity: Pairing data cleared")
     }
 

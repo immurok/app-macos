@@ -3,20 +3,18 @@
   "app.settings": "immurok 設定",
   "app.version": "バージョン 4.0",
   "app.description": "macOS Bluetooth指紋認証システム",
-
   "menu.settings": "設定...",
   "menu.quit": "終了",
   "menu.connected": "接続済み",
   "menu.disconnected": "未接続",
   "menu.status.ok": "正常",
   "menu.status.error": "異常",
-
   "tab.fingerprint": "指紋",
   "tab.device": "デバイス",
   "tab.permissions": "認証",
   "tab.status": "状態",
   "tab.about": "情報",
-
+  "battery.refresh.tooltip": "電池レベルを更新",
   "device.connected": "接続済み",
   "device.disconnected": "未接続",
   "device.connected.name": "接続済み：%@",
@@ -30,7 +28,6 @@
   "device.pair": "ペアリング",
   "device.reset.pairing": "ペアリングをリセット",
   "device.not.paired.hint": "デバイスがペアリングされていません。「ペアリング」をクリックしてデバイスのボタンを押してください。",
-
   "pairing.press.button": "デバイスのボタンを押してペアリングを確認してください...",
   "pairing.success": "ペアリング成功",
   "pairing.success.message": "デバイスが正常にペアリングされました。",
@@ -42,14 +39,14 @@
   "pairing.timeout.short": "ペアリングがタイムアウトしました。デバイスのボタンを押して確認してください。",
   "pairing.other.host": "デバイスは他のホストとペアリングされています。\n\nデバイスのボタンを5秒間長押しして工場出荷状態にリセットしてから、再試行してください。",
   "pairing.failed.code": "ペアリング失敗 (0x%@)",
-
-  "reset.title": "工場出荷状態に戻す",
-  "reset.message": "すべてのペアリング情報と指紋データが消去されます。続行してもよろしいですか？",
-  "reset.confirm": "工場出荷状態に戻す",
-  "reset.hold.button": "デバイスのボタンを3秒間長押ししてください...",
-  "reset.done": "リセット完了",
-  "reset.done.message": "ローカルのペアリングデータが消去されました。",
-
+  "pairing.stale.local.title": "古いペアリングデータを検出",
+  "pairing.stale.local.message": "このMacには前回のペアリングキーとロック画面パスワードが残っていますが、現在のデバイスはペアリングされていません（交換またはリセット済みの可能性があります）。\n\n続行するとローカルデータが消去され、現在のデバイスとペアリングされます。",
+  "pairing.stale.local.continue": "消去してペアリング",
+  "unpair.title": "ペアリング解除",
+  "unpair.message": "この操作はローカルに保存されたペアリングデータとロック画面パスワードのみを消去します。デバイス本体には影響しません。\n\nデバイスを別のホストとペアリングするには、解除後にデバイスのボタンを5秒以上長押しして工場出荷状態にリセットしてください。",
+  "unpair.confirm": "ペアリング解除",
+  "unpair.done": "ペアリング解除完了",
+  "unpair.done.message": "ローカルのペアリングデータが消去されました。\n\nデバイスを別のホストとペアリングするには、デバイスのボタンを5秒以上長押しして工場出荷状態にリセットしてください。",
   "fingerprint.title": "immurok 指紋",
   "fingerprint.description": "immurokを使用すると、指紋でMacのロック解除やsudo認証ができます。",
   "fingerprint.count": "%d個の指紋を登録済み（最大5個）",
@@ -65,7 +62,6 @@
   "fingerprint.delete.confirm": "「指 %d」を削除してもよろしいですか？",
   "fingerprint.delete.failed": "削除失敗",
   "fingerprint.delete.failed.message": "指紋を削除できません。",
-
   "enroll.place.finger": "センサーに指を置いてください...",
   "enroll.captured": "キャプチャ済み (%d/%d)",
   "enroll.lift.finger": "指を離してから、もう一度押してください...",
@@ -77,7 +73,6 @@
   "enroll.failed.message": "指紋の登録に失敗しました。再試行してください。",
   "enroll.failed.start": "登録を開始できません。デバイスの接続を確認してください。",
   "enroll.in.progress": "登録中、デバイスのLEDに従ってください...",
-
   "permission.screen.unlock": "画面ロック解除",
   "permission.unlock.password": "ロック解除パスワード",
   "permission.configured": "設定済み",
@@ -90,7 +85,6 @@
   "permission.ssh.agent.hint": "SSH鍵署名サービス（~/.immurok/agent.sock）",
   "permission.cli": "imk CLI",
   "permission.cli.hint": "imkコマンドによる鍵の読み取りを許可（~/.immurok/cli.sock）",
-
   "password.title": "ロック解除パスワードを設定",
   "password.message": "画面ロック解除用のMacログインパスワードを入力：",
   "password.placeholder": "パスワード",
@@ -101,14 +95,12 @@
   "password.error.empty": "パスワードを入力してください。",
   "password.error.mismatch": "パスワードが一致しません。",
   "password.error.save": "パスワードの保存に失敗：%@",
-
   "alert.error": "エラー",
   "alert.cancel": "キャンセル",
   "alert.delete": "削除",
   "alert.install": "インストール",
   "alert.enable": "有効にする",
   "alert.authorize": "許可",
-
   "alert.need.accessibility": "アクセシビリティ権限が必要",
   "alert.need.accessibility.message": "画面ロック解除にはキーボード入力をシミュレートするためのアクセシビリティ権限が必要です。\n\nシステム設定で権限を許可してください。",
   "alert.go.settings": "設定を開く",
@@ -119,7 +111,6 @@
   "alert.install.failed": "インストール失敗",
   "alert.enable.failed": "有効化失敗",
   "alert.disable.failed": "無効化失敗",
-
   "status.device.connection": "デバイス接続",
   "status.security.pairing": "セキュリティペアリング",
   "status.fingerprint.count": "指紋数",
@@ -134,7 +125,6 @@
   "status.tap.configure": "「設定」をタップしてロック解除パスワードを設定",
   "status.tap.authorize": "「許可」をタップしてアクセシビリティを有効化",
   "status.all.ready": "準備完了！指紋で認証できます",
-
   "wizard.title": "immurok セットアップウィザード",
   "wizard.subtitle": "初回使用時は以下の設定を完了してください",
   "wizard.step": "ステップ %d/%d",
@@ -164,18 +154,15 @@
   "wizard.complete.pam": "PAMモジュール",
   "wizard.complete.accessibility": "アクセシビリティ権限",
   "wizard.complete.hint": "設定で「sudo認証」を有効にすると、指紋でsudoを使用できます。",
-
   "feature.unlock.mac": "immurokでMacをロック解除",
   "feature.sudo": "immurokをsudoに使用",
   "feature.system.auth": "immurokをシステム設定に使用",
-
   "about.uninstall": "immurokをアンインストール",
   "about.uninstall.confirm": "アンインストールの確認",
   "about.uninstall.message": "PAMモジュール、sudo設定、およびすべてのユーザーデータが削除されます。アプリ自体は手動で削除する必要があります。",
   "about.uninstall.done": "アンインストール完了",
   "about.uninstall.done.message": "PAMモジュールとユーザーデータが削除されました。\n\nimmurok.appをゴミ箱に移動してアンインストールを完了してください。",
   "about.uninstall.failed": "アンインストール失敗",
-
   "test.title": "認証テスト",
   "test.device.not.connected": "デバイス未接続",
   "test.connect.first": "先にデバイスを接続してください。",
@@ -184,7 +171,6 @@
   "test.success.message": "認証が確認されました！",
   "test.failed": "失敗",
   "test.failed.message": "タイムアウトまたはデバイスエラー。",
-
   "error.device.not.connected": "デバイス未接続",
   "error.communication.failed": "通信失敗",
   "error.save.pairing.failed": "ペアリングデータの保存に失敗",
@@ -198,11 +184,8 @@
   "error.cannot.remove.sudo": "sudo設定を削除できません：%@",
   "error.cannot.remove.pam": "PAMモジュールを削除できません：%@",
   "error.need.pam.first": "先にPAMモジュールをインストールしてください",
-
   "notification.need.accessibility": "システム設定でアクセシビリティ権限を許可してください",
   "notification.cannot.unlock": "画面をロック解除できません",
-
   "ssh.generate.success": "鍵を生成しました",
-
   "settings.language": "言語"
 }

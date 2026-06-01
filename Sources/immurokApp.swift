@@ -165,7 +165,7 @@ private func testAccessibility() {
         let alert = NSAlert()
         alert.messageText = "没有辅助功能权限"
         alert.informativeText = "请在系统设置中授予辅助功能权限"
-        alert.runModal()
+        alert.runModalOverSettings()
         return
     }
 

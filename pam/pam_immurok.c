@@ -16,7 +16,9 @@
 #include <sys/select.h>
 #include <errno.h>
 #include <pwd.h>
+#include <signal.h>
 #include <syslog.h>
+#include <sys/types.h>
 
 #define PAM_SM_AUTH
 #define PAM_SM_ACCOUNT
@@ -72,7 +74,8 @@ static int authenticate_via_socket(const char *user, const char *service) {
         return PAM_AUTH_ERR;
     }
 
-    /* Open controlling terminal for spinner output */
+    /* Open controlling terminal for spinner output. WRONLY is enough — we
+     * never read from /dev/tty here. */
     tty_fd = open("/dev/tty", O_WRONLY);
 
     /* Wait for response with animated spinner */
@@ -115,8 +118,36 @@ static int authenticate_via_socket(const char *user, const char *service) {
                     write(tty_fd, "\r\033[K", 4); /* erase, resume spinner */
                 }
                 /* don't break — keep waiting */
+            } else if (n > 0 && strncmp(response, "REJECT", 6) == 0) {
+                /* User clicked "Reject" in the overlay UI: kill the calling
+                 * process (sudo) so the entire command dies — no password
+                 * fallback. macOS PAM's `sufficient` chain would otherwise
+                 * fall through to pam_opendirectory and prompt for a
+                 * password, which contradicts the user's "no, do not run
+                 * this" intent. SIGTERM lets sudo exit cleanly (cleanup
+                 * handlers run, terminal isn't left in raw mode). */
+                if (tty_fd >= 0) {
+                    snprintf(buf, sizeof(buf),
+                             "\r\033[K\033[31m\xe2\x9c\x97 Rejected by user\033[0m\r\n");
+                    write(tty_fd, buf, strlen(buf));
+                }
+                /* pam_immurok runs INSIDE sudo's process (it's a dlopen'd
+                 * .so), so getpid()=sudo and getppid()=sudo's launcher
+                 * (imk via env). We want to kill sudo itself, not its
+                 * parent — `raise(SIGTERM)` targets the current process. */
+                syslog(LOG_AUTH | LOG_NOTICE,
+                       "pam_immurok: user rejected auth, raising SIGTERM in sudo (pid=%d)",
+                       getpid());
+                raise(SIGTERM);
+                /* Don't return — give the signal a moment to be delivered
+                 * before any further PAM logic runs. _exit() bypasses
+                 * sudo's signal handlers entirely, ensuring the password
+                 * prompt never happens. EX_NOPERM (77) is the conventional
+                 * "auth refused" exit code. */
+                _exit(77);
             } else {
-                /* Final failure (DENY/TIMEOUT/other) */
+                /* Final failure (DENY/TIMEOUT/other) — fall through to
+                 * remaining auth modules (password prompt). */
                 if (tty_fd >= 0) {
                     snprintf(buf, sizeof(buf),
                              "\r\033[K\033[31m\xe2\x9c\x97 Denied\033[0m");

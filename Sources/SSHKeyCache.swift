@@ -20,6 +20,14 @@ struct SSHKeyCacheEntry: Codable {
     let fingerprint: String  // SHA256:base64 fingerprint (of SSH blob)
 }
 
+/// On-disk cache wrapper that pairs entries with the firmware digest used to
+/// validate them. Older caches without checksum decode with checksum=0.
+private struct SSHCacheFile: Codable {
+    var entries: [SSHKeyCacheEntry]
+    var count: Int
+    var checksum: UInt32
+}
+
 // MARK: - SSH Key Cache
 
 class SSHKeyCache {
@@ -27,6 +35,8 @@ class SSHKeyCache {
     static let shared = SSHKeyCache()
 
     private var _entries: [SSHKeyCacheEntry] = []
+    private var _checksum: UInt32 = 0
+    private var _count: Int = 0
     private let lock = NSLock()
     private let cacheURL: URL
 
@@ -34,6 +44,15 @@ class SSHKeyCache {
         lock.lock()
         defer { lock.unlock() }
         return _entries
+    }
+
+    /// Last firmware-reported checksum (0 = invalid / never synced).
+    /// Used by AppViewModel to mirror SSH digest into KeyNameCache without
+    /// re-doing the BLE fetch.
+    var checksum: UInt32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return _checksum
     }
 
     private init() {
@@ -46,7 +65,9 @@ class SSHKeyCache {
 
     // MARK: - Public API
 
-    /// Sync cache with device: read all SSH key public keys via KEY_GETPUB (flash read, no ECC)
+    /// Sync cache with device. First fetches (count, checksum) — short BLE
+    /// round-trip — and only does the full per-entry KEY_READ chain if the
+    /// digest doesn't match what we already have on disk.
     func sync(completion: @escaping () -> Void) {
         let ble = BLEManager.shared
         guard ble.deviceState.isConnected else {
@@ -54,21 +75,95 @@ class SSHKeyCache {
             return
         }
 
-        ble.getKeyCount(cat: .ssh) { [weak self] count in
-            guard let self = self, count > 0 else {
-                self?.setEntries([])
-                self?.saveToDisk()
+        ble.getKeyCountAndChecksum(cat: .ssh) { [weak self] count, checksum in
+            guard let self = self else { completion(); return }
+
+            self.lock.lock()
+            let cachedCount = self._count
+            let cachedChecksum = self._checksum
+            self.lock.unlock()
+
+            // Cache hit: same count and (non-zero, matching) checksum → reuse.
+            // count=0 short-circuit too — nothing to compare against.
+            let bothEmpty = (count == 0 && cachedCount == 0)
+            let bothNonEmpty = (count > 0 && checksum != 0
+                                && cachedChecksum == checksum
+                                && cachedCount == count)
+            if bothEmpty || bothNonEmpty {
+                NSLog("SSHKeyCache: cache hit (count=%d cs=0x%08x), skip read",
+                      count, checksum)
                 completion()
                 return
             }
 
+            // Cache miss → full chain
+            NSLog("SSHKeyCache: cache miss (count=%d cs=0x%08x), fetching",
+                  count, checksum)
+            if count == 0 {
+                self.setEntries([], count: 0, checksum: checksum)
+                self.saveToDisk()
+                completion()
+                return
+            }
             self.chainSync(ble: ble, count: count, index: 0, result: []) { newEntries in
-                self.setEntries(newEntries)
+                self.setEntries(newEntries, count: count, checksum: checksum)
                 self.saveToDisk()
                 NSLog("SSHKeyCache: synced %d keys", newEntries.count)
                 completion()
             }
         }
+    }
+
+    /// Mirror the firmware's swap-delete locally: remove entry at deletedIdx,
+    /// remap the entry that held the previous max index (count-1) to occupy
+    /// the freed slot. Caller must call setChecksum after with the new
+    /// firmware digest to mark the cache valid.
+    func applySwapDelete(deletedIdx: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !_entries.isEmpty else { return }
+        let oldMaxIdx = _count - 1
+        _entries.removeAll { $0.index == deletedIdx }
+        if deletedIdx != oldMaxIdx {
+            if let i = _entries.firstIndex(where: { $0.index == oldMaxIdx }) {
+                let e = _entries[i]
+                _entries[i] = SSHKeyCacheEntry(
+                    index: deletedIdx, name: e.name,
+                    publicKeyBlob: e.publicKeyBlob, fingerprint: e.fingerprint
+                )
+            }
+        }
+        _count = _entries.count
+        _checksum = 0  // pending: caller must set new checksum
+        // Defer saveToDisk to setChecksum to avoid double-write
+    }
+
+    /// Persist firmware-reported (count, checksum) after a local mutation.
+    /// If count diverges, cache is marked stale (checksum=0) — next sync refetches.
+    func setChecksum(count: Int, checksum: UInt32) {
+        lock.lock()
+        if _count == count {
+            _checksum = checksum
+        } else {
+            NSLog("SSHKeyCache: count drift after mutation (cached=%d device=%d), invalidating",
+                  _count, count)
+            _checksum = 0
+        }
+        lock.unlock()
+        saveToDisk()
+    }
+
+    /// Append a new SSH entry to the cache and bump count. Caller MUST follow
+    /// up with setChecksum() carrying the firmware's new digest. Mirrors the
+    /// applyAdd pattern used in KeyNameCache.
+    func applyAdd(_ entry: SSHKeyCacheEntry) {
+        lock.lock()
+        _entries.removeAll(where: { $0.index == entry.index })
+        _entries.append(entry)
+        _count = _entries.count
+        _checksum = 0  // pending: caller must call setChecksum
+        lock.unlock()
+        saveToDisk()
     }
 
     /// Add a single entry and save (used after KEY_GENERATE to avoid full sync)
@@ -135,6 +230,16 @@ class SSHKeyCache {
     private func setEntries(_ newEntries: [SSHKeyCacheEntry]) {
         lock.lock()
         _entries = newEntries
+        _count = newEntries.count
+        _checksum = 0  // local mutation invalidates digest; next sync refetches
+        lock.unlock()
+    }
+
+    private func setEntries(_ newEntries: [SSHKeyCacheEntry], count: Int, checksum: UInt32) {
+        lock.lock()
+        _entries = newEntries
+        _count = count
+        _checksum = checksum
         lock.unlock()
     }
 
@@ -184,11 +289,26 @@ class SSHKeyCache {
         guard FileManager.default.fileExists(atPath: cacheURL.path) else { return }
         do {
             let data = try Data(contentsOf: cacheURL)
-            let loaded = try JSONDecoder().decode([SSHKeyCacheEntry].self, from: data)
-            lock.lock()
-            _entries = loaded
-            lock.unlock()
-            NSLog("SSHKeyCache: loaded %d entries from disk", loaded.count)
+            // New format: SSHCacheFile { entries, count, checksum }
+            // Old format: bare [SSHKeyCacheEntry] — fall back, leave checksum=0
+            // so the next sync forces a refetch.
+            if let file = try? JSONDecoder().decode(SSHCacheFile.self, from: data) {
+                lock.lock()
+                _entries = file.entries
+                _count = file.count
+                _checksum = file.checksum
+                lock.unlock()
+                NSLog("SSHKeyCache: loaded %d entries (cs=0x%08x) from disk",
+                      file.entries.count, file.checksum)
+            } else {
+                let loaded = try JSONDecoder().decode([SSHKeyCacheEntry].self, from: data)
+                lock.lock()
+                _entries = loaded
+                _count = loaded.count
+                _checksum = 0  // legacy format → force refetch on next sync
+                lock.unlock()
+                NSLog("SSHKeyCache: loaded %d entries from legacy disk format", loaded.count)
+            }
         } catch {
             NSLog("SSHKeyCache: failed to load: %@", error.localizedDescription)
         }
@@ -196,10 +316,10 @@ class SSHKeyCache {
 
     private func saveToDisk() {
         lock.lock()
-        let snapshot = _entries
+        let file = SSHCacheFile(entries: _entries, count: _count, checksum: _checksum)
         lock.unlock()
         do {
-            let data = try JSONEncoder().encode(snapshot)
+            let data = try JSONEncoder().encode(file)
             try data.write(to: cacheURL, options: .atomic)
         } catch {
             NSLog("SSHKeyCache: failed to save: %@", error.localizedDescription)

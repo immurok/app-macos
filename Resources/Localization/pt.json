@@ -3,20 +3,18 @@
   "app.settings": "Configurações do immurok",
   "app.version": "Versão 4.0",
   "app.description": "Sistema de autenticação por impressão digital Bluetooth para macOS",
-
   "menu.settings": "Configurações...",
   "menu.quit": "Sair",
   "menu.connected": "Conectado",
   "menu.disconnected": "Desconectado",
   "menu.status.ok": "Status OK",
   "menu.status.error": "Erro de status",
-
   "tab.fingerprint": "Impressão",
   "tab.device": "Dispositivo",
   "tab.permissions": "Autenticação",
   "tab.status": "Status",
   "tab.about": "Sobre",
-
+  "battery.refresh.tooltip": "Atualizar nível da bateria",
   "device.connected": "Conectado",
   "device.disconnected": "Desconectado",
   "device.connected.name": "Conectado: %@",
@@ -30,7 +28,6 @@
   "device.pair": "Parear",
   "device.reset.pairing": "Redefinir pareamento",
   "device.not.paired.hint": "Dispositivo não pareado. Clique em «Parear» e pressione o botão do dispositivo.",
-
   "pairing.press.button": "Pressione o botão do dispositivo para confirmar...",
   "pairing.success": "Pareamento bem-sucedido",
   "pairing.success.message": "O dispositivo foi pareado com sucesso.",
@@ -42,14 +39,14 @@
   "pairing.timeout.short": "O pareamento expirou. Pressione o botão para confirmar.",
   "pairing.other.host": "O dispositivo está pareado com outro host.\n\nMantenha o botão pressionado por 5 segundos para redefinir, depois tente novamente.",
   "pairing.failed.code": "Falha no pareamento (0x%@)",
-
-  "reset.title": "Redefinição de fábrica",
-  "reset.message": "Isso apagará todas as informações de pareamento e impressões digitais. Deseja continuar?",
-  "reset.confirm": "Redefinir",
-  "reset.hold.button": "Mantenha o botão pressionado por 3 segundos...",
-  "reset.done": "Redefinição concluída",
-  "reset.done.message": "Os dados de pareamento locais foram apagados.",
-
+  "pairing.stale.local.title": "Dados de pareamento obsoletos detectados",
+  "pairing.stale.local.message": "Este Mac ainda mantém a chave de pareamento e a senha de bloqueio anteriores, mas o dispositivo atual não está mais pareado (provavelmente substituído ou redefinido).\n\nContinue para limpar os dados locais e parear com o dispositivo atual.",
+  "pairing.stale.local.continue": "Limpar e parear",
+  "unpair.title": "Desemparelhar",
+  "unpair.message": "Isso apagará apenas os dados de pareamento e a senha de bloqueio armazenados localmente. O dispositivo em si não será afetado.\n\nPara parear o dispositivo com outro host, segure seu botão por 5 segundos ou mais para redefini-lo aos padrões de fábrica.",
+  "unpair.confirm": "Desemparelhar",
+  "unpair.done": "Desemparelhado",
+  "unpair.done.message": "Os dados de pareamento locais foram apagados.\n\nPara parear o dispositivo com outro host, segure seu botão por 5 segundos ou mais para redefini-lo aos padrões de fábrica.",
   "fingerprint.title": "Impressão digital immurok",
   "fingerprint.description": "O immurok permite usar sua impressão digital para desbloquear o Mac e autorizar comandos sudo.",
   "fingerprint.count": "%d impressão(ões) registrada(s) (máx 5)",
@@ -65,7 +62,6 @@
   "fingerprint.delete.confirm": "Deseja excluir «Dedo %d»?",
   "fingerprint.delete.failed": "Falha ao excluir",
   "fingerprint.delete.failed.message": "Não foi possível excluir a impressão.",
-
   "enroll.place.finger": "Coloque seu dedo no sensor...",
   "enroll.captured": "Capturado (%d/%d)",
   "enroll.lift.finger": "Levante o dedo e pressione novamente...",
@@ -77,7 +73,6 @@
   "enroll.failed.message": "O registro de impressão falhou. Tente novamente.",
   "enroll.failed.start": "Não foi possível iniciar o registro. Verifique a conexão.",
   "enroll.in.progress": "Registrando, siga o LED...",
-
   "permission.screen.unlock": "Desbloqueio de tela",
   "permission.unlock.password": "Senha",
   "permission.configured": "Configurado",
@@ -90,7 +85,6 @@
   "permission.ssh.agent.hint": "Serviço de assinatura de chaves SSH (~/.immurok/agent.sock)",
   "permission.cli": "imk CLI",
   "permission.cli.hint": "Permitir que o imk CLI leia chaves (~/.immurok/cli.sock)",
-
   "password.title": "Configurar senha",
   "password.message": "Digite sua senha do Mac para desbloquear:",
   "password.placeholder": "Senha",
@@ -101,14 +95,12 @@
   "password.error.empty": "A senha não pode estar vazia.",
   "password.error.mismatch": "As senhas não coincidem.",
   "password.error.save": "Falha ao salvar: %@",
-
   "alert.error": "Erro",
   "alert.cancel": "Cancelar",
   "alert.delete": "Excluir",
   "alert.install": "Instalar",
   "alert.enable": "Ativar",
   "alert.authorize": "Autorizar",
-
   "alert.need.accessibility": "Permissão de acessibilidade necessária",
   "alert.need.accessibility.message": "O desbloqueio de tela requer permissão de acessibilidade.\n\nConceda nas Preferências do Sistema.",
   "alert.go.settings": "Abrir configurações",
@@ -119,7 +111,6 @@
   "alert.install.failed": "Falha na instalação",
   "alert.enable.failed": "Falha ao ativar",
   "alert.disable.failed": "Falha ao desativar",
-
   "status.device.connection": "Conexão do dispositivo",
   "status.security.pairing": "Pareamento seguro",
   "status.fingerprint.count": "Impressões",
@@ -134,7 +125,6 @@
   "status.tap.configure": "Toque em «Configurar» para definir senha",
   "status.tap.authorize": "Toque em «Autorizar» para ativar acessibilidade",
   "status.all.ready": "Tudo pronto! Toque para autenticar",
-
   "wizard.title": "Assistente de configuração immurok",
   "wizard.subtitle": "Complete a configuração para o primeiro uso",
   "wizard.step": "Passo %d/%d",
@@ -164,18 +154,15 @@
   "wizard.complete.pam": "Módulo PAM",
   "wizard.complete.accessibility": "Acessibilidade",
   "wizard.complete.hint": "Você pode ativar «Auth sudo» nas configurações.",
-
   "feature.unlock.mac": "Usar immurok para desbloquear",
   "feature.sudo": "Usar immurok para sudo",
   "feature.system.auth": "Usar immurok para configurações do sistema",
-
   "about.uninstall": "Desinstalar immurok",
   "about.uninstall.confirm": "Confirmar desinstalação",
   "about.uninstall.message": "Isso removerá o módulo PAM e todos os dados. O app deve ser removido manualmente.",
   "about.uninstall.done": "Desinstalação concluída",
   "about.uninstall.done.message": "Módulo PAM e dados removidos.\n\nMova immurok.app para a lixeira.",
   "about.uninstall.failed": "Falha na desinstalação",
-
   "test.title": "Teste de autenticação",
   "test.device.not.connected": "Dispositivo não conectado",
   "test.connect.first": "Conecte primeiro o dispositivo.",
@@ -184,7 +171,6 @@
   "test.success.message": "Autenticação verificada!",
   "test.failed": "Falhou",
   "test.failed.message": "Tempo esgotado ou erro.",
-
   "error.device.not.connected": "Dispositivo não conectado",
   "error.communication.failed": "Falha na comunicação",
   "error.save.pairing.failed": "Falha ao salvar",
@@ -198,11 +184,8 @@
   "error.cannot.remove.sudo": "Não foi possível remover sudo: %@",
   "error.cannot.remove.pam": "Não foi possível remover PAM: %@",
   "error.need.pam.first": "Instale primeiro o módulo PAM",
-
   "notification.need.accessibility": "Conceda permissão de acessibilidade",
   "notification.cannot.unlock": "Não foi possível desbloquear",
-
   "ssh.generate.success": "Chave gerada",
-
   "settings.language": "Idioma"
 }

@@ -67,7 +67,10 @@ class FingerprintGateController: ObservableObject {
         guard isPresented else { return }
         countdownTask?.cancel()
         state = .success
-        scheduleAutoDismiss(1.5)
+        // Quick dismiss (0.4s = icon transition 0.3s + brief dwell). 1.5s
+        // would block any progress UI the caller pops up immediately after
+        // FP success — common pattern for import/delete/export batches.
+        scheduleAutoDismiss(0.4)
     }
 
     func reportFailed() {
@@ -75,6 +78,7 @@ class FingerprintGateController: ObservableObject {
         if case .failed = state { return }
         state = .failed
         countdownTask?.cancel()
+        // Keep 1.5s for failure — user needs time to read the reason.
         scheduleAutoDismiss(1.5)
     }
 
@@ -82,11 +86,17 @@ class FingerprintGateController: ObservableObject {
         let cb = onCancel
         cleanup()
         isPresented = false
-        bleManager.cancelGate()
+        // 必须用 cancelGateAndRelease 而不是 cancelGate, 否则 ENROLL_START /
+        // DELETE_FP / KEY_SIGN / AUTH_REQUEST 等返回 WAIT_FP 后 hold 住的
+        // 命令队列让 gateCancel 进队不出队, 固件不知道要取消.
+        bleManager.cancelGateAndRelease()
         cb?()
     }
 
     func reset() {
+        // 防御性: 任何 reset 路径 (断连等) 都发一次 cancel.
+        // cancelGateAndRelease 内部 guard isConnected, 断连时 no-op 安全.
+        bleManager.cancelGateAndRelease()
         cleanup()
         isPresented = false
     }
@@ -260,5 +270,17 @@ struct FingerprintGateSheet: View {
         .padding(32)
         .frame(width: 280, height: 320)
         .interactiveDismissDisabled()
+        .onDisappear {
+            // 防御性: sheet 因外部原因关闭 (主窗口被 ⌘W / app 进程异常退出 /
+            // 上层 isPresented 被直接 reset) 时, 如果固件还在 waiting 状态,
+            // 主动发 GATE_CANCEL 避免固件 pending_cmd 一直挂着. processing
+            // 表示固件已 ack 命令开始 EXEC, success/failed 表示已自然结束.
+            switch controller.state {
+            case .waiting, .attemptFailed:
+                BLEManager.shared.cancelGateAndRelease()
+            case .processing, .success, .failed:
+                break
+            }
+        }
     }
 }

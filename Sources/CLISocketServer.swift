@@ -6,7 +6,12 @@
  *
  * Commands:
  *   PING           → OK:immurok
- *   LIST:cat       → OK:count\nname1\nname2\n\n
+ *   LIST:cat       → OK:count\n
+ *                    <line>\n × count\n
+ *                    \n
+ *                    line format:
+ *                      otp/api: <name>
+ *                      ssh:     <name>\t<algo> <base64-pubkey>
  *   GET:cat:name   → OK:value
  *   ERROR:reason
  */
@@ -185,28 +190,44 @@ class CLISocketServer {
     // MARK: - LIST
 
     private func handleList(_ clientSocket: Int32, cat: KeystoreCategory) {
-        guard bleManager.deviceState.isConnected else {
-            sendLine(clientSocket, "ERROR:NOT_CONNECTED")
-            return
-        }
-
+        // Route through the App's cache layer so digest-matched listings
+        // come straight from disk (one ~6-byte BLE round-trip for the
+        // checksum, zero per-entry reads). Falls back to full BLE fetch
+        // only when the device-reported (count, checksum) differs from
+        // what we have cached.
         let sem = DispatchSemaphore(value: 0)
-        var names: [(index: Int, name: String)] = []
-
-        bleManager.getKeyEntryNames(cat: cat) { result in
-            names = result
-            sem.signal()
+        if cat == .ssh {
+            SSHKeyCache.shared.sync { sem.signal() }
+        } else {
+            KeyNameCache.shared.syncCategory(cat) { sem.signal() }
         }
+        // 10 s budget covers a worst-case full re-fetch on a slow link.
+        // If the device is disconnected, sync completes immediately with
+        // whatever's in the cache — we still serve stale entries rather
+        // than fail outright.
+        _ = sem.wait(timeout: .now() + 10)
 
-        guard sem.wait(timeout: .now() + 10) == .success else {
-            sendLine(clientSocket, "ERROR:TIMEOUT")
-            return
-        }
-
-        // Format: OK:count\nname1\nname2\n\n
-        var response = "OK:\(names.count)\n"
-        for entry in names {
-            response += "\(entry.name)\n"
+        // Format:
+        //   OK:count\n
+        //   <name>\n                                  (otp/api)
+        //   <name>\t<algo> <base64-pubkey>\n          (ssh)
+        //   ...
+        //   \n   (terminator blank line)
+        var response: String
+        switch cat {
+        case .ssh:
+            let entries = SSHKeyCache.shared.entries
+            response = "OK:\(entries.count)\n"
+            for e in entries {
+                let b64 = e.publicKeyBlob.base64EncodedString()
+                response += "\(e.name)\tecdsa-sha2-nistp256 \(b64)\n"
+            }
+        default:
+            let entries = KeyNameCache.shared.entries(for: cat)
+            response = "OK:\(entries.count)\n"
+            for e in entries {
+                response += "\(e.name)\n"
+            }
         }
         response += "\n"
         sendRaw(clientSocket, response)
@@ -266,7 +287,7 @@ class CLISocketServer {
     private func handleGetSSH(_ clientSocket: Int32, name: String) {
         // Look up in SSHKeyCache
         guard let entry = SSHKeyCache.shared.entries.first(where: { $0.name == name }) else {
-            sendLine(clientSocket, "ERROR:NOT_FOUND:\(name)")
+            sendLine(clientSocket, notFoundResponse(name: name))
             return
         }
         let pubKey = SSHKeyCache.formatOpenSSHPublicKey(blob: entry.publicKeyBlob, comment: entry.name)
@@ -278,7 +299,7 @@ class CLISocketServer {
     private func handleGetAPI(_ clientSocket: Int32, name: String) {
         // Find index by name
         guard let idx = findKeyIndex(cat: .api, name: name) else {
-            sendLine(clientSocket, "ERROR:NOT_FOUND:\(name)")
+            sendLine(clientSocket, notFoundResponse(name: name))
             return
         }
 
@@ -296,12 +317,13 @@ class CLISocketServer {
             return
         }
 
-        // Entry layout: name[16] + secret[240]
-        guard data.count > 16 else {
+        // Entry layout (api_entry_t in firmware/APP/immurok_keystore.h):
+        // name[32] + key[128] = 160 bytes total
+        guard data.count > 32 else {
             sendLine(clientSocket, "ERROR:INVALID_DATA")
             return
         }
-        let secretData = data[16...]
+        let secretData = data[32...]
         let trimmed = secretData.prefix(while: { $0 != 0 })
         guard let secret = String(data: trimmed, encoding: .utf8), !secret.isEmpty else {
             sendLine(clientSocket, "ERROR:EMPTY_SECRET")
@@ -314,7 +336,7 @@ class CLISocketServer {
 
     private func handleGetOTP(_ clientSocket: Int32, name: String) {
         guard let idx = findKeyIndex(cat: .otp, name: name) else {
-            sendLine(clientSocket, "ERROR:NOT_FOUND:\(name)")
+            sendLine(clientSocket, notFoundResponse(name: name))
             return
         }
 
@@ -347,18 +369,82 @@ class CLISocketServer {
 
     // MARK: - Helpers
 
-    /// Find keystore index by name (synchronous, blocking)
+    /// Find keystore index by name (synchronous, blocking).
+    /// Routes through the same cache that `imk list` uses
+    /// (KeyNameCache / SSHKeyCache) — guarantees `get` sees exactly what
+    /// `list` shows, and skips the redundant 128 KEY_READ round-trip
+    /// chain the legacy bleManager.getKeyEntryNames was doing on each
+    /// `imk get` call. The cache's syncCategory does a single 6-byte
+    /// (count, checksum) digest probe and only re-fetches when the
+    /// device-side digest changed — usually instant.
     private func findKeyIndex(cat: KeystoreCategory, name: String) -> Int? {
-        let sem = DispatchSemaphore(value: 0)
-        var foundIndex: Int?
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        bleManager.getKeyEntryNames(cat: cat) { names in
-            foundIndex = names.first(where: { $0.name == name })?.index
-            sem.signal()
+        // Sync cache to current device state.
+        let sem = DispatchSemaphore(value: 0)
+        if cat == .ssh {
+            SSHKeyCache.shared.sync { sem.signal() }
+        } else {
+            KeyNameCache.shared.syncCategory(cat) { sem.signal() }
+        }
+        _ = sem.wait(timeout: .now() + 10)
+
+        // Read entries from the cache.
+        let entries: [(index: Int, name: String)]
+        if cat == .ssh {
+            entries = SSHKeyCache.shared.entries.map { (index: $0.index, name: $0.name) }
+        } else {
+            entries = KeyNameCache.shared.entries(for: cat).map { (index: $0.index, name: $0.name) }
+        }
+        let availableNames = entries.map(\.name)
+
+        // 3-pass match: exact → trimmed → control-char-stripped + trimmed.
+        if let hit = entries.first(where: { $0.name == name }) {
+            return hit.index
+        }
+        if let hit = entries.first(where: {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == target
+        }) {
+            return hit.index
+        }
+        let cleanedTarget = Self.cleanedName(target)
+        if let hit = entries.first(where: {
+            Self.cleanedName($0.name) == cleanedTarget
+        }) {
+            return hit.index
         }
 
-        guard sem.wait(timeout: .now() + 10) == .success else { return nil }
-        return foundIndex
+        self.lastAvailableNames = availableNames
+        let quoted = availableNames
+            .map { "\"\($0)\" (\($0.utf8.count)B)" }
+            .joined(separator: ", ")
+        NSLog("CLISocketServer: GET %@/'%@' not found. Available: [%@]",
+              String(describing: cat), name, quoted)
+        return nil
+    }
+
+    /// Last lookup's available names — surfaced in NOT_FOUND error responses
+    /// so the user sees the real stored content in their terminal.
+    private var lastAvailableNames: [String] = []
+
+    private static func cleanedName(_ s: String) -> String {
+        s.unicodeScalars
+            .filter { !$0.properties.isDefaultIgnorableCodePoint && $0.value >= 0x20 }
+            .map(String.init)
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Build a NOT_FOUND error response that includes the available names so
+    /// the user can immediately spot encoding mismatches without checking
+    /// Console.app. Format keeps the response on a single line.
+    private func notFoundResponse(name: String) -> String {
+        let dump = lastAvailableNames
+            .map { "'\($0)'" }
+            .joined(separator: ", ")
+        return dump.isEmpty
+            ? "ERROR:NOT_FOUND:\(name)"
+            : "ERROR:NOT_FOUND:\(name) | available: [\(dump)]"
     }
 
     private func sendLine(_ socket: Int32, _ line: String) {
