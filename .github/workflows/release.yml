@@ -102,3 +102,6 @@ jobs:
         with:
           files: dist/*.pkg
           generate_release_notes: true
+          # Tags with a SemVer pre-release suffix (e.g. v1.20.0-beta.1) publish
+          # as a GitHub pre-release; clean tags (v1.20.0) publish as a full release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
