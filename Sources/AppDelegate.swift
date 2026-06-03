@@ -111,6 +111,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(nanoseconds: 500_000_000)
             self.checkAndShowSetupWizard()
         }
+
+        // 启动即检查 authorization 行是否被系统升级抹掉
+        Task { @MainActor in
+            SetupManager.shared.refreshStatus()
+            self.maybeNotifyAuthorizationRepair()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -168,6 +174,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // still suppresses the trailing 0x23 long-press lock.
         pamSocketServer?.onAuthSuccess = { [weak self] in
             self?.lastAuthFlowAt = Date()
+        }
+
+        pamSocketServer?.onAuthorizationPreAuthExpiredUnconsumed = { [weak self] in
+            DispatchQueue.main.async {
+                SetupManager.shared.refreshStatus()
+                self?.maybeNotifyAuthorizationRepair()
+            }
         }
 
         do {
@@ -710,6 +723,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Bring app to foreground
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Authorization Repair Notification
+
+    /// authorization 行丢失时发一次系统通知(同一未修复状态不重复打扰)。
+    private var didNotifyAuthorizationRepair = false
+    @MainActor
+    private func maybeNotifyAuthorizationRepair() {
+        guard SetupManager.shared.needsAuthorizationRepair else {
+            didNotifyAuthorizationRepair = false  // 已修复 → 重置,下次再丢可再次通知
+            return
+        }
+        guard !didNotifyAuthorizationRepair else { return }
+        didNotifyAuthorizationRepair = true
+
+        let title = "notify.authrepair.title".localized
+        let body = "notify.authrepair.body".localized
+        let script = "display notification \"\(body)\" with title \"immurok\" subtitle \"\(title)\""
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        try? task.run()
     }
 
     // MARK: - Accessibility Permission

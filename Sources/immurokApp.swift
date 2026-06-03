@@ -1,6 +1,5 @@
 import SwiftUI
 import ApplicationServices
-import CoreGraphics
 
 @main
 struct immurokApp: App {
@@ -66,6 +65,31 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if setupManager.needsAuthorizationRepair {
+                Button(action: {
+                    setupManager.repairAuthorization { success, error in
+                        if !success, let error = error {
+                            let alert = NSAlert()
+                            alert.messageText = "menu.authrepair".localized
+                            alert.informativeText = error
+                            alert.runModal()
+                        }
+                    }
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("menu.authrepair".localized)
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                Divider()
+            }
+
             // 连接状态 - 点击进入设备页面
             Button(action: {
                 openSettings(tab: .device)
@@ -111,21 +135,6 @@ struct MenuBarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
-            // 测试辅助功能
-            Button(action: {
-                testAccessibility()
-            }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "keyboard")
-                        .frame(width: 16)
-                    Text("测试辅助功能")
-                    Spacer()
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
             Divider()
 
             // 退出
@@ -154,35 +163,4 @@ struct MenuBarView: View {
 
 extension Notification.Name {
     static let openSettingsTab = Notification.Name("openSettingsTab")
-}
-
-// MARK: - Test Accessibility
-
-private func testAccessibility() {
-    // Check if we have accessibility permission
-    guard AXIsProcessTrusted() else {
-        NSLog("Test: No accessibility permission!")
-        let alert = NSAlert()
-        alert.messageText = "没有辅助功能权限"
-        alert.informativeText = "请在系统设置中授予辅助功能权限"
-        alert.runModalOverSettings()
-        return
-    }
-
-    NSLog("Test: Sending Ctrl+Cmd+Q to lock screen...")
-
-    // Send Ctrl+Cmd+Q (lock screen shortcut)
-    // Q key = 0x0C
-    let src = CGEventSource(stateID: .hidSystemState)
-    let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 0x0C, keyDown: true)
-    let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 0x0C, keyDown: false)
-
-    // Add Ctrl (0x40000) + Cmd (0x100000) modifiers
-    keyDown?.flags = [.maskCommand, .maskControl]
-    keyUp?.flags = [.maskCommand, .maskControl]
-
-    keyDown?.post(tap: .cghidEventTap)
-    keyUp?.post(tap: .cghidEventTap)
-
-    NSLog("Test: Lock screen command sent")
 }

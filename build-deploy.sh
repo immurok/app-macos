@@ -198,6 +198,25 @@ sign_deploy() {
         [ -f "$f" ] && cp "$f" immurok.app/Contents/Resources/
     done
 
+    # Build the repair pkg (re-adds the immurok PAM line after a macOS upgrade
+    # strips it from /etc/pam.d/authorization). Must run via system_installd —
+    # osascript admin root is TCC-blocked from writing /etc/pam.d. Mirrors the
+    # uninstall pkg flow. UNSIGNED here for local dev; build-pkg.sh signs it for
+    # release. An unsigned pkg still installs via Installer after a Gatekeeper
+    # override (right-click → Open).
+    if [ -f "packaging/repair-postinstall" ]; then
+        REPAIR_SCRIPTS="$(mktemp -d)"
+        cp packaging/repair-postinstall "$REPAIR_SCRIPTS/postinstall"
+        chmod +x "$REPAIR_SCRIPTS/postinstall"
+        pkgbuild --nopayload --scripts "$REPAIR_SCRIPTS" \
+            --identifier "com.immurok.repair" --version "1.0" \
+            immurok.app/Contents/Resources/immurok_repair.pkg >/dev/null
+        rm -rf "$REPAIR_SCRIPTS"
+        log_info "Repair pkg (unsigned, dev) bundled in app Resources"
+    else
+        log_warn "packaging/repair-postinstall not found"
+    fi
+
     # Copy localization files to app bundle
     if [ -d "Resources/Localization" ]; then
         mkdir -p immurok.app/Contents/Resources/Localization

@@ -73,6 +73,9 @@ class QuickFillViewModel: ObservableObject {
     private var verifyTimer: Timer?
     private var verifyStartTime: Date?
     private var verifyEntry: QuickFillEntry?
+    /// Saved BLEManager.onFingerprintAttemptFailed handler, restored when
+    /// verification ends. While verifying we flash red on each wrong finger.
+    private var previousAttemptFailed: ((Int) -> Void)?
 
     /// 分类前缀: "o " → OTP, "a " → API, "s " → SSH
     private static let categoryPrefixes: [(prefix: String, cat: KeystoreCategory)] = [
@@ -183,24 +186,7 @@ class QuickFillViewModel: ObservableObject {
     // MARK: - OTP Verification (single-step, device-side TOTP)
 
     private func startOTPVerification(entry: QuickFillEntry) {
-        isVerifying = true
-        verifyProgress = 1.0
-        showRedFlash = false
-        verifyEntry = entry
-        verifyStartTime = Date()
-
-        // Countdown timer
-        verifyTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self, let start = self.verifyStartTime else { return }
-            let elapsed = Date().timeIntervalSince(start)
-            let remaining = max(0, 1.0 - elapsed / Self.verifyDuration)
-            self.verifyProgress = remaining
-            if remaining <= 0 {
-                self.verifyTimer?.invalidate()
-                self.verifyTimer = nil
-                self.flashRedAndDismiss()
-            }
-        }
+        beginVerification(entry: entry)
 
         Task { [weak self] in
             let code: String? = await withCheckedContinuation { cont in
@@ -223,8 +209,42 @@ class QuickFillViewModel: ObservableObject {
                 if let code = code {
                     self.typeAndClose(code)
                 } else {
+                    // Device ended the gate (3 wrong fingers or its 25s timeout)
+                    // — it has already stopped. Just close the UI. Per-attempt
+                    // red flashes were shown via onFingerprintAttemptFailed.
                     self.flashRedAndDismiss()
                 }
+            }
+        }
+    }
+
+    /// Shared verification setup for both OTP and fingerprint-gated reads:
+    /// state, the per-attempt red-flash handler, and the countdown timer.
+    private func beginVerification(entry: QuickFillEntry) {
+        isVerifying = true
+        verifyProgress = 1.0
+        showRedFlash = false
+        verifyEntry = entry
+        verifyStartTime = Date()
+
+        // The device sends 0x07 (wrong finger) for the first two attempts and
+        // keeps its gate open; flash red so the user knows to try again.
+        previousAttemptFailed = BLEManager.shared.onFingerprintAttemptFailed
+        BLEManager.shared.onFingerprintAttemptFailed = { [weak self] _ in
+            DispatchQueue.main.async { self?.triggerRedFlash() }
+        }
+
+        // Countdown timer. If our window expires before the device ends its own
+        // gate, cancel the device gate so it stops blinking.
+        verifyTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self = self, let start = self.verifyStartTime else { return }
+            let remaining = max(0, 1.0 - Date().timeIntervalSince(start) / Self.verifyDuration)
+            self.verifyProgress = remaining
+            if remaining <= 0 {
+                self.verifyTimer?.invalidate()
+                self.verifyTimer = nil
+                self.cancelDeviceGate()
+                self.flashRedAndDismiss()
             }
         }
     }
@@ -232,25 +252,7 @@ class QuickFillViewModel: ObservableObject {
     // MARK: - Fingerprint Verification
 
     private func startVerification(entry: QuickFillEntry) {
-        isVerifying = true
-        verifyProgress = 1.0
-        showRedFlash = false
-        verifyEntry = entry
-        verifyStartTime = Date()
-
-        // Countdown timer: update progress ~20fps
-        verifyTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self, let start = self.verifyStartTime else { return }
-            let elapsed = Date().timeIntervalSince(start)
-            let remaining = max(0, 1.0 - elapsed / Self.verifyDuration)
-            self.verifyProgress = remaining
-            if remaining <= 0 {
-                self.verifyTimer?.invalidate()
-                self.verifyTimer = nil
-                self.flashRedAndDismiss()
-            }
-        }
-
+        beginVerification(entry: entry)
         attemptVerify(entry: entry)
     }
 
@@ -260,6 +262,13 @@ class QuickFillViewModel: ObservableObject {
         guard remaining > 1 else { return }
 
         Task { [weak self] in
+            // A SINGLE requestUnlock spans all device-side attempts. The
+            // firmware flashes 0x07 (shown as red via onFingerprintAttemptFailed)
+            // for the first two wrong fingers while keeping its gate open, then
+            // ends the gate on the third failure / its timeout → returns false.
+            // Do NOT re-arm a new AUTH_REQUEST per failure (the old loop did,
+            // desyncing the app's retry count from the device's and leaving the
+            // UI counting down after the device had already given up).
             let approved: Bool = await withCheckedContinuation { cont in
                 BLEManager.shared.requestUnlock(timeout: remaining) { success in
                     cont.resume(returning: success)
@@ -288,14 +297,33 @@ class QuickFillViewModel: ObservableObject {
                         }
                     }
                 } else {
-                    // Fingerprint failed — flash red, retry if time remains
-                    self.triggerRedFlash()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        self.attemptVerify(entry: entry)
-                    }
+                    // Device ended the gate (3 wrong fingers or its 25s timeout)
+                    // — it has already stopped. Close the UI.
+                    self.flashRedAndDismiss()
                 }
             }
         }
+    }
+
+    /// Tell the device to stop a still-open FP gate when we close the panel
+    /// from the app side (Esc, click-away, or our countdown expiring before the
+    /// device's). On a device-side terminal failure the gate is already gone,
+    /// so this is only called from app-initiated closes.
+    private func cancelDeviceGate() {
+        guard let entry = verifyEntry else { return }
+        if entry.category == .otp {
+            BLEManager.shared.cancelGateAndRelease()
+        } else {
+            BLEManager.shared.cancelUnlock()
+        }
+    }
+
+    /// Called by the panel controller when the window closes while a
+    /// verification is still in flight (Esc / click-away).
+    func cancelDeviceGateOnClose() {
+        guard isVerifying else { return }
+        cancelDeviceGate()
+        stopVerification()
     }
 
     private func triggerRedFlash() {
@@ -320,6 +348,9 @@ class QuickFillViewModel: ObservableObject {
         verifyEntry = nil
         verifyStartTime = nil
         showRedFlash = false
+        // Restore whatever attempt-failed handler was installed before us.
+        BLEManager.shared.onFingerprintAttemptFailed = previousAttemptFailed
+        previousAttemptFailed = nil
     }
 
     // MARK: - Paste
@@ -802,11 +833,10 @@ class QuickFillPanel {
                 self?.resizePanel(visibleRows: count)
             }
 
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.close()
-            }
-        }
+        // The panel stays on top and is NOT dismissed by clicking outside it —
+        // it closes only via Esc, picking an entry, or completing a fill. (We
+        // previously closed on any outside click, which made it vanish while
+        // the user was reaching for the sensor or interacting elsewhere.)
 
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, self.panel?.isVisible == true else { return event }
@@ -863,6 +893,9 @@ class QuickFillPanel {
     }
 
     func close() {
+        // If we're tearing down mid-verification (Esc / click-away), tell the
+        // device to stop its still-open FP gate so it doesn't keep blinking.
+        viewModel?.cancelDeviceGateOnClose()
         cancellable?.cancel()
         cancellable = nil
         if let monitor = globalClickMonitor {

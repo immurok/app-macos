@@ -146,6 +146,7 @@ class LocalizationManager: ObservableObject {
         "menu.disconnected": "未连接",
         "menu.status.ok": "状态正常",
         "menu.status.error": "状态异常",
+        "menu.authrepair": "指纹授权需修复",
 
         // Tabs
         "tab.device": "设备",
@@ -343,6 +344,9 @@ class LocalizationManager: ObservableObject {
         "permission.sudo": "终端 sudo 授权",
         "permission.authorization": "界面认证授权",
         "permission.authorization.hint": "用于系统设置、App Store 等场景",
+        "permission.authorization.repair": "修复",
+        "notify.authrepair.title": "指纹授权需修复",
+        "notify.authrepair.body": "系统升级后界面授权被重置,点击 immurok 设置修复",
         "permission.ssh.agent": "SSH Agent",
         "permission.ssh.agent.hint": "提供 SSH 密钥签名服务（~/.immurok/agent.sock）",
         "permission.cli": "imk CLI",
@@ -516,6 +520,7 @@ class LocalizationManager: ObservableObject {
         "menu.disconnected": "未連接",
         "menu.status.ok": "狀態正常",
         "menu.status.error": "狀態異常",
+        "menu.authrepair": "指紋授權需修復",
 
         // Tabs
         "tab.device": "裝置",
@@ -711,6 +716,9 @@ class LocalizationManager: ObservableObject {
         "permission.sudo": "終端機 sudo 授權",
         "permission.authorization": "介面認證授權",
         "permission.authorization.hint": "用於系統設定、App Store 等場景",
+        "permission.authorization.repair": "修復",
+        "notify.authrepair.title": "指紋授權需修復",
+        "notify.authrepair.body": "系統升級後介面授權被重置,點擊 immurok 設定修復",
         "permission.ssh.agent": "SSH Agent",
         "permission.ssh.agent.hint": "提供 SSH 密鑰簽名服務（~/.immurok/agent.sock）",
         "permission.cli": "imk CLI",
@@ -884,6 +892,10 @@ class LocalizationManager: ObservableObject {
         "menu.disconnected": "Disconnected",
         "menu.status.ok": "Status OK",
         "menu.status.error": "Status Error",
+        "menu.authrepair": "Fingerprint auth needs repair",
+        "notify.authrepair.title": "Fingerprint auth needs repair",
+        "notify.authrepair.body": "A system update reset GUI authorization. Open immurok to repair.",
+        "permission.authorization.repair": "Repair",
 
         // Tabs
         "tab.device": "Device",

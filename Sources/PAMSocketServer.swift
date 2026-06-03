@@ -29,6 +29,7 @@ class PAMSocketServer {
     private var preAuthExpiry: Date?
     private var preAuthServices: Set<String>?  // nil = any service (legacy; new code should always pass services)
     private let preAuthLock = NSLock()
+    private var preAuthGeneration: Int = 0
 
     // Serialize PAM AUTH requests. Concurrent requests overwrite the global
     // pendingRequestSemaphore / onFingerprintAttemptFailed handler, causing
@@ -49,6 +50,13 @@ class PAMSocketServer {
     /// to refresh its lock-suppression window so a held finger after a sudo
     /// auth doesn't fall into the 0x23 long-press lock.
     var onAuthSuccess: (() -> Void)?
+
+    /// Fired when an "authorization"-scoped pre-auth window expires WITHOUT
+    /// being consumed — a heuristic that the pam_immurok line may be missing
+    /// from /etc/pam.d/authorization (so no PAM request ever arrived). The
+    /// handler should re-check the file (truth source); it must NOT repair
+    /// blindly, since a user simply not touching the sensor also expires it.
+    var onAuthorizationPreAuthExpiredUnconsumed: (() -> Void)?
 
     init(bleManager: BLEManager) {
         self.bleManager = bleManager
@@ -81,19 +89,42 @@ class PAMSocketServer {
     ///               always pass an explicit set to avoid cross-service drift).
     func setPreAuthorization(duration: TimeInterval = 3.0, services: Set<String>? = nil) {
         preAuthLock.lock()
-        defer { preAuthLock.unlock() }
         preAuthExpiry = Date().addingTimeInterval(duration)
         preAuthServices = services
+        preAuthGeneration &+= 1
+        let gen = preAuthGeneration
+        preAuthLock.unlock()
+
         if let s = services {
             NSLog("PAMSocketServer: Pre-authorization set for %.1f s (services=%@)", duration, s.sorted().joined(separator: ","))
         } else {
             NSLog("PAMSocketServer: Pre-authorization set for %.1f s (any service)", duration)
+        }
+
+        // 仅对 authorization 作用域安排空转过期检查
+        guard services?.contains("authorization") == true else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + duration + 0.5) { [weak self] in
+            guard let self = self else { return }
+            self.preAuthLock.lock()
+            // 同一代且窗口仍未被消费/清除(expiry 非 nil)→ 空转过期
+            let expiredUnconsumed = (self.preAuthGeneration == gen && self.preAuthExpiry != nil)
+            if expiredUnconsumed {
+                self.preAuthExpiry = nil
+                self.preAuthServices = nil
+            }
+            self.preAuthLock.unlock()
+            if expiredUnconsumed {
+                self.onAuthorizationPreAuthExpiredUnconsumed?()
+            }
         }
     }
 
     /// Cancel any active pre-authorization without consuming it.
     /// Used when a long-press lock request supersedes a just-armed pre-auth
     /// from a 0x21 fingerprint match.
+    /// Intentionally does NOT bump preAuthGeneration: nulling preAuthExpiry is
+    /// the authoritative guard the idle-expiry timer checks, so a cleared
+    /// window already fails the `expiry != nil` test and won't fire its callback.
     func clearPreAuthorization() {
         preAuthLock.lock()
         defer { preAuthLock.unlock() }

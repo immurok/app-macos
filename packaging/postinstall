@@ -1,0 +1,55 @@
+#!/bin/bash
+set -e
+
+# postinstall runs as root — write directly, no authopen needed
+#
+# Installs the immurok PAM line into sudo_local + authorization. Mirrors the
+# legacy scripts/pam-pkg/install-postinstall, kept self-contained under
+# app-macos/ so the synced public repo (immurok/app-macos) can build the pkg
+# in CI without depending on files outside the app-macos tree.
+
+SO_FILE="/usr/local/lib/pam/pam_immurok.so"
+APP_PATH="/Applications/immurok.app"
+CONFIG_LINE="auth sufficient /usr/local/lib/pam/pam_immurok.so"
+
+# Safety: .so must exist before touching pam.d
+if [ ! -f "$SO_FILE" ]; then
+    echo "ERROR: $SO_FILE not found after install" >&2
+    exit 1
+fi
+
+# Safety: App must exist
+if [ ! -d "$APP_PATH" ]; then
+    echo "ERROR: $APP_PATH not found after install" >&2
+    exit 1
+fi
+
+# Configure sudo_local (create if not exists, skip if already present)
+if [ -f /etc/pam.d/sudo_local ]; then
+    if ! grep -q pam_immurok /etc/pam.d/sudo_local; then
+        TMPFILE=$(mktemp)
+        echo "$CONFIG_LINE" > "$TMPFILE"
+        cat /etc/pam.d/sudo_local >> "$TMPFILE"
+        cp "$TMPFILE" /etc/pam.d/sudo_local && rm "$TMPFILE"
+        chmod 444 /etc/pam.d/sudo_local
+    fi
+else
+    TMPFILE=$(mktemp)
+    echo "$CONFIG_LINE" > "$TMPFILE"
+    cp "$TMPFILE" /etc/pam.d/sudo_local && rm "$TMPFILE"
+    chmod 444 /etc/pam.d/sudo_local
+fi
+
+# Configure authorization (skip if already present)
+if ! grep -q pam_immurok /etc/pam.d/authorization; then
+    TMPFILE=$(mktemp)
+    echo "$CONFIG_LINE" > "$TMPFILE"
+    cat /etc/pam.d/authorization >> "$TMPFILE"
+    cp "$TMPFILE" /etc/pam.d/authorization && rm "$TMPFILE"
+    chmod 444 /etc/pam.d/authorization
+fi
+
+# Ensure imk CLI is executable (payload preserves mode, belt-and-suspenders)
+[ -f /usr/local/bin/imk ] && chmod 755 /usr/local/bin/imk
+
+exit 0

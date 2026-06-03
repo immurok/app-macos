@@ -1,0 +1,59 @@
+#!/bin/bash
+set -e
+
+# postinstall runs as root — write directly, no authopen needed
+# Self-contained copy of the legacy scripts/pam-pkg/uninstall-postinstall.
+
+# Get the real user (not root) who is running the installer
+REAL_USER=$(/usr/bin/stat -f '%Su' /dev/console)
+REAL_HOME=$(dscl . -read /Users/"$REAL_USER" NFSHomeDirectory | awk '{print $2}')
+
+# Step 1: Kill the app (may not be running)
+killall immurok 2>/dev/null || true
+
+# Step 2: Remove our line from sudo_local
+if [ -f /etc/pam.d/sudo_local ]; then
+    CONTENT=$(grep -v pam_immurok /etc/pam.d/sudo_local || true)
+    if [ -n "$CONTENT" ]; then
+        echo "$CONTENT" > /etc/pam.d/sudo_local
+    else
+        echo '# sudo_local' > /etc/pam.d/sudo_local
+    fi
+    chmod 444 /etc/pam.d/sudo_local
+fi
+
+# Step 3: Remove our line from authorization
+if [ -f /etc/pam.d/authorization ]; then
+    CONTENT=$(grep -v pam_immurok /etc/pam.d/authorization || true)
+    if [ -n "$CONTENT" ]; then
+        echo "$CONTENT" > /etc/pam.d/authorization
+        chmod 444 /etc/pam.d/authorization
+    fi
+fi
+
+# Step 4: Remove PAM module + imk CLI
+rm -f /usr/local/lib/pam/pam_immurok.so
+rm -f /usr/local/bin/imk
+
+# Step 5: Remove App
+rm -rf /Applications/immurok.app
+
+# Step 6: Remove user data directory
+rm -rf "$REAL_HOME/.immurok"
+
+# Step 7: Remove Keychain entry
+sudo -u "$REAL_USER" security delete-generic-password -s "com.katsu.immurok" -a "unlock-password" 2>/dev/null || true
+
+# Step 8: Remove UserDefaults
+sudo -u "$REAL_USER" defaults delete com.immurok.app 2>/dev/null || true
+
+# Step 9: Clean up pkg receipts
+pkgutil --forget com.immurok.pkg 2>/dev/null || true
+pkgutil --forget com.immurok.uninstall 2>/dev/null || true
+# Legacy receipt identifiers
+pkgutil --forget com.katsu.immurok 2>/dev/null || true
+pkgutil --forget com.katsu.immurok.uninstall 2>/dev/null || true
+pkgutil --forget com.katsu.immurok.pam 2>/dev/null || true
+pkgutil --forget com.katsu.immurok.pam-uninstall 2>/dev/null || true
+
+exit 0

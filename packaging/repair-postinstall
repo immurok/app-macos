@@ -1,0 +1,54 @@
+#!/bin/bash
+set -e
+
+# repair-postinstall — runs as root via system_installd when immurok_repair.pkg
+# is installed. Unlike `osascript ... with administrator privileges` (whose root
+# is TCC-blocked from writing /etc/pam.d), the installer daemon holds the
+# com.apple.rootless.install entitlement and CAN write there. Mirrors the
+# insertion half of packaging/postinstall; idempotently re-adds the immurok PAM
+# line that a macOS upgrade strips from /etc/pam.d/authorization.
+#
+# IMMUROK_ROOT prefixes all paths for the bash test harness; empty in production.
+
+R="${IMMUROK_ROOT:-}"
+SO_FILE="${R}/usr/local/lib/pam/pam_immurok.so"
+AUTH="${R}/etc/pam.d/authorization"
+SUDO_LOCAL="${R}/etc/pam.d/sudo_local"
+CONFIG_LINE="auth sufficient /usr/local/lib/pam/pam_immurok.so"
+
+# Guard: the .so must already be installed. If it's gone the user fully
+# uninstalled — repairing the pam.d line would point at a missing module.
+if [ ! -f "$SO_FILE" ]; then
+    echo "ERROR: $SO_FILE not found — reinstall immurok instead of repairing" >&2
+    exit 1
+fi
+
+# authorization: prepend the line if absent. Anchored match so a commented-out
+# reference doesn't count as present. Temp file in /tmp, then overwrite the
+# existing file (system_installd is permitted to write /etc/pam.d).
+if ! grep -qE '^[^#]*pam_immurok' "$AUTH" 2>/dev/null; then
+    TMP=$(mktemp)
+    echo "$CONFIG_LINE" > "$TMP"
+    [ -f "$AUTH" ] && cat "$AUTH" >> "$TMP"
+    cp "$TMP" "$AUTH"
+    rm -f "$TMP"
+    chmod 444 "$AUTH"
+fi
+
+# sudo_local: idempotent top-up. It survives upgrades, but repairing it too is
+# cheap insurance against partial resets.
+if [ -f "$SUDO_LOCAL" ]; then
+    if ! grep -qE '^[^#]*pam_immurok' "$SUDO_LOCAL"; then
+        TMP=$(mktemp)
+        echo "$CONFIG_LINE" > "$TMP"
+        cat "$SUDO_LOCAL" >> "$TMP"
+        cp "$TMP" "$SUDO_LOCAL"
+        rm -f "$TMP"
+        chmod 444 "$SUDO_LOCAL"
+    fi
+else
+    echo "$CONFIG_LINE" > "$SUDO_LOCAL"
+    chmod 444 "$SUDO_LOCAL"
+fi
+
+exit 0

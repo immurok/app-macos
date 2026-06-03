@@ -2137,7 +2137,20 @@ extension BLEManager: CBPeripheralDelegate {
         if let dataCompletion = pendingGateDataCompletion, responseCallback == nil {
             if data[0] == 0x11 && data.count == 4 {
                 // Fall through to enrollment status handler below
+            } else if data.count == 1 && data[0] == ImmurokStatus.errFpNotMatch.rawValue {
+                // Wrong finger. The device keeps the data gate OPEN and only
+                // ends it (SEC_ERR_TIMEOUT 0x06) on the final failure / its own
+                // timeout. Report the attempt and keep waiting — do NOT resolve
+                // the completion here. (The old code's else-branch treated this
+                // first 0x07 as terminal, dismissing the UI on attempt 1 while
+                // the device kept blinking for attempts 2 and 3.)
+                fpFailureCount += 1
+                let remaining = 3 - fpFailureCount
+                NSLog("BLEManager: FP gate(data): wrong finger (%d/3, %d left)", fpFailureCount, remaining)
+                onFingerprintAttemptFailed?(remaining)
+                return
             } else {
+                // 0x00 (+data) = success; 0x06 / anything else = terminal failure.
                 let success = data[0] == ImmurokStatus.ok.rawValue
                 NSLog("BLEManager: FP gate data result: 0x%02x (%@)", data[0], success ? "OK" : "failed")
                 pendingGateDataCompletion = nil
@@ -2224,6 +2237,22 @@ extension BLEManager: CBPeripheralDelegate {
                 DispatchQueue.main.async { [weak self] in
                     self?.onUnlockResult?(false)
                 }
+            }
+            return
+        }
+
+        // Terminal AUTH failure. After the first two wrong fingers (0x07 above)
+        // the device ends the gate on the third failure — or on its own 25s gate
+        // timeout — by sending SEC_ERR_TIMEOUT (0x06) and powering the sensor
+        // off. Resolve the local wait now instead of hanging until our 30s
+        // timeout (the bug: the UI kept counting down while the device had
+        // already stopped blinking).
+        if data.count == 1 && data[0] == ImmurokStatus.errTimeout.rawValue
+            && responseCallback == nil && fingerprintResultCompletion != nil {
+            NSLog("BLEManager: AUTH terminal failure (device ended gate)")
+            releaseAuthHold()
+            DispatchQueue.main.async { [weak self] in
+                self?.onUnlockResult?(false)
             }
             return
         }

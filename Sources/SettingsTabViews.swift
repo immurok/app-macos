@@ -1791,15 +1791,30 @@ struct PermissionsTabView: View {
 
             // 界面认证授权（系统设置等）
             GroupBox {
-                permissionRow(
-                    icon: "macwindow.badge.plus",
-                    titleKey: "permission.authorization",
-                    hintKey: "permission.authorization.hint",
-                    isOn: Binding(
-                        get: { authorizationEnabled },
-                        set: { tryEnableSystemAuth($0) }
+                VStack(alignment: .leading, spacing: 8) {
+                    permissionRow(
+                        icon: "macwindow.badge.plus",
+                        titleKey: "permission.authorization",
+                        hintKey: "permission.authorization.hint",
+                        isOn: Binding(
+                            get: { authorizationEnabled },
+                            set: { tryEnableSystemAuth($0) }
+                        )
                     )
-                )
+                    if setupManager.needsAuthorizationRepair {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("notify.authrepair.title".localized)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("permission.authorization.repair".localized) {
+                                repairAuthorizationAction()
+                            }
+                        }
+                    }
+                }
             }
 
             // SSH Agent — info icon shows export command + click copies it
@@ -1977,6 +1992,17 @@ struct PermissionsTabView: View {
             return
         }
         setupManager.setAuthorizationEnabled(enable)
+    }
+
+    private func repairAuthorizationAction() {
+        setupManager.repairAuthorization { success, error in
+            if !success, let error = error {
+                let alert = NSAlert()
+                alert.messageText = "notify.authrepair.title".localized
+                alert.informativeText = error
+                alert.runModal()
+            }
+        }
     }
 
     private func toggleSSHAgent(_ enable: Bool) {
