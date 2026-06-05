@@ -186,7 +186,7 @@ class PAMSocketServer {
         enrollActive = true
         enrollStatus = .waiting
         enrollCurrent = 0
-        enrollTotal = 12  // Match firmware FP_ENROLL_CAPTURES (overwritten by first 0x11 status frame anyway)
+        enrollTotal = 6  // Match firmware FP_ENROLL_CAPTURES (overwritten by first 0x11 status frame anyway)
     }
 
     func endEnrollment() {
@@ -791,7 +791,8 @@ class PAMSocketServer {
         }
 
         // Format: OK:event:current:total
-        // event: 0=waiting, 1=captured, 2=processing, 3=liftFinger, 4=complete, 255=failed
+        // event: 0=waiting, 1=captured, 2=processing, 3=liftFinger, 4=complete,
+        //        6=overlap (mode-1 shift-finger, non-terminal), 255=failed
         sendResponse(clientSocket, response: "OK:\(status.rawValue):\(current):\(total)")
     }
 

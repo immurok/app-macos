@@ -256,28 +256,30 @@ struct FingerprintIconView: View {
 
 // MARK: - Enrollment Step Helpers
 
-/// 12-step guided enrollment offset map (椭圆偏移量，px).
-/// progress 1..4: 正中 / 5..7: 左偏 / 8..10: 右偏 / 11: 上偏 / 12: 下偏
-/// Out-of-range progress (0 pre-start, >12 post-complete) returns .zero.
+/// 6-step guided enrollment offset map (椭圆偏移量，px).
+/// progress 1: 正中 / 2: 左 / 3: 右 / 4: 上(指尖) / 5: 下(手腕) / 6: 再次正中
+/// mode-1 强制每步采集**不同**区域，所以每步都要换位置——中心按两次会被
+/// 传感器以 0x28 拒绝。第 6 步回到正中(与第 5 步"下"不同, mode-1 合规),
+/// 给核心指腹补一个样本。Out-of-range (0 pre-start, >6 done) returns .zero.
 fileprivate func enrollOffsetForStep(_ progress: Int) -> CGSize {
     switch progress {
-    case 1...4:  return .zero
-    case 5...7:  return CGSize(width: -16, height: 0)
-    case 8...10: return CGSize(width: 16, height: 0)
-    case 11:     return CGSize(width: 0, height: -16)
-    case 12:     return CGSize(width: 0, height: 16)
+    case 1:      return .zero
+    case 2:      return CGSize(width: -16, height: 0)
+    case 3:      return CGSize(width: 16, height: 0)
+    case 4:      return CGSize(width: 0, height: -16)
+    case 5:      return CGSize(width: 0, height: 16)
+    case 6:      return .zero
     default:     return .zero
     }
 }
 
-/// SF Symbol name for direction arrow at given step.
+/// SF Symbol name for direction arrow at given step (only the 4 directional steps).
 fileprivate func enrollArrowSymbolForStep(_ progress: Int) -> String {
     switch progress {
-    case 1...4:  return "arrow.up"
-    case 5...7:  return "arrow.left"
-    case 8...10: return "arrow.right"
-    case 11:     return "arrow.up"
-    case 12:     return "arrow.down"
+    case 2:      return "arrow.left"
+    case 3:      return "arrow.right"
+    case 4:      return "arrow.up"
+    case 5:      return "arrow.down"
     default:     return "arrow.up"
     }
 }
@@ -287,11 +289,10 @@ fileprivate func enrollArrowSymbolForStep(_ progress: Int) -> String {
 /// the user should tilt toward.
 fileprivate func enrollArrowOffsetForStep(_ progress: Int) -> CGSize {
     switch progress {
-    case 1...4:  return CGSize(width: 0, height: -55)   // 顶部居中
-    case 5...7:  return CGSize(width: -55, height: 0)   // 左侧
-    case 8...10: return CGSize(width: 55, height: 0)    // 右侧
-    case 11:     return CGSize(width: 0, height: -55)   // 顶部
-    case 12:     return CGSize(width: 0, height: 55)    // 底部
+    case 2:      return CGSize(width: -55, height: 0)   // 左侧
+    case 3:      return CGSize(width: 55, height: 0)    // 右侧
+    case 4:      return CGSize(width: 0, height: -55)   // 顶部
+    case 5:      return CGSize(width: 0, height: 55)    // 底部
     default:     return CGSize(width: 0, height: -55)
     }
 }
@@ -300,21 +301,20 @@ fileprivate func enrollArrowOffsetForStep(_ progress: Int) -> CGSize {
 fileprivate func enrollTitleKeyForStep(_ progress: Int) -> String {
     switch progress {
     case 1:      return "enroll.step.center.first"
-    case 2...4:  return "enroll.step.center.keep"
-    case 5:      return "enroll.step.left.first"
-    case 6...7:  return "enroll.step.left.keep"
-    case 8:      return "enroll.step.right.first"
-    case 9...10: return "enroll.step.right.keep"
-    case 11:     return "enroll.step.up"
-    case 12:     return "enroll.step.down"
+    case 2:      return "enroll.step.left.first"
+    case 3:      return "enroll.step.right.first"
+    case 4:      return "enroll.step.up"
+    case 5:      return "enroll.step.down"
+    case 6:      return "enroll.step.center.again"
     default:     return "enroll.step.center.first"
     }
 }
 
-/// True for the 4 steps where the angle category changes (用于颜色闪烁触发).
-/// Step 5: 正中→左, Step 8: 左→右, Step 11: 右→上, Step 12: 上→下.
+/// True for steps where the target region moves (用于橙色闪烁提示).
+/// Under mode-1 every capture is a new region, so flash on each step ≥2 to
+/// draw the user's eye to the relocated ellipse.
 fileprivate func enrollIsTransitionStep(_ progress: Int) -> Bool {
-    progress == 5 || progress == 8 || progress == 11 || progress == 12
+    progress >= 2 && progress <= 6
 }
 
 // MARK: - Enrollment Sheet
@@ -325,21 +325,23 @@ struct EnrollmentSheet: View {
     @State private var pulseScale: CGFloat = 1.0
     @State private var arrowOpacity: Double = 1.0
     @State private var transitionFlash: Bool = false
+    @State private var shakeOffset: CGFloat = 0   // overlap "shift finger" shake cue
 
-    /// Step the user should perform NEXT (1..12).
+    /// Step the user should perform NEXT (1..6).
     /// `enrollmentProgress` 是已完成捕获帧数; UI 要提示下一帧姿势, 所以 +1.
-    /// progress=0 (init) → 1; progress=12 (完成) → 12.
+    /// progress=0 (init) → 1; progress=6 (完成) → 6.
     private var animProgress: Int {
-        min(max(viewModel.enrollmentProgress + 1, 1), 12)
+        min(max(viewModel.enrollmentProgress + 1, 1), 6)
     }
 
     private var isTransitionStep: Bool {
         enrollIsTransitionStep(animProgress)
     }
 
-    /// 正中阶段 (1..4) 不显示方向箭头, 避免被误读为"向上偏移".
+    /// 正中阶段 (step 1 与 step 6) 不显示方向箭头, 避免被误读为"向上偏移".
+    /// 只有四向偏移步 (2 左 / 3 右 / 4 上 / 5 下) 显示箭头.
     private var showArrow: Bool {
-        animProgress >= 5
+        animProgress >= 2 && animProgress <= 5
     }
 
     var body: some View {
@@ -363,6 +365,7 @@ struct EnrollmentSheet: View {
                     .fill(transitionFlash ? Color.orange : Color.accentColor)
                     .frame(width: 60, height: 80)
                     .offset(enrollOffsetForStep(animProgress))
+                    .offset(x: shakeOffset)   // horizontal shake on overlap reject
                     .opacity(viewModel.enrollmentProgress > 0 ? 1.0 : 0.5)
                     .animation(.easeInOut(duration: 0.3), value: animProgress)
 
@@ -414,6 +417,22 @@ struct EnrollmentSheet: View {
                 }
             }
         }
+        .onChange(of: viewModel.overlapNudge) { _ in
+            // (mode 1) overlap reject: orange flash + quick left-right shake to
+            // tell the user to move the finger to a new spot before re-pressing.
+            withAnimation(.easeInOut(duration: 0.15)) { transitionFlash = true }
+            let steps: [(TimeInterval, CGFloat)] = [
+                (0.00, -10), (0.07, 10), (0.14, -7), (0.21, 7), (0.28, 0)
+            ]
+            for (delay, dx) in steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    withAnimation(.easeInOut(duration: 0.07)) { shakeOffset = dx }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                withAnimation(.easeInOut(duration: 0.15)) { transitionFlash = false }
+            }
+        }
         .onAppear {
             withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
                 pulseScale = 1.6
@@ -436,7 +455,8 @@ class FingerprintViewModel: ObservableObject {
     @Published var isEnrolling = false
     @Published var enrollmentStatus = ""
     @Published var enrollmentProgress = 0
-    @Published var enrollmentTotal = 12  // Single-slot: 12 captures per enrollment
+    @Published var enrollmentTotal = 6  // Single-slot: 6 captures (mode-1 broad coverage)
+    @Published var overlapNudge = 0     // bumped on each mode-1 overlap reject → UI shake cue
 
     var gateController = FingerprintGateController()
 
@@ -590,6 +610,12 @@ class FingerprintViewModel: ObservableObject {
                 case .processing:
                     self.enrollmentStatus = "enroll.processing".localized
                     self.enrollmentProgress = current
+                case .overlap:
+                    // (mode 1) device rejected this capture for overlapping the
+                    // previous one too much. Don't advance progress — prompt the
+                    // user to shift position and bump the nudge so the sheet shakes.
+                    self.enrollmentStatus = "enroll.adjust.overlap".localized
+                    self.overlapNudge &+= 1
                 case .complete:
                     NSLog("FingerprintView: enrollment complete, old bitmap=0x%02X", self.fingerprintBitmap)
                     self.isEnrolling = false
@@ -682,8 +708,11 @@ class FingerprintViewModel: ObservableObject {
                 guard let self = self else { return }
                 self.isLoading = false
                 if success {
-                    // Gate succeeded (or wasn't needed) — transition to enrollment sheet
-                    self.gateController.reset()
+                    // Gate succeeded (or wasn't needed) — transition to enrollment sheet.
+                    // resolveAndDismiss (NOT reset): firmware already cleared the
+                    // pending gate on FP match, so sending GATE_CANCEL would just
+                    // fire the firmware's red 1s flash over the enroll green-blink.
+                    self.gateController.resolveAndDismiss()
                     self.isEnrolling = true
                     self.enrollmentStatus = "enroll.place.finger".localized
                 } else {

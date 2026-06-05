@@ -113,13 +113,14 @@ enum PairFailureReason: Error {
 
 // Enrollment status notifications (from device)
 // Must match firmware fingerprint.h fp_enroll_event_t
-// Single-slot enrollment: 12 captures → merge → store (no dual-slot adjust)
+// Single-slot enrollment: 6 captures (mode-1 broad coverage) → merge → store
 enum EnrollEvent: UInt8 {
     case waiting = 0x00
     case captured = 0x01
     case processing = 0x02
     case liftFinger = 0x03
     case complete = 0x04
+    case overlap = 0x06   // (mode 1) too much overlap — shift finger, re-press
     case failed = 0xFF
 }
 
@@ -2291,6 +2292,7 @@ extension BLEManager: CBPeripheralDelegate {
             case 0x02: event = .processing
             case 0x03: event = .liftFinger
             case 0x04: event = .complete
+            case 0x06: event = .overlap
             case 0xFD, 0xFE, 0xFF: event = .failed
             default:
                 if current == total && total > 0 {

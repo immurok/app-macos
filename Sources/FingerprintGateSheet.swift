@@ -101,6 +101,15 @@ class FingerprintGateController: ObservableObject {
         isPresented = false
     }
 
+    /// 门禁已**成功**解决后的收尾 (例如 ENROLL_START 解锁、首次登记无门禁)。
+    /// 不发 GATE_CANCEL —— 固件侧 pending 已被指纹匹配清掉 (或从未开门禁),
+    /// 再发 cancel 会触发固件红灯 1s, 盖掉接下来 enroll 的绿色采集闪烁
+    /// (即"验证后闪红 + 第 1 次采集无绿闪"的 App 侧成因)。
+    func resolveAndDismiss() {
+        cleanup()
+        isPresented = false
+    }
+
     // MARK: - Private
 
     private func hookAttemptCallback() {
