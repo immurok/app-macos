@@ -1081,7 +1081,8 @@ class PAMSocketServer {
         }
     }
 
-    // OTA:HEADER:base64data → send .imfw header (96 bytes) to device
+    // OTA:HEADER:base64data → send .imfw header to device.
+    // 96 bytes = v1 (HMAC, <=1.5.x bootstrap); 128 bytes = v2 (ECDSA, 1.6.0+).
     private func handleOTAHeader(_ clientSocket: Int32, parts: [Substring]) {
         guard parts.count >= 3 else {
             sendLine(clientSocket, line: "ERROR:INVALID_FORMAT")
@@ -1098,12 +1099,12 @@ class PAMSocketServer {
             return
         }
 
-        guard headerData.count == 96 else {
+        guard headerData.count == 96 || headerData.count == 128 else {
             sendLine(clientSocket, line: "ERROR:INVALID_HEADER_SIZE")
             return
         }
 
-        // CMD_IAP_HEADER: [0x85, 0x60(96), header_data...]
+        // CMD_IAP_HEADER: [0x85, len, header_data...] (len = 96 v1 / 128 v2)
         var cmd = Data([0x85, UInt8(headerData.count)])
         cmd.append(headerData)
 
