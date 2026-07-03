@@ -6,6 +6,12 @@ extension Notification.Name {
     static let cliToggleChanged = Notification.Name("cliToggleChanged")
     static let quickFillToggleChanged = Notification.Name("quickFillToggleChanged")
     static let quickFillHotkeyChanged = Notification.Name("quickFillHotkeyChanged")
+    /// 辅助功能权限从无→有翻转时发出（用于在授权后重注册全局热键）
+    static let accessibilityGranted = Notification.Name("accessibilityGranted")
+    /// 检测到固件新版本（object = 版本号 String），用于弹系统通知
+    static let firmwareUpdateAvailable = Notification.Name("firmwareUpdateAvailable")
+    /// 固件升级完成（object = 版本号 String），用于弹完成提示
+    static let firmwareUpdateFinished = Notification.Name("firmwareUpdateFinished")
 }
 
 @MainActor
@@ -34,6 +40,9 @@ class AppViewModel: ObservableObject {
     @Published var bluetoothStatus: BluetoothAuthStatus = .notDetermined
 
     private let bleManager = BLEManager.shared
+
+    /// 固件升级服务（懒建避免 init 顺序问题；连接就绪后 checkIfDue）
+    private(set) lazy var firmwareUpdate = FirmwareUpdateService(bleManager: bleManager, viewModel: self)
 
     var deviceStatusText: String {
         // Check bluetooth status first
@@ -74,6 +83,7 @@ class AppViewModel: ObservableObject {
     private var fingerprintObserver: Any?
     private var gateObserver: Any?
     private var gateCancellable: AnyCancellable?
+    private var fwUpdateCancellable: AnyCancellable?
     private var pendingGatedOperation = false
 
     // 2026-05-16 battery sampling strategy:
@@ -100,6 +110,9 @@ class AppViewModel: ObservableObject {
         startBatteryReadTimer()   // assume unlocked at start; lock notif will pause if needed
 
         gateCancellable = gateController.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        fwUpdateCancellable = firmwareUpdate.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
 
@@ -243,6 +256,8 @@ class AppViewModel: ObservableObject {
         bleManager.onFirmwareVersionRead = { [weak self] version in
             Task { @MainActor in
                 self?.firmwareVersion = version
+                self?.firmwareUpdate.resumePendingHopIfAny()
+                self?.firmwareUpdate.checkIfDue()
             }
         }
 

@@ -36,7 +36,12 @@ class SetupManager: ObservableObject {
         isPAMModuleInstalled = FileManager.default.fileExists(atPath: pamModuleDestination)
         isSudoAuthEnabled = UserDefaults.standard.bool(forKey: "immurok.sudoAuthEnabled")
         isAuthorizationEnabled = UserDefaults.standard.bool(forKey: "immurok.authorizationEnabled")
+        let wasTrusted = hasAccessibilityPermission
         hasAccessibilityPermission = AXIsProcessTrusted()
+        // 权限从无→有：通知重注册全局热键（首次安装时热键在无权限下注册会静默失效）
+        if !wasTrusted && hasAccessibilityPermission {
+            NotificationCenter.default.post(name: .accessibilityGranted, object: nil)
+        }
         isAuthorizationConfigured = Self.authorizationLineConfigured(at: authorizationPath)
     }
 

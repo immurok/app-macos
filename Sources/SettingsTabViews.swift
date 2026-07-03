@@ -1749,6 +1749,7 @@ struct PermissionsTabView: View {
     ]
 
     var body: some View {
+        ScrollView {
         VStack(spacing: 16) {
             // 屏幕解锁
             GroupBox {
@@ -1864,6 +1865,7 @@ struct PermissionsTabView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 20)
+        }
     }
 
     // MARK: - Unlock Sound Picker
@@ -2009,8 +2011,10 @@ struct PermissionsTabView: View {
         sshAgentEnabled = enable
         if enable {
             try? SSHAgentServer.shared.start()
+            SSHAgentServer.shared.installAuthSockEnv()   // 开启即设 SSH_AUTH_SOCK
         } else {
             SSHAgentServer.shared.stop()
+            SSHAgentServer.shared.restoreAuthSockEnv()   // 关闭恢复原值
         }
     }
 
@@ -2285,14 +2289,29 @@ struct AboutTabView: View {
     @State private var isHoveringLanguage = false
     @State private var isHoveringGitHub = false
     @State private var isHoveringUninstall = false
+    @State private var isHoveringStats = false
+    // 匿名使用统计开关（笔记本图标，带笔=开、不带笔=关）
+    @AppStorage("immurok.telemetry.enabled") private var telemetryEnabled = true
+    @Environment(\.openWindow) private var openWindow
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0"
     }
 
-    private var versionText: String {
+    /// "App v1.3.0(395)"
+    private var appVersionText: String {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        return "v\(appVersion) (\(build))"
+        return "App v\(appVersion)(\(build))"
+    }
+
+    /// "FW v1.6.0(b2)"（设备版本可能带第 4 段 build，无设备时显示 —）
+    private var fwVersionText: String {
+        guard let fw = viewModel.firmwareVersion else { return "FW —" }
+        let parts = fw.split(separator: ".")
+        if parts.count >= 4 {
+            return "FW v\(parts.prefix(3).joined(separator: "."))(\(parts[3]))"
+        }
+        return "FW v\(fw)"
     }
 
     private var logoImage: NSImage {
@@ -2315,13 +2334,16 @@ struct AboutTabView: View {
                     .frame(width: 56, height: 56)
                     .foregroundColor(.accentColor)
 
-                Text("immurok app (ver \(appVersion))")
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Text(versionText)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                HStack(spacing: 10) {
+                    Text("\(appVersionText) / \(fwVersionText)")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Button("fwupdate.check".localized) {
+                        openWindow(id: "firmware-update")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    .controlSize(.small)
+                }
             }
             .padding(.top, 16)
             .padding(.bottom, 8)
@@ -2372,6 +2394,20 @@ struct AboutTabView: View {
                     .foregroundColor(isHoveringGitHub ? .accentColor : .secondary)
                     .onHover { isHoveringGitHub = $0 }
                     .help("GitHub")
+
+                    // 匿名使用统计开关：笔记本带笔=开，不带笔=关
+                    Button {
+                        telemetryEnabled.toggle()
+                    } label: {
+                        Image(systemName: telemetryEnabled ? "square.and.pencil" : "note.text")
+                            .font(.system(size: 16))
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(isHoveringStats ? .accentColor : (telemetryEnabled ? .secondary : Color.secondary.opacity(0.4)))
+                    .onHover { isHoveringStats = $0 }
+                    .help("fwupdate.telemetry.tip".localized)
                 }
 
                 Spacer()

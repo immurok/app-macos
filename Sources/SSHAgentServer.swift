@@ -35,6 +35,60 @@ class SSHAgentServer {
         socketPath = immurokDir.appendingPathComponent("agent.sock").path
     }
 
+    // MARK: - SSH_AUTH_SOCK environment
+
+    private static let prevAuthSockKey = "immurok.ssh.prevAuthSock"
+
+    /// 把 SSH_AUTH_SOCK 指向本 agent（launchctl setenv，覆盖 GUI 会话 + 之后新开的终端窗口）。
+    /// 首次设置前保存原值，供关闭功能时恢复。已开着的终端需重开或 re-login 才继承。
+    func installAuthSockEnv() {
+        let current = Self.launchctlGetenv("SSH_AUTH_SOCK")
+        // 当前值不是我们自己的 socket 时，刷新记录原值。macOS 默认 SSH_AUTH_SOCK 是
+        // 每登录会话变化的（/private/tmp/com.apple.launchd.*/Listeners），所以每次都用
+        // 最新的真实值覆盖，避免跨会话后 restore 还原成过期路径。current==ours（本会话已设过、
+        // 重入调用）时不覆盖，以免把 prev 记成我们自己的 socket。
+        if current != socketPath {
+            UserDefaults.standard.set(current ?? "", forKey: Self.prevAuthSockKey)
+        }
+        Self.launchctl(["setenv", "SSH_AUTH_SOCK", socketPath])
+        NSLog("SSHAgentServer: SSH_AUTH_SOCK -> %@", socketPath)
+    }
+
+    /// 关闭 SSH 功能时恢复原来的 SSH_AUTH_SOCK（有原值则还原，无则清空）。
+    func restoreAuthSockEnv() {
+        let prev = UserDefaults.standard.string(forKey: Self.prevAuthSockKey)
+        if let prev = prev, !prev.isEmpty {
+            Self.launchctl(["setenv", "SSH_AUTH_SOCK", prev])
+            NSLog("SSHAgentServer: SSH_AUTH_SOCK restored -> %@", prev)
+        } else {
+            Self.launchctl(["unsetenv", "SSH_AUTH_SOCK"])
+            NSLog("SSHAgentServer: SSH_AUTH_SOCK unset")
+        }
+        UserDefaults.standard.removeObject(forKey: Self.prevAuthSockKey)
+    }
+
+    @discardableResult
+    private static func launchctl(_ args: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
+        catch { NSLog("SSHAgentServer: launchctl %@ failed: %@", args.first ?? "", "\(error)"); return false }
+    }
+
+    private static func launchctlGetenv(_ name: String) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = ["getenv", name]
+        let pipe = Pipe(); p.standardOutput = pipe
+        do {
+            try p.run(); p.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (s?.isEmpty ?? true) ? nil : s
+        } catch { return nil }
+    }
+
     // MARK: - Lifecycle
 
     func start() throws {

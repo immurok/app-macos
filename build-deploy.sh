@@ -181,6 +181,14 @@ sign_deploy() {
         log_warn "Uninstall package not found in Resources/"
     fi
 
+    # Copy bundled OTA bridge firmware (1.6.0 HMAC bridge, frozen forever)
+    if [ -f "Resources/fw-1.6.0-bridge.imfw" ]; then
+        cp "Resources/fw-1.6.0-bridge.imfw" immurok.app/Contents/Resources/
+        log_info "OTA bridge firmware bundled in app Resources"
+    else
+        log_warn "OTA bridge firmware not found in Resources/"
+    fi
+
     # Copy app icon
     if [ -f "Resources/AppIcon.icns" ]; then
         cp Resources/AppIcon.icns immurok.app/Contents/Resources/

@@ -103,6 +103,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.setupQuickFill()
         }
 
+        // 辅助功能授权后重注册热键：首次安装时 setupQuickFill 在授权前跑，
+        // NSEvent 全局监听无权限会静默失效，之前必须手动重设快捷键才生效。
+        NotificationCenter.default.addObserver(
+            forName: .accessibilityGranted, object: nil, queue: .main
+        ) { [weak self] _ in
+            let enabled = UserDefaults.standard.object(forKey: "immurok.quickFillEnabled") == nil
+                || UserDefaults.standard.bool(forKey: "immurok.quickFillEnabled")
+            guard enabled else { return }
+            self?.teardownQuickFill()
+            self?.setupQuickFill()
+            NSLog("Accessibility granted — Quick Fill hotkey re-registered")
+        }
+
+        // 固件有新版本：弹系统通知作明确升级提示（每版本一次，由 service 去重）
+        NotificationCenter.default.addObserver(
+            forName: .firmwareUpdateAvailable, object: nil, queue: .main
+        ) { [weak self] note in
+            let version = note.object as? String ?? ""
+            self?.sendFirmwareUpdateNotification(version: version)
+        }
+
+        // 固件升级完成：弹完成提示
+        NotificationCenter.default.addObserver(
+            forName: .firmwareUpdateFinished, object: nil, queue: .main
+        ) { [weak self] note in
+            let version = note.object as? String ?? ""
+            self?.sendFirmwareDoneNotification(version: version)
+        }
+
         // Register for Login Items (auto-start)
         registerLoginItem()
 
@@ -196,6 +225,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startSSHAgentServer() {
         do {
             try SSHAgentServer.shared.start()
+            SSHAgentServer.shared.installAuthSockEnv()  // 让 ssh/git 默认能找到 agent（默认设置）
             NSLog("SSH Agent server started at %@", SSHAgentServer.shared.socketPath)
         } catch {
             NSLog("Failed to start SSH Agent server: %@", error.localizedDescription)
@@ -356,30 +386,61 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             // loginwindow's password field is ready as soon as the window is on screen.
-            // AX API cannot detect it (not exposed as AXSecureTextField), so type immediately.
-            self.fakeKeyStrokes(password)
-            let ms2 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-            Task { @MainActor in LogManager.shared.log("Password entered +\(ms2)ms") }
+            // AX API cannot detect it (not exposed as AXSecureTextField), so type immediately —
+            // UNLESS Apple Watch unlock is mid-authentication, in which case typing the password
+            // collides with the watch flow and errors. Gate on that (bug: watch prompt + immurok).
+            self.typePasswordAvoidingWatch(password, t0: t0,
+                                           deadline: CFAbsoluteTimeGetCurrent() + 8.0)
+        }
+    }
 
-            // Verify unlock after 2s: check lock screen window (not session state,
-            // which updates slower). If loginwindow is gone, unlock succeeded.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                guard let self = self else { return }
-                if self.isScreensaverWindowVisible() {
-                    // Same frontmost check on retry — if focus moved to some
-                    // other process during the 2s window, abort.
-                    guard self.isLoginWindowFrontmost() else {
-                        Task { @MainActor in LogManager.shared.log("Aborting retry: loginwindow not frontmost") }
-                        return
-                    }
-                    Task { @MainActor in LogManager.shared.log("Still locked, retrying") }
-                    self.fakeKeyStrokes(password)
-                } else {
-                    let ms3 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-                    Task { @MainActor in LogManager.shared.log("Unlock done +\(ms3)ms") }
-                }
-                // Password stays in Keychain (no BLE-based pendingPassword to clear)
+    /// 在避开 Apple Watch 认证的前提下输入密码解锁。
+    /// - 手表认证进行中：轮询等待其结束（bounded by deadline），期间不抢输密码；
+    /// - 期间屏幕已解锁（手表成功）：放弃，不输；
+    /// - 手表认证散去且仍锁着：输入密码，沿用原 +2s 校验/重试。
+    private func typePasswordAvoidingWatch(_ password: String, t0: CFAbsoluteTime, deadline: CFAbsoluteTime) {
+        // 已解锁（手表或其它途径）→ 无需输入
+        guard isScreensaverWindowVisible() else {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            Task { @MainActor in LogManager.shared.log("Unlock done (watch/other) +\(ms)ms") }
+            return
+        }
+        guard isLoginWindowFrontmost() else {
+            Task { @MainActor in LogManager.shared.log("Aborting unlock: loginwindow not frontmost") }
+            return
+        }
+        // 手表认证弹窗活跃 → 让它先走完，稍后重查（不抢输密码）
+        if isAppleWatchAuthInProgress(), CFAbsoluteTimeGetCurrent() < deadline {
+            Task { @MainActor in LogManager.shared.log("Apple Watch auth in progress — holding password entry") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.typePasswordAvoidingWatch(password, t0: t0, deadline: deadline)
             }
+            return
+        }
+        fakeKeyStrokes(password)
+        let ms2 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        Task { @MainActor in LogManager.shared.log("Password entered +\(ms2)ms") }
+
+        // Verify unlock after 2s: check lock screen window (not session state,
+        // which updates slower). If loginwindow is gone, unlock succeeded.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self = self else { return }
+            if self.isScreensaverWindowVisible() {
+                guard self.isLoginWindowFrontmost() else {
+                    Task { @MainActor in LogManager.shared.log("Aborting retry: loginwindow not frontmost") }
+                    return
+                }
+                if self.isAppleWatchAuthInProgress() {
+                    Task { @MainActor in LogManager.shared.log("Retry skipped: Apple Watch auth active") }
+                    return
+                }
+                Task { @MainActor in LogManager.shared.log("Still locked, retrying") }
+                self.fakeKeyStrokes(password)
+            } else {
+                let ms3 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                Task { @MainActor in LogManager.shared.log("Unlock done +\(ms3)ms") }
+            }
+            // Password stays in Keychain (no BLE-based pendingPassword to clear)
         }
     }
 
@@ -573,6 +634,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// Apple Watch 解锁认证是否正在进行：扫描锁屏(loginwindow)AX 树里是否出现
+    /// "Apple Watch" 相关文案。锁屏时 loginwindow 是 frontmost，可读其 AX 文本
+    /// （同 findUsePasswordButton 的前提）。"Apple Watch" 是品牌名，各语言一致。
+    private func isAppleWatchAuthInProgress() -> Bool {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              frontApp.bundleIdentifier == "com.apple.loginwindow"
+                || frontApp.localizedName == "loginwindow" else { return false }
+        let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+        var texts: [String] = []
+        collectStaticTexts(appElement, into: &texts, depth: 0, maxDepth: 6)
+        return texts.contains { $0.range(of: "Apple Watch", options: .caseInsensitive) != nil }
+    }
+
+    /// 递归收集 AX 树里的 AXStaticText 文本（有界深度/数量，避免卡顿）。
+    private func collectStaticTexts(_ element: AXUIElement, into texts: inout [String],
+                                    depth: Int, maxDepth: Int) {
+        if depth > maxDepth || texts.count > 200 { return }
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        if (roleRef as? String) == "AXStaticText" {
+            var valRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valRef)
+            if let t = valRef as? String, !t.isEmpty { texts.append(t) }
+        }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for c in children {
+                collectStaticTexts(c, into: &texts, depth: depth + 1, maxDepth: maxDepth)
+            }
+        }
+    }
+
     /// Check if screensaver/loginwindow is showing
     private func isScreensaverWindowVisible() -> Bool {
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
@@ -755,6 +849,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         display notification "请在系统设置中授予辅助功能权限" with title "immurok" subtitle "无法解锁屏幕"
         """
 
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        try? task.run()
+    }
+
+    /// 固件新版本系统通知（明确升级提示）。点通知不能直接回调 App，
+    /// 引导用户从菜单栏「固件升级」打开窗口。
+    private func sendFirmwareUpdateNotification(version: String) {
+        let body = String(format: "firmware.notify.body".localized, version)
+        let sub = "firmware.notify.subtitle".localized
+        // version 来自网络 manifest（半可信）：先转义反斜杠再转义引号，并去掉换行，
+        // 防止通过版本字符串注入/破坏 AppleScript。
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+             .replacingOccurrences(of: "\n", with: " ")
+             .replacingOccurrences(of: "\r", with: " ")
+        }
+        let script = "display notification \"\(esc(body))\" with title \"immurok\" subtitle \"\(esc(sub))\""
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        try? task.run()
+    }
+
+    /// 固件升级完成系统通知。
+    private func sendFirmwareDoneNotification(version: String) {
+        let body = String(format: "firmware.done.body".localized, version)
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+             .replacingOccurrences(of: "\n", with: " ")
+             .replacingOccurrences(of: "\r", with: " ")
+        }
+        let script = "display notification \"\(esc(body))\" with title \"immurok\" subtitle \"\(esc("firmware.done.subtitle".localized))\""
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         task.arguments = ["-e", script]

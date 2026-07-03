@@ -11,25 +11,50 @@ struct immurokApp: App {
         MenuBarExtra {
             MenuBarView(viewModel: viewModel)
         } label: {
-            // 使用自定义岩石图标 + 状态点
-            HStack(spacing: 2) {
-                if let img = NSImage(named: "StatusBarIconTemplate") {
-                    Image(nsImage: img)
-                } else {
-                    Image(systemName: "touchid")
-                }
-                Circle()
-                    .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
-                    .frame(width: 6, height: 6)
-            }
+            // label 抽成独立 View：持久渲染，可持有 openWindow 环境值，
+            // 用于响应 .openFirmwareUpdateWindow 通知打开固件升级窗口。
+            MenuBarStatusLabel(viewModel: viewModel)
         }
 
         // Settings window - 可通过菜单打开
         Window("immurok", id: "settings") {
             ContentView(viewModel: viewModel)
         }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 500, height: 640)
+        .defaultPosition(.center)
+
+        // 固件升级独立窗口
+        Window("fwupdate.title".localized, id: "firmware-update") {
+            FirmwareUpdateView(viewModel: viewModel)
+        }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+    }
+}
+
+// MARK: - Menu Bar Status Label
+
+/// 状态栏图标 + 连接点 + 固件更新橙点。抽成独立 View 让 App body 更清爽。
+struct MenuBarStatusLabel: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        HStack(spacing: 2) {
+            if let img = NSImage(named: "StatusBarIconTemplate") {
+                Image(nsImage: img)
+            } else {
+                Image(systemName: "touchid")
+            }
+            Circle()
+                .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
+                .frame(width: 6, height: 6)
+            if viewModel.firmwareUpdate.updateAvailable {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 6, height: 6)
+            }
+        }
     }
 }
 
@@ -60,6 +85,12 @@ struct MenuBarView: View {
             NotificationCenter.default.post(name: .openSettingsTab, object: tab)
         }
         openWindow(id: "settings")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 打开固件升级独立窗口
+    private func openFirmwareWindow() {
+        openWindow(id: "firmware-update")
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -104,6 +135,19 @@ struct MenuBarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
+            if viewModel.firmwareUpdate.updateAvailable {
+                Button(action: { openFirmwareWindow() }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill").foregroundColor(.orange)
+                        Text("fwupdate.menu.available".localized).foregroundColor(.orange)
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+
             // 整体状态 - 点击进入状态页面
             Button(action: {
                 openSettings(tab: .status)
@@ -119,6 +163,19 @@ struct MenuBarView: View {
             .padding(.vertical, 8)
 
             Divider()
+
+            // 固件升级（常驻入口）
+            Button(action: { openFirmwareWindow() }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "cpu")
+                        .frame(width: 16)
+                    Text("fwupdate.title".localized)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
 
             // 设置
             Button(action: {

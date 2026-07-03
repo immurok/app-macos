@@ -39,8 +39,8 @@ struct ContentView: View {
     @State private var selectedTab: SettingsTab = .device
 
     private let tabBarHeight: CGFloat = 70
-    // 每个 tab 自适应内容高度，window 跟随调整（windowResizability(.contentSize) 在 immurokApp.swift 已设）。
-    // 加 minHeight 防止内容很少（如关于页）时窗口太矮。
+    // 窗口可由用户调整（windowResizability(.contentMinSize) 在 immurokApp.swift 已设）。
+    // 这里只约束最小尺寸；各 tab 顶层都有 ScrollView，小屏/低分辨率下内容可滚动不裁切。
     private let minContentHeight: CGFloat = 360
 
     var body: some View {
@@ -51,11 +51,12 @@ struct ContentView: View {
 
             Divider()
 
-            // Tab Content - 自适应高度，按当前 tab 内容自然撑开
+            // Tab Content - 弹性填满窗口，内容超高时由各 tab 的 ScrollView 承接
             tabContent
-                .frame(minHeight: minContentHeight, alignment: .top)
+                .frame(maxWidth: .infinity, minHeight: minContentHeight,
+                       maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 500)
+        .frame(minWidth: 500)
         .background(Color(NSColor.windowBackgroundColor))
         .id(localization.currentLanguage)  // Force view rebuild on language change
         .onAppear {
