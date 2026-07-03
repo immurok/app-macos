@@ -12,6 +12,8 @@ extension Notification.Name {
     static let firmwareUpdateAvailable = Notification.Name("firmwareUpdateAvailable")
     /// 固件升级完成（object = 版本号 String），用于弹完成提示
     static let firmwareUpdateFinished = Notification.Name("firmwareUpdateFinished")
+    /// 请求打开固件升级独立窗口（强制升级时自动弹出）
+    static let openFirmwareUpdateWindow = Notification.Name("openFirmwareUpdateWindow")
 }
 
 @MainActor
@@ -237,6 +239,7 @@ class AppViewModel: ObservableObject {
                 self?.isDeviceVerified = false
                 self?.deviceName = nil
                 self?.firmwareVersion = nil
+                self?.firmwareUpdate.enforceMinimumIfNeeded()  // firmwareVersion=nil → 清 mandatoryUpdate
                 self?.batteryLevel = nil
                 self?.batteryVoltageMv = nil
                 self?.fingerprintCount = 0
@@ -257,6 +260,7 @@ class AppViewModel: ObservableObject {
             Task { @MainActor in
                 self?.firmwareVersion = version
                 self?.firmwareUpdate.resumePendingHopIfAny()
+                self?.firmwareUpdate.enforceMinimumIfNeeded()  // <1.6.0 立刻强制升级
                 self?.firmwareUpdate.checkIfDue()
             }
         }

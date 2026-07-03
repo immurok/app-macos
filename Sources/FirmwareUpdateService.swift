@@ -21,6 +21,12 @@ final class FirmwareUpdateService: ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var updateAvailable = false  // 菜单栏红点
+    /// 设备低于强制底线版本（旧签名纪元），必须升级才能正常使用
+    @Published private(set) var mandatoryUpdate = false
+
+    /// 强制升级底线：低于此版本的设备连接后立刻要求升级
+    static let mandatoryMinVersion = "1.6.0"
+    private var lastEnforcedVersion: String?
 
     static let manifestURL = URL(string: "https://immurok.com/fw/manifest.json")!
     static let telemetryURL = URL(string: "https://immurok.com/api/t")!
@@ -65,6 +71,33 @@ final class FirmwareUpdateService: ObservableObject {
                 req.httpBody = data
                 URLSession.shared.dataTask(with: req).resume()  // fire-and-forget
             })
+    }
+
+    // MARK: - 强制升级
+
+    /// 设备连接/上报版本后调用：低于 mandatoryMinVersion 的旧设备立刻要求升级
+    /// （自动弹出固件窗口 + 触发检查）。同一版本只自动弹一次，避免每次状态包重复打扰。
+    func enforceMinimumIfNeeded() {
+        guard let raw = viewModel?.firmwareVersion,
+              let dev = FirmwareVersion(Self.normalizeSemver(raw)),
+              let floor = FirmwareVersion(Self.mandatoryMinVersion) else {
+            mandatoryUpdate = false
+            return
+        }
+        let below = dev < floor
+        mandatoryUpdate = below
+        guard below else { lastEnforcedVersion = nil; return }
+        // 升级/等待重连中不打扰
+        switch state {
+        case .updating, .waitingReconnect, .downloading: return
+        default: break
+        }
+        // 同一设备版本只自动弹一次窗口。用归一化版本去重：DIS 报 "1.3.11"、
+        // GET_STATUS 报 "1.3.11.<build>"，同一版本两种原始串都会过去重、导致重复弹窗抢焦点。
+        let normalized = Self.normalizeSemver(raw)
+        if lastEnforcedVersion == normalized { return }
+        lastEnforcedVersion = normalized
+        NotificationCenter.default.post(name: .openFirmwareUpdateWindow, object: nil)
     }
 
     // MARK: - 检查

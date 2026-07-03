@@ -35,9 +35,11 @@ struct immurokApp: App {
 
 // MARK: - Menu Bar Status Label
 
-/// 状态栏图标 + 连接点 + 固件更新橙点。抽成独立 View 让 App body 更清爽。
+/// 状态栏图标 + 连接点 + 固件更新橙点。作为持久 View 持有 openWindow，
+/// 以便收到 .openFirmwareUpdateWindow 通知时（如强制升级）自动打开固件窗口。
 struct MenuBarStatusLabel: View {
     @ObservedObject var viewModel: AppViewModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 2) {
@@ -54,6 +56,10 @@ struct MenuBarStatusLabel: View {
                     .fill(Color.orange)
                     .frame(width: 6, height: 6)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openFirmwareUpdateWindow)) { _ in
+            openWindow(id: "firmware-update")
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 }

@@ -43,6 +43,20 @@ struct FirmwareUpdateView: View {
                 Spacer()
             }
 
+            // 强制升级横幅
+            if fwService.mandatoryUpdate {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text("fwupdate.mandatory".localized)
+                        .font(.callout).fontWeight(.medium)
+                    Spacer()
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.15))
+                .cornerRadius(8)
+            }
+
             Divider()
 
             // 当前版本
@@ -61,7 +75,8 @@ struct FirmwareUpdateView: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(width: 420, height: 260)
+        .frame(width: 420)
+        .frame(minHeight: fwService.mandatoryUpdate ? 300 : 260)
         .id(localization.currentLanguage)
         .background(WindowLevelSetter(level: .floating))  // 始终在最前方
         .onAppear {
