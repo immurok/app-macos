@@ -12,23 +12,26 @@ enum AuthContext {
 struct AuthContextDetector {
 
     func detect() -> AuthContext {
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return .none }
-        let pid = frontApp.processIdentifier
-        let bundleID = frontApp.bundleIdentifier
-        guard let kind = InjectionWhitelist.secretKind(forPID: pid, bundleID: bundleID) else { return .none }
-
-        let appElement = AXUIElementCreateApplication(pid)
-
-        // 1) 焦点是不是 AXSecureTextField？是 → secureField
-        //    容器可能是 AXSheet（App Store 密码页）或 AXWindow（Passwords 解锁是 AXStandardWindow，
-        //    实测非 sheet）。两者都要能命中，否则 Passwords 路径会静默失效。
-        if let focused = copyElement(appElement, kAXFocusedUIElementAttribute),
-           subrole(of: focused) == (kAXSecureTextFieldSubrole as String),
+        // 1) 系统级焦点若是 AXSecureTextField，按其**属主进程**判定白名单（而非 frontmost）。
+        //    Sign in with Apple 的密码框属主是 AKAuthorizationRemoteViewService（远程视图服务），
+        //    前台应用却是 Safari——只有按属主才能命中。App Store 密码页 / Passwords 解锁的焦点框
+        //    属主就是自身进程，同样适用。
+        //    容器可能是 AXSheet（App Store 密码页 / Sign in with Apple）或 AXWindow
+        //    （Passwords 解锁是 AXStandardWindow，实测非 sheet）。两者都要能命中。
+        if let focused = systemWideFocusedSecureField(),
+           let ownerPID = ownerPID(of: focused),
+           let ownerBundle = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
+           let kind = InjectionWhitelist.secretKind(forPID: ownerPID, bundleID: ownerBundle),
            let container = enclosingContainer(of: focused) {
             return .secureField(kind: kind, field: focused, sheet: container)
         }
 
-        // 2) App Store 特有：还在 Install/Cancel 确认页（尚无密码框）
+        // 2) App Store 特有：还在 Install/Cancel 确认页（尚无焦点密码框）——按前台应用判定。
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              let bundleID = frontApp.bundleIdentifier,
+              InjectionWhitelist.secretKind(forPID: frontApp.processIdentifier, bundleID: bundleID) != nil
+        else { return .none }
+        let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
         if bundleID == "com.apple.AppStore",
            let sheet = firstSheetWithButtons(appElement) {
             return .appStoreConfirmSheet(sheet: sheet)
@@ -38,6 +41,19 @@ struct AuthContextDetector {
     }
 
     // MARK: - AX helpers
+
+    /// 系统级焦点元素若是安全密码框则返回它，否则 nil。
+    private func systemWideFocusedSecureField() -> AXUIElement? {
+        guard let focused = copyElement(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
+              subrole(of: focused) == (kAXSecureTextFieldSubrole as String) else { return nil }
+        return focused
+    }
+
+    /// 元素所属进程 pid（用于按属主判定白名单 + 代码签名校验）。
+    private func ownerPID(of el: AXUIElement) -> pid_t? {
+        var p: pid_t = 0
+        return AXUIElementGetPid(el, &p) == .success ? p : nil
+    }
 
     /// 安全桥接：CFTypeRef? → AXUIElement?。AXUIElementCopyAttributeValue 对不同属性可能返回
     /// AXUIElement、CFArray、CFString 等不同 CF 类型，直接 `as!` 强转在类型不符时会崩溃，

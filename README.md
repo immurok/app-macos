@@ -149,4 +149,4 @@ Settings are stored in `UserDefaults` and accessible from the menu bar icon:
 
 ## License
 
-[BSL 1.1](../LICENSE) — personal, education, and research use permitted. Converts to Apache 2.0 on 2030-03-05.
+[Apache License 2.0](LICENSE) — including the PAM module in `pam/`. Device firmware is licensed separately under BSL 1.1.

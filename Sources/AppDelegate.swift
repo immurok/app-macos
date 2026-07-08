@@ -291,7 +291,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     ? UserDefaults.standard.bool(forKey: "immurok.passwordsFillEnabled")
                     : UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled")
                 if enabled, kind == .loginPassword, let pw = ImmurokSecurity.shared.loadPassword() {
-                    LogManager.shared.log("[注入] Passwords → 登录密码")
+                    LogManager.shared.log("[注入] 登录密码框（Passwords / Sign in with Apple 等）→ 登录密码")
                     lastAuthFlowAt = Date()
                     let injector = AuthInjector()
                     injector.focus(field)

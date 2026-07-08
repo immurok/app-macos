@@ -8,6 +8,9 @@ enum InjectionWhitelist {
     private static let table: [String: SecretKind] = [
         "com.apple.AppStore": .appleIDPassword,
         "com.apple.Passwords": .loginPassword,
+        // Safari "Sign in with Apple" 授权 sheet：属主是 AuthKitUI 的远程视图服务
+        // （前台应用是 Safari，但密码框属于此进程）。要 Mac 登录密码。
+        "com.apple.AuthKitUI.AKAuthorizationRemoteViewService": .loginPassword,
     ]
 
     static func secretKind(forPID pid: pid_t, bundleID: String?) -> SecretKind? {
