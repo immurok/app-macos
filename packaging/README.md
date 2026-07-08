@@ -22,6 +22,14 @@ and the `postinstall` wires `pam_immurok` into `/etc/pam.d/sudo_local` and
 `/etc/pam.d/authorization`. A signed uninstall pkg is embedded in the app for
 the in-app "uninstall" action.
 
+**macOS 13 Ventura**: `sudo_local` only exists on macOS 14+ (Ventura's
+`/etc/pam.d/sudo` has no `include sudo_local`), so on 13.x the `postinstall`
+additionally writes the line into `/etc/pam.d/sudo` itself. That file is reset
+by every macOS update; the app monitors it (`SetupManager.needsLegacySudoRepair`)
+and offers the embedded `immurok_repair.pkg`, whose `repair-postinstall` handles
+the same version branch. `sudo_local` is still written on 13.x so sudo auth
+survives a later 13 → 14 upgrade without repair.
+
 `workflow_dispatch` (Actions → Release → Run workflow) does the same build for a
 manual version but **does not** publish a Release — use it as a dry run.
 

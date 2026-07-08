@@ -22,6 +22,15 @@ if [ -f /etc/pam.d/sudo_local ]; then
     chmod 444 /etc/pam.d/sudo_local
 fi
 
+# Step 2b: Remove our line from /etc/pam.d/sudo (macOS 13.x installs write there)
+if [ -f /etc/pam.d/sudo ] && grep -q pam_immurok /etc/pam.d/sudo; then
+    CONTENT=$(grep -v pam_immurok /etc/pam.d/sudo || true)
+    if [ -n "$CONTENT" ]; then
+        echo "$CONTENT" > /etc/pam.d/sudo
+        chmod 444 /etc/pam.d/sudo
+    fi
+fi
+
 # Step 3: Remove our line from authorization
 if [ -f /etc/pam.d/authorization ]; then
     CONTENT=$(grep -v pam_immurok /etc/pam.d/authorization || true)

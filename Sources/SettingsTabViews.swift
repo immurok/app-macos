@@ -329,7 +329,7 @@ struct DeviceTabView: View {
 struct KeysTabView: View {
     @ObservedObject var viewModel: AppViewModel
     @StateObject private var keystoreVM = KeystoreViewModel()
-    @State private var selectedCategory: KeyCategory = .system
+    @State private var selectedCategory: KeyCategory = .sshGit
     @State private var showingAddSheet = false
     @State private var copiedNotification: String?
     @State private var isManaging = false
@@ -338,11 +338,10 @@ struct KeysTabView: View {
     @State private var editingEntry: KeystoreViewModel.Entry? = nil
 
     private enum KeyCategory: String, CaseIterable {
-        case system, sshGit, api, otp
+        case sshGit, api, otp
 
         var icon: String {
             switch self {
-            case .system: return "key.fill"
             case .sshGit: return "terminal"
             case .api: return "network"
             case .otp: return "clock.badge"
@@ -351,17 +350,15 @@ struct KeysTabView: View {
 
         var localizedName: String {
             switch self {
-            case .system: return "keys.system".localized
             case .sshGit: return "keys.ssh".localized
             case .api: return "keys.api".localized
             case .otp: return "keys.otp".localized
             }
         }
 
-        /// Map to BLE keystore category (nil for system)
-        var keystoreCat: KeystoreCategory? {
+        /// Map to BLE keystore category
+        var keystoreCat: KeystoreCategory {
             switch self {
-            case .system: return nil
             case .sshGit: return .ssh
             case .api: return .api
             case .otp: return .otp
@@ -378,9 +375,7 @@ struct KeysTabView: View {
                         selectedCategory = category
                         isManaging = false
                         selectedEntries.removeAll()
-                        if let cat = category.keystoreCat {
-                            keystoreVM.loadEntries(cat: cat)
-                        }
+                        keystoreVM.loadEntries(cat: category.keystoreCat)
                     }) {
                         HStack(spacing: 6) {
                             Image(systemName: category.icon)
@@ -413,57 +408,36 @@ struct KeysTabView: View {
             // 右侧内容区
             VStack(spacing: 0) {
                 // 表头
-                if let cat = selectedCategory.keystoreCat {
-                    HStack {
-                        Text("\(keystoreVM.entries.count)/\(cat.maxEntries)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
-                        Spacer()
-                        Button(isManaging ? "keys.done".localized : "keys.manage".localized) {
-                            isManaging.toggle()
-                            if !isManaging { selectedEntries.removeAll() }
-                        }
+                HStack {
+                    Text("\(keystoreVM.entries.count)/\(selectedCategory.keystoreCat.maxEntries)")
                         .font(.caption)
-                        .buttonStyle(.borderless)
-                        .disabled(keystoreVM.entries.isEmpty || keystoreVM.isDeleting)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                    Spacer()
+                    Button(isManaging ? "keys.done".localized : "keys.manage".localized) {
+                        isManaging.toggle()
+                        if !isManaging { selectedEntries.removeAll() }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                } else {
-                    HStack {
-                        Text("keys.name".localized)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("keys.action".localized)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .frame(width: 50)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .disabled(keystoreVM.entries.isEmpty || keystoreVM.isDeleting)
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
 
                 Divider()
 
                 // 条目列表
                 ScrollView {
                     VStack(spacing: 0) {
-                        switch selectedCategory {
-                        case .system:
-                            systemKeysContent
-                        default:
-                            keystoreListContent
-                        }
+                        keystoreListContent
                     }
                 }
 
-                // 底部工具栏（仅 keystore 分类）
-                if selectedCategory != .system {
-                    Divider()
-                    HStack {
-                        if isManaging {
+                // 底部工具栏
+                Divider()
+                HStack {
+                    if isManaging {
                             Button(selectedEntries.count == keystoreVM.entries.count
                                    ? "keys.deselectAll".localized
                                    : "keys.selectAll".localized) {
@@ -589,23 +563,19 @@ struct KeysTabView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                }
             }
         }
         .sheet(isPresented: $showingAddSheet) {
-            if let cat = selectedCategory.keystoreCat {
-                AddKeyEntrySheet(category: cat, keystoreVM: keystoreVM, isPresented: $showingAddSheet)
-            }
+            AddKeyEntrySheet(category: selectedCategory.keystoreCat, keystoreVM: keystoreVM, isPresented: $showingAddSheet)
         }
         .sheet(item: $editingEntry) { entry in
-            if let cat = selectedCategory.keystoreCat {
-                EditKeyEntrySheet(entry: entry, category: cat) { name, service in
-                    keystoreVM.updateEntry(cat: cat, idx: UInt8(entry.index),
-                                           name: name, service: service) { _ in }
-                    editingEntry = nil
-                } onCancel: {
-                    editingEntry = nil
-                }
+            let cat = selectedCategory.keystoreCat
+            EditKeyEntrySheet(entry: entry, category: cat) { name, service in
+                keystoreVM.updateEntry(cat: cat, idx: UInt8(entry.index),
+                                       name: name, service: service) { _ in }
+                editingEntry = nil
+            } onCancel: {
+                editingEntry = nil
             }
         }
         .sheet(isPresented: $keystoreVM.gateController.isPresented) {
@@ -635,38 +605,6 @@ struct KeysTabView: View {
                 let vm = keystoreVM
                 vm.loadFromSSHKeyCache()
             }
-        }
-    }
-
-    // MARK: - System Keys Content
-
-    private var systemKeysContent: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("permission.unlock.password".localized)
-
-                Spacer()
-
-                if viewModel.isPasswordConfigured {
-                    Text("permission.configured".localized)
-                        .font(.caption)
-                        .foregroundColor(.green)
-                } else {
-                    Text("permission.configure".localized)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Button(viewModel.isPasswordConfigured ? "permission.modify".localized : "permission.configure".localized) {
-                    viewModel.configurePassword()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!viewModel.isDevicePaired)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
         }
     }
 
@@ -793,7 +731,7 @@ struct KeysTabView: View {
     }
 
     private func deleteSelected() {
-        guard let cat = selectedCategory.keystoreCat else { return }
+        let cat = selectedCategory.keystoreCat
         let indices = selectedEntries.map { UInt8($0) }
         keystoreVM.deleteEntries(cat: cat, indices: indices) {
             Task { @MainActor in
@@ -1739,6 +1677,8 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
     @AppStorage("immurok.cliEnabled") private var cliEnabled = true
     @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
+    @AppStorage("immurok.appStoreFillEnabled") private var appStoreFillEnabled = false
+    @AppStorage("immurok.passwordsFillEnabled") private var passwordsFillEnabled = true
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
     @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
 
@@ -1751,6 +1691,50 @@ struct PermissionsTabView: View {
     var body: some View {
         ScrollView {
         VStack(spacing: 16) {
+            // ===== 系统 =====
+            sectionLabel("permission.section.system")
+
+            // 屏幕锁定（长按 ~2s）
+            GroupBox {
+                permissionRow(
+                    icon: "lock",
+                    titleKey: "permission.screen.lock",
+                    hintKey: "permission.screen.lock.hint",
+                    isOn: $screenLockEnabled
+                )
+            }
+
+            // 界面认证授权（系统设置等）
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    permissionRow(
+                        icon: "macwindow.badge.plus",
+                        titleKey: "permission.authorization",
+                        hintKey: "permission.authorization.hint",
+                        isOn: Binding(
+                            get: { authorizationEnabled },
+                            set: { tryEnableSystemAuth($0) }
+                        )
+                    )
+                    if setupManager.needsAuthorizationRepair {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("notify.authrepair.title".localized)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("permission.authorization.repair".localized) {
+                                repairAuthorizationAction()
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ===== 密码自动填充 =====
+            sectionLabel("permission.section.autofill")
+
             // 屏幕解锁
             GroupBox {
                 permissionRow(
@@ -1768,41 +1752,40 @@ struct PermissionsTabView: View {
                 )
             }
 
-            // 屏幕锁定（长按 ~2s）
+            // App Store（新）
+            GroupBox {
+                appStoreRow
+            }
+
+            // Passwords（新）
             GroupBox {
                 permissionRow(
-                    icon: "lock",
-                    titleKey: "permission.screen.lock",
-                    hintKey: "permission.screen.lock.hint",
-                    isOn: $screenLockEnabled
+                    icon: "key.horizontal",
+                    titleKey: "permission.passwords",
+                    hintKey: "permission.passwords.hint",
+                    isOn: Binding(
+                        get: { passwordsFillEnabled },
+                        set: { tryEnablePasswords($0) }
+                    )
                 )
             }
+
+            // ===== 开发者工具 =====
+            sectionLabel("permission.section.devtools")
 
             // 终端 sudo 授权
             GroupBox {
-                permissionRow(
-                    icon: "terminal",
-                    titleKey: "permission.sudo",
-                    isOn: Binding(
-                        get: { sudoAuthEnabled },
-                        set: { tryEnableSudoAuth($0) }
-                    )
-                )
-            }
-
-            // 界面认证授权（系统设置等）
-            GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
                     permissionRow(
-                        icon: "macwindow.badge.plus",
-                        titleKey: "permission.authorization",
-                        hintKey: "permission.authorization.hint",
+                        icon: "terminal",
+                        titleKey: "permission.sudo",
                         isOn: Binding(
-                            get: { authorizationEnabled },
-                            set: { tryEnableSystemAuth($0) }
+                            get: { sudoAuthEnabled },
+                            set: { tryEnableSudoAuth($0) }
                         )
                     )
-                    if setupManager.needsAuthorizationRepair {
+                    // 仅 macOS 13.x:/etc/pam.d/sudo 被系统更新重置后提示修复
+                    if setupManager.needsLegacySudoRepair {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(.orange)
@@ -1866,6 +1849,32 @@ struct PermissionsTabView: View {
         .padding(.top, 12)
         .padding(.bottom, 20)
         }
+    }
+
+    // MARK: - Section Header
+    private func sectionLabel(_ key: String) -> some View {
+        HStack {
+            Text(key.localized)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 6)
+    }
+
+    // MARK: - App Store Row
+    private var appStoreRow: some View {
+        permissionRow(
+            icon: "bag",
+            titleKey: "permission.appstore",
+            hintKey: "permission.appstore.hint",
+            isOn: Binding(
+                get: { appStoreFillEnabled },
+                set: { tryEnableAppStore($0) }
+            )
+        )
     }
 
     // MARK: - Unlock Sound Picker
@@ -1967,17 +1976,55 @@ struct PermissionsTabView: View {
     // MARK: - Toggle Handlers
 
     private func tryEnableScreenUnlock(_ enable: Bool) {
-        if enable && !setupManager.hasAccessibilityPermission {
-            showPrerequisiteAlert(
-                title: "alert.need.accessibility".localized,
-                message: "alert.need.accessibility.message".localized,
-                actionTitle: "alert.go.settings".localized
-            ) {
-                setupManager.openAccessibilitySettings()
+        if enable {
+            if !setupManager.hasAccessibilityPermission {
+                showPrerequisiteAlert(
+                    title: "alert.need.accessibility".localized,
+                    message: "alert.need.accessibility.message".localized,
+                    actionTitle: "alert.go.settings".localized
+                ) {
+                    setupManager.openAccessibilitySettings()
+                }
+                return
             }
-            return
+            // 开启前按需索取系统登录密码；取消则不开启。
+            if viewModel.setupLoginPasswordIfNeeded() {
+                screenUnlockEnabled = true
+            }
+        } else {
+            screenUnlockEnabled = false
+            // 解锁与 Passwords 都关了 → 清除登录密码。
+            if !passwordsFillEnabled {
+                viewModel.clearLoginPassword()
+            }
         }
-        screenUnlockEnabled = enable
+    }
+
+    private func tryEnablePasswords(_ enable: Bool) {
+        if enable {
+            // 开启前按需索取系统登录密码；取消则不开启。
+            if viewModel.setupLoginPasswordIfNeeded() {
+                passwordsFillEnabled = true
+            }
+        } else {
+            passwordsFillEnabled = false
+            // 解锁与 Passwords 都关了 → 清除登录密码。
+            if !screenUnlockEnabled {
+                viewModel.clearLoginPassword()
+            }
+        }
+    }
+
+    private func tryEnableAppStore(_ enable: Bool) {
+        if enable {
+            // 开启前按需索取 Apple ID 密码；取消则不开启。
+            if viewModel.setupAppleIDPasswordIfNeeded() {
+                appStoreFillEnabled = true
+            }
+        } else {
+            appStoreFillEnabled = false
+            viewModel.clearAppleIDPassword()
+        }
     }
 
     private func tryEnableSudoAuth(_ enable: Bool) {
@@ -2298,7 +2345,7 @@ struct AboutTabView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0"
     }
 
-    /// "App v1.3.0(395)"
+    /// "App v1.4.0(410)"
     private var appVersionText: String {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         return "App v\(appVersion)(\(build))"

@@ -14,11 +14,17 @@ class SetupManager: ObservableObject {
     @Published var isAuthorizationEnabled = false
     @Published var hasAccessibilityPermission = false
     @Published var isAuthorizationConfigured = false
+    @Published var isLegacySudoConfigured = true
 
     // MARK: - Paths
 
     private let pamModuleDestination = "/usr/local/lib/pam/pam_immurok.so"
     private let authorizationPath = "/etc/pam.d/authorization"
+    private let legacySudoPath = "/etc/pam.d/sudo"
+
+    /// macOS 13 Ventura 及更早:/etc/pam.d/sudo 没有 `include sudo_local`,
+    /// pam 行必须直接写进 /etc/pam.d/sudo,且每次系统更新都会被重置——需要监控。
+    static let isLegacyOS = ProcessInfo.processInfo.operatingSystemVersion.majorVersion < 14
 
     private var uninstallPkgPath: String? {
         Bundle.main.path(forResource: "immurok_uninstall", ofType: "pkg")
@@ -43,6 +49,10 @@ class SetupManager: ObservableObject {
             NotificationCenter.default.post(name: .accessibilityGranted, object: nil)
         }
         isAuthorizationConfigured = Self.authorizationLineConfigured(at: authorizationPath)
+        // 14+ 走 sudo_local(系统更新不重置),无需监控,恒视为已配置
+        isLegacySudoConfigured = Self.isLegacyOS
+            ? Self.authorizationLineConfigured(at: legacySudoPath)
+            : true
     }
 
     /// 文件真相:/etc/pam.d/authorization 是否含生效的 pam_immurok 行。
@@ -62,6 +72,17 @@ class SetupManager: ObservableObject {
     /// 需要修复:用户想要 authorization 功能,但文件里行丢了(多为系统升级所致)。
     var needsAuthorizationRepair: Bool {
         return isAuthorizationEnabled && !isAuthorizationConfigured
+    }
+
+    /// 需要修复:macOS 13.x 上用户想要 sudo 功能,但 /etc/pam.d/sudo 里行丢了
+    /// (系统更新必然重置该文件)。14+ 恒为 false。
+    var needsLegacySudoRepair: Bool {
+        return Self.isLegacyOS && isSudoAuthEnabled && !isLegacySudoConfigured
+    }
+
+    /// 任一 pam.d 行丢失,菜单/通知统一入口。repair.pkg 一次性补齐全部。
+    var needsPAMRepair: Bool {
+        return needsAuthorizationRepair || needsLegacySudoRepair
     }
 
     /// Check if setup wizard should be shown
@@ -118,18 +139,18 @@ class SetupManager: ObservableObject {
 
         NSWorkspace.shared.open(URL(fileURLWithPath: pkgPath))
 
-        // 轮询 authorization 行是否补回(用户在 Installer 中完成安装 + 授权)
+        // 轮询 pam.d 行是否补回(用户在 Installer 中完成安装 + 授权)。
+        // 13.x 上 repair.pkg 同时补 authorization 和 /etc/pam.d/sudo,两者都要到位。
         let startTime = Date()
         let timeout: TimeInterval = 300
 
         func check() {
-            if Self.authorizationLineConfigured(at: authorizationPath) {
-                refreshStatus()
+            refreshStatus()
+            if !needsPAMRepair {
                 completion(true, nil)
                 return
             }
             if Date().timeIntervalSince(startTime) >= timeout {
-                refreshStatus()
                 completion(false, nil)  // 超时/取消,按"未完成"处理,不弹错误
                 return
             }

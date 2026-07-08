@@ -57,6 +57,52 @@ run_case "sudo-absent" $'# stock\n' "__ABSENT__"
 # authorization 文件不存在(应创建)
 run_case "auth-absent" "__ABSENT__" $'auth include foo\n'
 
+# ---- macOS 13.x 分支: pam 行直写 /etc/pam.d/sudo ----
+STOCK_SUDO=$'# sudo: auth account\nauth       sufficient     pam_smartcard.so\nauth       required       pam_opendirectory.so\n'
+
+make_root() {
+    local root; root="$(mktemp -d)"
+    mkdir -p "$root/etc/pam.d" "$root/usr/local/lib/pam"
+    : > "$root/usr/local/lib/pam/pam_immurok.so"
+    printf '# stock\n' > "$root/etc/pam.d/authorization"
+    printf 'auth include foo\n' > "$root/etc/pam.d/sudo_local"
+    echo "$root"
+}
+
+# 13.x + sudo 文件存在 → 补行,幂等,原始行保留
+ROOT3="$(make_root)"
+printf '%s' "$STOCK_SUDO" > "$ROOT3/etc/pam.d/sudo"
+IMMUROK_ROOT="$ROOT3" IMMUROK_OS_MAJOR=13 bash "$REPAIR" >/dev/null 2>&1
+if ! grep -q pam_immurok "$ROOT3/etc/pam.d/sudo"; then
+    echo "FAIL[legacy-sudo]: /etc/pam.d/sudo 缺 pam_immurok 行"; FAILS=$((FAILS+1))
+fi
+if ! grep -q pam_opendirectory "$ROOT3/etc/pam.d/sudo"; then
+    echo "FAIL[legacy-sudo]: 原始 pam_opendirectory 行丢失"; FAILS=$((FAILS+1))
+fi
+IMMUROK_ROOT="$ROOT3" IMMUROK_OS_MAJOR=13 bash "$REPAIR" >/dev/null 2>&1
+LCOUNT=$(grep -c pam_immurok "$ROOT3/etc/pam.d/sudo")
+if [ "$LCOUNT" -ne 1 ]; then echo "FAIL[legacy-sudo]: 二次运行后出现 $LCOUNT 次(应为 1)"; FAILS=$((FAILS+1)); fi
+rm -rf "$ROOT3"
+
+# 14+ → 不碰 /etc/pam.d/sudo
+ROOT4="$(make_root)"
+printf '%s' "$STOCK_SUDO" > "$ROOT4/etc/pam.d/sudo"
+IMMUROK_ROOT="$ROOT4" IMMUROK_OS_MAJOR=14 bash "$REPAIR" >/dev/null 2>&1
+if grep -q pam_immurok "$ROOT4/etc/pam.d/sudo"; then
+    echo "FAIL[modern-sudo]: 14+ 不应写 /etc/pam.d/sudo"; FAILS=$((FAILS+1))
+fi
+rm -rf "$ROOT4"
+
+# 13.x + sudo 文件不存在 → 跳过且不创建(裸文件会弄坏 sudo),退出 0
+ROOT5="$(make_root)"
+IMMUROK_ROOT="$ROOT5" IMMUROK_OS_MAJOR=13 bash "$REPAIR" >/dev/null 2>&1
+RC5=$?
+if [ $RC5 -ne 0 ]; then echo "FAIL[legacy-no-sudo]: exit $RC5(应为 0)"; FAILS=$((FAILS+1)); fi
+if [ -f "$ROOT5/etc/pam.d/sudo" ]; then
+    echo "FAIL[legacy-no-sudo]: 不应凭空创建 /etc/pam.d/sudo"; FAILS=$((FAILS+1))
+fi
+rm -rf "$ROOT5"
+
 # .so 不存在 → 应非 0 退出
 ROOT2="$(mktemp -d)"; mkdir -p "$ROOT2/etc/pam.d"
 printf '# stock\n' > "$ROOT2/etc/pam.d/authorization"

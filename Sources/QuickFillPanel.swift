@@ -104,6 +104,19 @@ class QuickFillViewModel: ObservableObject {
         }
     }
 
+    /// 搜索结果下方要展示的行。
+    /// 校验中只显示正在校验的条目 (verifyEntry)——绝不能用 selectedIndex 去下标
+    /// `filteredEntries.prefix(maxVisible)` 后的数组：selectedIndex 是完整
+    /// filteredEntries 的下标，当命中条目排在第 maxVisible(6) 位之后时会越界崩溃
+    /// （例如 OTP 与 API/SSH 共用同一 service 时，按名字确认后过滤仍 >6 条）。
+    /// 2026-07-03 修复 QuickFillPanel.swift:567 "Index out of range"。
+    var displayRows: [QuickFillEntry] {
+        if isVerifying {
+            return verifyEntry.map { [$0] } ?? []
+        }
+        return Array(filteredEntries.prefix(Self.maxVisible))
+    }
+
     func loadEntries() {
         previousApp = NSWorkspace.shared.frontmostApplication
 
@@ -520,10 +533,6 @@ struct QuickFillView: View {
     @ObservedObject var viewModel: QuickFillViewModel
     @FocusState private var isSearchFocused: Bool
 
-    private var displayEntries: [QuickFillEntry] {
-        Array(viewModel.filteredEntries.prefix(QuickFillViewModel.maxVisible))
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             // Search bar
@@ -560,14 +569,10 @@ struct QuickFillView: View {
             .frame(height: QuickFillViewModel.searchBarHeight)
 
             // Results
-            if !viewModel.searchText.isEmpty && !displayEntries.isEmpty {
+            if !viewModel.searchText.isEmpty && !viewModel.displayRows.isEmpty {
                 Divider().padding(.horizontal, 8)
                 VStack(spacing: 0) {
-                    let displayList = viewModel.isVerifying
-                        ? [displayEntries[viewModel.selectedIndex]]
-                        : Array(displayEntries)
-
-                    ForEach(Array(displayList.enumerated()), id: \.element.id) { idx, entry in
+                    ForEach(Array(viewModel.displayRows.enumerated()), id: \.element.id) { idx, entry in
                         QuickFillRow(
                             entry: entry,
                             isSelected: viewModel.isVerifying || idx == viewModel.selectedIndex,

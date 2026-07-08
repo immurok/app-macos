@@ -13,6 +13,7 @@ class ImmurokSecurity {
 
     private let keychainServiceSharedKey = "com.immurok.shared-key"
     private let keychainServicePassword = "com.immurok.password"
+    private let keychainServiceAppleIDPassword = "com.immurok.appleid-password"
     private let keychainServiceVerifiedDevice = "com.immurok.verified-device"
     private let keychainAccount = "immurok"
 
@@ -182,6 +183,27 @@ class ImmurokSecurity {
 
     func clearPassword() {
         deleteFromKeychain(service: keychainServicePassword)
+    }
+
+    // MARK: - Apple ID Password (Keychain)
+
+    func saveAppleIDPassword(_ password: String) {
+        guard let data = password.data(using: .utf8) else { return }
+        saveToKeychain(service: keychainServiceAppleIDPassword, data: data)
+        NSLog("ImmurokSecurity: Apple ID password saved to Keychain")
+    }
+
+    func loadAppleIDPassword() -> String? {
+        guard let data = loadFromKeychain(service: keychainServiceAppleIDPassword) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func hasAppleIDPassword() -> Bool {
+        loadFromKeychain(service: keychainServiceAppleIDPassword) != nil
+    }
+
+    func clearAppleIDPassword() {
+        deleteFromKeychain(service: keychainServiceAppleIDPassword)
     }
 
     // MARK: - Keychain Helpers

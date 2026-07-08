@@ -102,7 +102,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if setupManager.needsAuthorizationRepair {
+            if setupManager.needsPAMRepair {
                 Button(action: {
                     setupManager.repairAuthorization { success, error in
                         if !success, let error = error {

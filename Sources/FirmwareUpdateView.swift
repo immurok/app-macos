@@ -85,6 +85,10 @@ struct FirmwareUpdateView: View {
                 fwService.checkIfDue(force: true)
             }
         }
+        .onDisappear {
+            // 关闭窗口时复位终态，让下次打开能重新检查（升级进行中不复位）
+            fwService.resetIfInactive()
+        }
     }
 
     @ViewBuilder

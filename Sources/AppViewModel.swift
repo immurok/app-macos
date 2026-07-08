@@ -341,53 +341,76 @@ class AppViewModel: ObservableObject {
         }
     }
 
+    /// 单字段密码输入弹窗（无二次确认）。取消或留空返回 nil。
+    private func promptSinglePassword(title: String, message: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "password.save".localized)
+        alert.addButton(withTitle: "alert.cancel".localized)
+
+        let input = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        input.placeholderString = "password.placeholder".localized
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        guard alert.runModalOverSettings() == .alertFirstButtonReturn else { return nil }
+        let pw = input.stringValue
+        return pw.isEmpty ? nil : pw
+    }
+
+    /// 主动配置登录密码（单字段，无二次确认）。供配对后 / 状态页调用。
     func configurePassword() {
         // 未配对时不允许设置密码
         guard isDevicePaired else {
             showAlert(title: "alert.error".localized, message: "password.need.pair.first".localized)
             return
         }
+        guard let password = promptSinglePassword(title: "password.title".localized,
+                                                  message: "password.message".localized) else { return }
+        // Save password to Keychain (local only, not sent via BLE)
+        ImmurokSecurity.shared.savePassword(password)
+        isPasswordConfigured = true
+        hasLocalPairing = true
+    }
 
-        let alert = NSAlert()
-        alert.messageText = "password.title".localized
-        alert.informativeText = "password.message".localized
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "password.save".localized)
-        alert.addButton(withTitle: "alert.cancel".localized)
-
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 54))
-
-        let input1 = NSSecureTextField(frame: NSRect(x: 0, y: 30, width: 250, height: 24))
-        input1.placeholderString = "password.placeholder".localized
-
-        let input2 = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        input2.placeholderString = "password.confirm.placeholder".localized
-
-        container.addSubview(input1)
-        container.addSubview(input2)
-        alert.accessoryView = container
-
-        let response = alert.runModalOverSettings()
-        if response == .alertFirstButtonReturn {
-            let password = input1.stringValue
-            let confirm = input2.stringValue
-
-            guard !password.isEmpty else {
-                showAlert(title: "alert.error".localized, message: "password.error.empty".localized)
-                return
-            }
-
-            guard password == confirm else {
-                showAlert(title: "alert.error".localized, message: "password.error.mismatch".localized)
-                return
-            }
-
-            // Save password to Keychain (local only, not sent via BLE)
-            ImmurokSecurity.shared.savePassword(password)
-            isPasswordConfigured = true
-            hasLocalPairing = true
-            showAlert(title: "password.saved".localized, message: "password.saved.message".localized)
+    /// 开启解锁 / Passwords 自动填充前，按需索取系统登录密码。
+    /// 已有密码则直接返回 true；弹窗取消返回 false（调用方不应开启该功能）。
+    @discardableResult
+    func setupLoginPasswordIfNeeded() -> Bool {
+        if ImmurokSecurity.shared.hasPassword() { return true }
+        guard isDevicePaired else {
+            showAlert(title: "alert.error".localized, message: "password.need.pair.first".localized)
+            return false
         }
+        guard let password = promptSinglePassword(title: "password.title".localized,
+                                                  message: "password.message".localized) else { return false }
+        ImmurokSecurity.shared.savePassword(password)
+        isPasswordConfigured = true
+        hasLocalPairing = true
+        return true
+    }
+
+    /// 开启 App Store 自动填充前，按需索取 Apple ID 密码。取消返回 false。
+    @discardableResult
+    func setupAppleIDPasswordIfNeeded() -> Bool {
+        if ImmurokSecurity.shared.hasAppleIDPassword() { return true }
+        guard let password = promptSinglePassword(title: "permission.appstore.configure".localized,
+                                                  message: "permission.appstore.configure.hint".localized) else { return false }
+        ImmurokSecurity.shared.saveAppleIDPassword(password)
+        return true
+    }
+
+    /// 解锁与 Passwords 均已关闭后调用：清除本地登录密码。
+    func clearLoginPassword() {
+        ImmurokSecurity.shared.clearPassword()
+        isPasswordConfigured = false
+    }
+
+    /// 关闭 App Store 自动填充后调用：清除本地 Apple ID 密码。
+    func clearAppleIDPassword() {
+        ImmurokSecurity.shared.clearAppleIDPassword()
     }
 
     // MARK: - ECDH Pairing

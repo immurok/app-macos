@@ -146,6 +146,19 @@ final class FirmwareUpdateService: ObservableObject {
         }
     }
 
+    /// 固件窗口关闭时调用：把停留在终态（可用/成功/失败）的状态复位到 idle，
+    /// 这样下次打开窗口 onAppear 能重新检查。升级流程进行中（检查/下载/推送/
+    /// 等待重连）不复位，避免丢掉正在跑的进度显示。
+    func resetIfInactive() {
+        if updateTask != nil { return }
+        switch state {
+        case .checking, .downloading, .updating, .waitingReconnect:
+            return
+        case .idle, .updateAvailable, .success, .failed:
+            state = .idle
+        }
+    }
+
     // MARK: - 升级入口
 
     func startUpdate() {

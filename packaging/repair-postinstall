@@ -14,7 +14,10 @@ R="${IMMUROK_ROOT:-}"
 SO_FILE="${R}/usr/local/lib/pam/pam_immurok.so"
 AUTH="${R}/etc/pam.d/authorization"
 SUDO_LOCAL="${R}/etc/pam.d/sudo_local"
+SUDO_FILE="${R}/etc/pam.d/sudo"
 CONFIG_LINE="auth sufficient /usr/local/lib/pam/pam_immurok.so"
+# IMMUROK_OS_MAJOR overrides sw_vers for the test harness.
+OS_MAJOR="${IMMUROK_OS_MAJOR:-$(sw_vers -productVersion | cut -d. -f1)}"
 
 # Guard: the .so must already be installed. If it's gone the user fully
 # uninstalled — repairing the pam.d line would point at a missing module.
@@ -49,6 +52,25 @@ if [ -f "$SUDO_LOCAL" ]; then
 else
     echo "$CONFIG_LINE" > "$SUDO_LOCAL"
     chmod 444 "$SUDO_LOCAL"
+fi
+
+# macOS 13 Ventura and earlier: sudo doesn't include sudo_local, the line must
+# live in /etc/pam.d/sudo itself — and every macOS update strips it. This is
+# the primary repair target on 13.x. Never create the file from scratch: a
+# sudo file with only our line (missing pam_opendirectory) would break sudo.
+if [ "$OS_MAJOR" -lt 14 ] 2>/dev/null; then
+    if [ -f "$SUDO_FILE" ]; then
+        if ! grep -qE '^[^#]*pam_immurok' "$SUDO_FILE"; then
+            TMP=$(mktemp)
+            echo "$CONFIG_LINE" > "$TMP"
+            cat "$SUDO_FILE" >> "$TMP"
+            cp "$TMP" "$SUDO_FILE"
+            rm -f "$TMP"
+            chmod 444 "$SUDO_FILE"
+        fi
+    else
+        echo "WARN: $SUDO_FILE missing — skipped (would break sudo if created bare)" >&2
+    fi
 fi
 
 exit 0

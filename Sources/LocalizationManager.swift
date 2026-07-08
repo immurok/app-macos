@@ -383,7 +383,7 @@ class LocalizationManager: ObservableObject {
         "permission.authorization.hint": "用于系统设置、App Store 等场景",
         "permission.authorization.repair": "修复",
         "notify.authrepair.title": "指纹授权需修复",
-        "notify.authrepair.body": "系统升级后界面授权被重置,点击 immurok 设置修复",
+        "notify.authrepair.body": "系统升级后指纹授权配置被重置,点击 immurok 设置修复",
         "permission.ssh.agent": "SSH Agent",
         "permission.ssh.agent.hint": "提供 SSH 密钥签名服务（~/.immurok/agent.sock）",
         "permission.cli": "imk CLI",
@@ -391,6 +391,21 @@ class LocalizationManager: ObservableObject {
         "permission.quickfill": "快速填充",
         "permission.quickfill.hint": "全局热键呼出浮动面板，快速搜索并填充密钥",
         "permission.hotkey.recording": "按下快捷键…",
+        "permission.section.system": "系统",
+        "permission.section.autofill": "密码自动填充",
+        "permission.section.devtools": "开发者工具",
+        "permission.appstore": "App Store",
+        "permission.appstore.hint": "购买/安装时用指纹自动输入 Apple ID 密码",
+        "permission.appstore.needpassword": "需先配置 Apple ID 密码",
+        "permission.appstore.configure": "配置 Apple ID 密码",
+        "permission.appstore.configure.hint": "该密码仅存于本机钥匙串，用于 App Store 认证时自动填充",
+        "permission.appstore.field": "Apple ID 密码",
+        "permission.passwords": "Passwords 密码 App",
+        "permission.passwords.hint": "解锁密码 App 时用指纹自动输入登录密码",
+
+        // Common
+        "common.cancel": "取消",
+        "common.save": "保存",
 
         // Quick Fill
         "quickfill.search.placeholder": "搜索密钥...",
@@ -792,7 +807,7 @@ class LocalizationManager: ObservableObject {
         "permission.authorization.hint": "用於系統設定、App Store 等場景",
         "permission.authorization.repair": "修復",
         "notify.authrepair.title": "指紋授權需修復",
-        "notify.authrepair.body": "系統升級後介面授權被重置,點擊 immurok 設定修復",
+        "notify.authrepair.body": "系統升級後指紋授權設定被重置,點擊 immurok 設定修復",
         "permission.ssh.agent": "SSH Agent",
         "permission.ssh.agent.hint": "提供 SSH 密鑰簽名服務（~/.immurok/agent.sock）",
         "permission.cli": "imk CLI",
@@ -800,6 +815,21 @@ class LocalizationManager: ObservableObject {
         "permission.quickfill": "快速填充",
         "permission.quickfill.hint": "全域熱鍵呼出浮動面板，快速搜尋並填充密鑰",
         "permission.hotkey.recording": "按下快捷鍵…",
+        "permission.section.system": "系統",
+        "permission.section.autofill": "密碼自動填充",
+        "permission.section.devtools": "開發者工具",
+        "permission.appstore": "App Store",
+        "permission.appstore.hint": "購買/安裝時用指紋自動輸入 Apple ID 密碼",
+        "permission.appstore.needpassword": "需先配置 Apple ID 密碼",
+        "permission.appstore.configure": "配置 Apple ID 密碼",
+        "permission.appstore.configure.hint": "該密碼僅存於本機鑰匙串，用於 App Store 認證時自動填充",
+        "permission.appstore.field": "Apple ID 密碼",
+        "permission.passwords": "Passwords 密碼 App",
+        "permission.passwords.hint": "解鎖密碼 App 時用指紋自動輸入登入密碼",
+
+        // Common
+        "common.cancel": "取消",
+        "common.save": "儲存",
 
         // Quick Fill
         "quickfill.search.placeholder": "搜尋密鑰...",
@@ -968,7 +998,7 @@ class LocalizationManager: ObservableObject {
         "menu.status.error": "Status Error",
         "menu.authrepair": "Fingerprint auth needs repair",
         "notify.authrepair.title": "Fingerprint auth needs repair",
-        "notify.authrepair.body": "A system update reset GUI authorization. Open immurok to repair.",
+        "notify.authrepair.body": "A system update reset fingerprint auth config. Open immurok to repair.",
         "permission.authorization.repair": "Repair",
 
         // Tabs
@@ -1209,6 +1239,21 @@ class LocalizationManager: ObservableObject {
         "permission.quickfill": "Quick Fill",
         "permission.quickfill.hint": "Global hotkey to open floating panel for quick key search and fill",
         "permission.hotkey.recording": "Press shortcut\u{2026}",
+        "permission.section.system": "System",
+        "permission.section.autofill": "Password Autofill",
+        "permission.section.devtools": "Developer Tools",
+        "permission.appstore": "App Store",
+        "permission.appstore.hint": "Auto-fill your Apple ID password with your fingerprint during purchases/installs",
+        "permission.appstore.needpassword": "Apple ID password not configured yet",
+        "permission.appstore.configure": "Configure Apple ID Password",
+        "permission.appstore.configure.hint": "This password is stored only in the local Keychain and used to auto-fill App Store authentication",
+        "permission.appstore.field": "Apple ID Password",
+        "permission.passwords": "Passwords App",
+        "permission.passwords.hint": "Auto-fill your login password with your fingerprint when unlocking the Passwords app",
+
+        // Common
+        "common.cancel": "Cancel",
+        "common.save": "Save",
 
         // Quick Fill
         "quickfill.search.placeholder": "Search keys...",

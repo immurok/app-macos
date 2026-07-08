@@ -83,6 +83,17 @@
   "permission.authorization": "Авторизация GUI",
   "permission.authorization.hint": "Для Системных настроек, App Store и т.д.",
   "permission.authorization.repair": "Восстановить",
+  "permission.section.system": "System",
+  "permission.section.autofill": "Password Autofill",
+  "permission.section.devtools": "Developer Tools",
+  "permission.appstore": "App Store",
+  "permission.appstore.hint": "Auto-fill your Apple ID password with your fingerprint during purchases/installs",
+  "permission.appstore.needpassword": "Apple ID password not configured yet",
+  "permission.appstore.configure": "Configure Apple ID Password",
+  "permission.appstore.configure.hint": "This password is stored only in the local Keychain and used to auto-fill App Store authentication",
+  "permission.appstore.field": "Apple ID Password",
+  "permission.passwords": "Passwords App",
+  "permission.passwords.hint": "Auto-fill your login password with your fingerprint when unlocking the Passwords app",
   "notify.authrepair.title": "Требуется восстановление авторизации отпечатка",
   "notify.authrepair.body": "Обновление системы сбросило авторизацию GUI. Откройте immurok для восстановления.",
   "permission.ssh.agent": "SSH Agent",
@@ -191,5 +202,7 @@
   "notification.need.accessibility": "Предоставьте разрешение универсального доступа",
   "notification.cannot.unlock": "Не удалось разблокировать",
   "ssh.generate.success": "Ключ сгенерирован",
-  "settings.language": "Язык"
+  "settings.language": "Язык",
+  "common.cancel": "Cancel",
+  "common.save": "Save"
 }

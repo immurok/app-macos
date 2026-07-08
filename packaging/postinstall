@@ -24,7 +24,10 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# Configure sudo_local (create if not exists, skip if already present)
+# Configure sudo_local (create if not exists, skip if already present).
+# Written on ALL versions: macOS 13 ignores it today, but it survives an OS
+# upgrade to 14+ (Apple never resets sudo_local), so sudo auth keeps working
+# across the 13 → 14 upgrade without a repair.
 if [ -f /etc/pam.d/sudo_local ]; then
     if ! grep -q pam_immurok /etc/pam.d/sudo_local; then
         TMPFILE=$(mktemp)
@@ -38,6 +41,20 @@ else
     echo "$CONFIG_LINE" > "$TMPFILE"
     cp "$TMPFILE" /etc/pam.d/sudo_local && rm "$TMPFILE"
     chmod 444 /etc/pam.d/sudo_local
+fi
+
+# macOS 13 Ventura and earlier: /etc/pam.d/sudo has no `include sudo_local`
+# line, so the module must go into /etc/pam.d/sudo itself. That file is reset
+# by every macOS update; the app monitors it and offers immurok_repair.pkg.
+OS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+if [ "$OS_MAJOR" -lt 14 ] 2>/dev/null; then
+    if [ -f /etc/pam.d/sudo ] && ! grep -qE '^[^#]*pam_immurok' /etc/pam.d/sudo; then
+        TMPFILE=$(mktemp)
+        echo "$CONFIG_LINE" > "$TMPFILE"
+        cat /etc/pam.d/sudo >> "$TMPFILE"
+        cp "$TMPFILE" /etc/pam.d/sudo && rm "$TMPFILE"
+        chmod 444 /etc/pam.d/sudo
+    fi
 fi
 
 # Configure authorization (skip if already present)

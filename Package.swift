@@ -9,9 +9,13 @@ let package = Package(
             name: "FirmwareUpdateKit",
             path: "FirmwareUpdateKit"
         ),
+        .target(
+            name: "AuthInjectionKit",
+            path: "AuthInjectionKit"
+        ),
         .executableTarget(
             name: "immurokApp",
-            dependencies: ["FirmwareUpdateKit"],
+            dependencies: ["FirmwareUpdateKit", "AuthInjectionKit"],
             path: "Sources"
         ),
         .executableTarget(
@@ -22,6 +26,11 @@ let package = Package(
             name: "FirmwareUpdateKitTests",
             dependencies: ["FirmwareUpdateKit"],
             path: "Tests/FirmwareUpdateKitTests"
+        ),
+        .testTarget(
+            name: "AuthInjectionKitTests",
+            dependencies: ["AuthInjectionKit"],
+            path: "Tests/AuthInjectionKitTests"
         )
     ]
 )

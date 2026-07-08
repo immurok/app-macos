@@ -4,6 +4,7 @@ import ApplicationServices
 import CoreGraphics
 import ServiceManagement
 import SwiftUI
+import AuthInjectionKit
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     // Core services
@@ -281,6 +282,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Screen not locked - check if authorization feature is enabled
         Task { @MainActor in
+            // ===== 密码注入检测（阶段 2：Passwords 登录密码真注入，其余仍只 log）=====
+            // pending-PAM 已在上方早返回（PAM 优先仲裁天然满足），此处只可能是主动路径。
+            let injectionContext = AuthContextDetector().detect()
+            switch injectionContext {
+            case .secureField(let kind, let field, let sheet):
+                let enabled = (kind == .loginPassword)
+                    ? UserDefaults.standard.bool(forKey: "immurok.passwordsFillEnabled")
+                    : UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled")
+                if enabled, kind == .loginPassword, let pw = ImmurokSecurity.shared.loadPassword() {
+                    LogManager.shared.log("[注入] Passwords → 登录密码")
+                    lastAuthFlowAt = Date()
+                    let injector = AuthInjector()
+                    injector.focus(field)
+                    injector.inject(pw, into: field)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        injector.submit(container: sheet, field: field)
+                    }
+                    return   // 已处理，不再走原 authorization 逻辑
+                }
+                if enabled, kind == .appleIDPassword, let pw = ImmurokSecurity.shared.loadAppleIDPassword() {
+                    LogManager.shared.log("[注入] App Store 密码页 → Apple ID 密码")
+                    lastAuthFlowAt = Date()
+                    let injector = AuthInjector()
+                    injector.focus(field)
+                    injector.inject(pw, into: field)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        injector.submit(container: sheet, field: field)
+                    }
+                    return
+                }
+                LogManager.shared.log("[注入检测] secureField kind=\(kind) enabled=\(enabled) 未注入（flag off / 无存储密码），fall through")
+            case .appStoreConfirmSheet(let sheet):
+                if UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled"),
+                   let pw = ImmurokSecurity.shared.loadAppleIDPassword() {
+                    LogManager.shared.log("[注入] App Store 向导驱动")
+                    lastAuthFlowAt = Date()
+                    AuthInjector().driveAppStore(confirmSheet: sheet, secret: pw) { ok in
+                        LogManager.shared.log("[注入] App Store 流程结果 ok=\(ok)")
+                    }
+                    return
+                }
+                LogManager.shared.log("[注入检测] App Store 确认页（阶段1 仅记录）")
+            case .none:
+                // 诊断：注入未触发时记录前台 App + 焦点元素子角色，便于 on-device 定位
+                //（未命中白名单/签名、焦点非 AXSecureTextField、或找不到容器都会落到这里）。
+                let frontBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+                var focusedRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(),
+                                              kAXFocusedUIElementAttribute as CFString, &focusedRef)
+                var focusedSubrole = "nil"
+                if let f = focusedRef, CFGetTypeID(f) == AXUIElementGetTypeID() {
+                    var sr: CFTypeRef?
+                    AXUIElementCopyAttributeValue(f as! AXUIElement, kAXSubroleAttribute as CFString, &sr)
+                    focusedSubrole = (sr as? String) ?? "nil"
+                }
+                LogManager.shared.log("[注入检测] 未匹配 front=\(frontBundle) focusedSubrole=\(focusedSubrole)")
+            }
+
             let isAuthorizationEnabled = SetupManager.shared.isAuthorizationEnabled
             guard isAuthorizationEnabled else {
                 NSLog("Authorization feature disabled, ignoring fingerprint")
@@ -821,11 +880,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Authorization Repair Notification
 
-    /// authorization 行丢失时发一次系统通知(同一未修复状态不重复打扰)。
+    /// pam.d 行丢失时发一次系统通知(同一未修复状态不重复打扰)。
+    /// 覆盖 authorization(全版本)和 /etc/pam.d/sudo(仅 macOS 13.x)。
     private var didNotifyAuthorizationRepair = false
     @MainActor
     private func maybeNotifyAuthorizationRepair() {
-        guard SetupManager.shared.needsAuthorizationRepair else {
+        guard SetupManager.shared.needsPAMRepair else {
             didNotifyAuthorizationRepair = false  // 已修复 → 重置,下次再丢可再次通知
             return
         }
