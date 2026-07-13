@@ -12,6 +12,7 @@
 
 import Foundation
 import CryptoKit
+import AuthInjectionKit
 
 class SSHAgentServer {
 
@@ -277,6 +278,17 @@ class SSHAgentServer {
 
         let keyName = SSHKeyCache.shared.entries.first(where: { $0.index == idx })?.name ?? "key"
         NSLog("SSHAgentServer: Sign request for key idx=%d (%@), data=%d bytes", idx, keyName, signData.count)
+
+        // KEY_SIGN is FP-gated and index-addressed — refuse while keystore
+        // maintenance (batch delete reindexes entries) or another auth owns
+        // the device. ssh sees a clean agent failure and can retry.
+        guard let activityToken = DeviceActivityCoordinator.shared.tryBegin(.auth) else {
+            NSLog("SSHAgentServer: Sign rejected — %@ in flight",
+                  DeviceActivityCoordinator.shared.currentActivity?.rawValue ?? "?")
+            sendFailure(clientSocket)
+            return
+        }
+        defer { DeviceActivityCoordinator.shared.end(activityToken) }
 
         // Wait for BLE reconnection if device is temporarily disconnected
         if !BLEManager.shared.deviceState.isConnected {

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import AuthInjectionKit
 
 // MARK: - Key Entry Model
 
@@ -76,6 +77,10 @@ class QuickFillViewModel: ObservableObject {
     /// Saved BLEManager.onFingerprintAttemptFailed handler, restored when
     /// verification ends. While verifying we flash red on each wrong finger.
     private var previousAttemptFailed: ((Int) -> Void)?
+    /// Exclusive device-flow ownership for the in-flight fill. Acquired in
+    /// confirmSelection, released via releaseActivityToken() on every exit
+    /// path (stopVerification for gated flows, SSH direct-read completion).
+    private var activityToken: DeviceActivityCoordinator.Token?
 
     /// 分类前缀: "o " → OTP, "a " → API, "s " → SSH
     private static let categoryPrefixes: [(prefix: String, cat: KeystoreCategory)] = [
@@ -167,6 +172,17 @@ class QuickFillViewModel: ObservableObject {
         guard selectedIndex >= 0, selectedIndex < filtered.count else { return }
         let entry = filtered[selectedIndex]
 
+        // All fill paths read the device by cached index — refuse while a
+        // keystore maintenance op (batch delete reindexes entries) or another
+        // auth flow owns the device.
+        guard let token = DeviceActivityCoordinator.shared.tryBegin(.auth) else {
+            NSLog("QuickFillPanel: fill rejected — %@ in flight",
+                  DeviceActivityCoordinator.shared.currentActivity?.rawValue ?? "?")
+            triggerRedFlash()
+            return
+        }
+        activityToken = token
+
         isConfirming = true
         searchText = entry.name
 
@@ -186,6 +202,7 @@ class QuickFillViewModel: ObservableObject {
             Task { [weak self] in
                 let value = await QuickFillBLEHelper.readSSH(entry: entry)
                 DispatchQueue.main.async {
+                    self?.releaseActivityToken()
                     if let value = value {
                         self?.pasteAndClose(value)
                     } else {
@@ -364,6 +381,22 @@ class QuickFillViewModel: ObservableObject {
         // Restore whatever attempt-failed handler was installed before us.
         BLEManager.shared.onFingerprintAttemptFailed = previousAttemptFailed
         previousAttemptFailed = nil
+        releaseActivityToken()
+    }
+
+    private func releaseActivityToken() {
+        if let token = activityToken {
+            DeviceActivityCoordinator.shared.end(token)
+            activityToken = nil
+        }
+    }
+
+    deinit {
+        // Backstop: if the panel is torn down mid-fill (e.g. Esc during the
+        // SSH direct read), never leak device-flow ownership.
+        if let token = activityToken {
+            DeviceActivityCoordinator.shared.end(token)
+        }
     }
 
     // MARK: - Paste

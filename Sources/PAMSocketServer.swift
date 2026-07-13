@@ -6,6 +6,7 @@
  */
 
 import Foundation
+import AuthInjectionKit
 
 /// Whether the overlay's Reject button was clicked. Timeout is folded into
 /// reject by the server response logic — the user-visible behavior matches.
@@ -30,13 +31,6 @@ class PAMSocketServer {
     private var preAuthServices: Set<String>?  // nil = any service (legacy; new code should always pass services)
     private let preAuthLock = NSLock()
     private var preAuthGeneration: Int = 0
-
-    // Serialize PAM AUTH requests. Concurrent requests overwrite the global
-    // pendingRequestSemaphore / onFingerprintAttemptFailed handler, causing
-    // wrong-socket RETRY routing and DoS on the earlier request. Only one
-    // AUTH at a time; the second is rejected with BUSY (PAM module retries).
-    private var authInFlight: Bool = false
-    private let authInFlightLock = NSLock()
 
     // Enrollment status tracking
     private var enrollStatus: EnrollEvent = .waiting
@@ -366,24 +360,18 @@ class PAMSocketServer {
             return
         }
 
-        // Serialize AUTH path: only one BLE-backed AUTH at a time. Concurrent
-        // requests previously overwrote pendingRequestSemaphore /
-        // onFingerprintAttemptFailed, causing wrong-socket RETRY routing and
-        // DoS on whichever AUTH started first. PAM module retries on BUSY.
-        authInFlightLock.lock()
-        if authInFlight {
-            authInFlightLock.unlock()
-            NSLog("PAMSocketServer: AUTH busy (another request in flight), denying")
+        // Serialize gated device flows: only one BLE-backed AUTH at a time,
+        // and none while a keystore maintenance operation (batch delete /
+        // import / export) owns the device — swap-delete reindexing and gate
+        // state would be torn apart by an interleaved AUTH_REQUEST. BUSY
+        // falls through to password in the PAM module.
+        guard let activityToken = DeviceActivityCoordinator.shared.tryBegin(.auth) else {
+            NSLog("PAMSocketServer: AUTH busy (%@ in flight), denying",
+                  DeviceActivityCoordinator.shared.currentActivity?.rawValue ?? "?")
             sendResponse(clientSocket, response: "BUSY")
             return
         }
-        authInFlight = true
-        authInFlightLock.unlock()
-        defer {
-            authInFlightLock.lock()
-            authInFlight = false
-            authInFlightLock.unlock()
-        }
+        defer { DeviceActivityCoordinator.shared.end(activityToken) }
 
         // Check BLE device connection and verification
         guard bleManager.deviceState.isConnected else {
@@ -562,20 +550,13 @@ class PAMSocketServer {
             return
         }
 
-        // Reuse the AUTH busy lock so we never run two auths concurrently.
-        authInFlightLock.lock()
-        if authInFlight {
-            authInFlightLock.unlock()
+        // Same exclusive slot as AUTH: never two auths concurrently, and
+        // never an agent approval while keystore maintenance owns the device.
+        guard let activityToken = DeviceActivityCoordinator.shared.tryBegin(.auth) else {
             sendResponse(clientSocket, response: "BUSY")
             return
         }
-        authInFlight = true
-        authInFlightLock.unlock()
-        defer {
-            authInFlightLock.lock()
-            authInFlight = false
-            authInFlightLock.unlock()
-        }
+        defer { DeviceActivityCoordinator.shared.end(activityToken) }
 
         final class IntentBox { var value: UserAuthIntent = .none }
         let intent = IntentBox()

@@ -606,6 +606,13 @@ struct KeysTabView: View {
                 vm.loadFromSSHKeyCache()
             }
         }
+        .onAppear {
+            // First entry into the Keys tab: the default category (SSH) is
+            // highlighted but nothing ever called loadEntries — the list
+            // stayed blank until the user clicked a category button.
+            // Digest-cached, so re-appearing is a 6-byte round-trip at most.
+            keystoreVM.loadEntries(cat: selectedCategory.keystoreCat)
+        }
     }
 
     // MARK: - Keystore List Content

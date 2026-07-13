@@ -1,4 +1,5 @@
 import Foundation
+import AuthInjectionKit
 
 /// 密钥名称缓存。每个分类按 (count, checksum) 摘要标识 — 同步时先问固件
 /// 拿摘要，与缓存对比相同就直接用缓存，不读列表；不同才走全量 BLE 读取。
@@ -78,6 +79,18 @@ class KeyNameCache {
     func syncCategory(_ cat: KeystoreCategory, completion: @escaping () -> Void) {
         let ble = BLEManager.shared
         guard ble.deviceState.isConnected else {
+            completion()
+            return
+        }
+
+        // A keystore maintenance op (batch delete / import) is mutating
+        // entries right now: the digest is guaranteed to mismatch mid-batch
+        // and a full refetch would interleave with the mutation commands and
+        // corrupt the cache (which then gets digest-stamped as valid at
+        // batch end). Serve current cache; the owner realigns the digest
+        // when it finishes.
+        if DeviceActivityCoordinator.shared.currentActivity == .keystoreMaintenance {
+            NSLog("KeyNameCache[%d]: maintenance in flight, skip sync", cat.rawValue)
             completion()
             return
         }

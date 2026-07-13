@@ -93,7 +93,11 @@ struct CLIClient {
     /// Parse an error response, returns nil if response is OK
     static func checkError(_ response: String) -> String? {
         if response.hasPrefix("ERROR:") {
-            return String(response.dropFirst(6))
+            let reason = String(response.dropFirst(6))
+            if reason.hasPrefix("BUSY") {
+                return "device busy (another auth or key operation in progress) — retry in a moment"
+            }
+            return reason
         }
         return nil
     }

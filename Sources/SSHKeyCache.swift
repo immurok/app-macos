@@ -10,6 +10,7 @@
 
 import Foundation
 import CryptoKit
+import AuthInjectionKit
 
 // MARK: - Cache Entry
 
@@ -71,6 +72,15 @@ class SSHKeyCache {
     func sync(completion: @escaping () -> Void) {
         let ble = BLEManager.shared
         guard ble.deviceState.isConnected else {
+            completion()
+            return
+        }
+
+        // Mid-maintenance the digest is guaranteed stale and a full refetch
+        // would interleave with the mutation batch — serve current cache.
+        // (Same guard as KeyNameCache.syncCategory.)
+        if DeviceActivityCoordinator.shared.currentActivity == .keystoreMaintenance {
+            NSLog("SSHKeyCache: maintenance in flight, skip sync")
             completion()
             return
         }

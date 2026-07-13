@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AuthInjectionKit
 
 @MainActor
 class KeystoreViewModel: ObservableObject {
@@ -48,6 +49,11 @@ class KeystoreViewModel: ObservableObject {
     private var gateCancellable: AnyCancellable?
     private var loadingTimeoutTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
+    /// Exclusive device ownership while a storage-mutating / batch operation
+    /// runs. Blocks PAM/CLI/SSH/QuickFill auth flows whose index-addressed
+    /// reads would hit wrong entries mid swap-delete (and whose AUTH_REQUEST
+    /// would stomp the keystore FP-gate state).
+    private var maintenanceToken: DeviceActivityCoordinator.Token?
 
     init() {
         gateCancellable = gateController.objectWillChange.sink { [weak self] _ in
@@ -72,6 +78,34 @@ class KeystoreViewModel: ObservableObject {
     deinit {
         if let obs = gateObserver {
             NotificationCenter.default.removeObserver(obs)
+        }
+        // Backstop: never leak device ownership if the view model is torn
+        // down mid-operation (e.g. settings window closed during a batch).
+        if let token = maintenanceToken {
+            DeviceActivityCoordinator.shared.end(token)
+        }
+    }
+
+    // MARK: - Device ownership
+
+    /// Take the exclusive device slot for a maintenance op. Returns false
+    /// (with a user-visible error) when an auth flow — or another maintenance
+    /// op — is already in flight.
+    private func beginMaintenance() -> Bool {
+        guard maintenanceToken == nil,
+              let token = DeviceActivityCoordinator.shared.tryBegin(.keystoreMaintenance)
+        else {
+            showError("keys.busy.auth".localized)
+            return false
+        }
+        maintenanceToken = token
+        return true
+    }
+
+    private func endMaintenance() {
+        if let token = maintenanceToken {
+            DeviceActivityCoordinator.shared.end(token)
+            maintenanceToken = nil
         }
     }
 
@@ -171,6 +205,10 @@ class KeystoreViewModel: ObservableObject {
     /// digests with the firmware's new checksum. No full re-sync required.
     func importSSHKey(name: String, imported: SSHKeyImporter.ImportedKey,
                       completion: @escaping (Bool) -> Void) {
+        guard beginMaintenance() else {
+            completion(false)
+            return
+        }
         isAdding = true
         gateController.title = "keys.add".localized
         clearError()
@@ -205,6 +243,7 @@ class KeystoreViewModel: ObservableObject {
             if !success {
                 Task { @MainActor in
                     self.isAdding = false
+                    self.endMaintenance()
                     if self.gateController.isPresented {
                         self.gateController.reportFailed()
                     } else {
@@ -230,6 +269,7 @@ class KeystoreViewModel: ObservableObject {
                 KeyNameCache.shared.setChecksum(cat: .ssh, count: count, checksum: checksum)
                 Task { @MainActor in
                     self.isAdding = false
+                    self.endMaintenance()
                     if self.gateController.isPresented {
                         self.gateController.reportSuccess()
                     }
@@ -243,6 +283,10 @@ class KeystoreViewModel: ObservableObject {
     }
 
     func addEntry(cat: KeystoreCategory, data: Data, completion: @escaping (Bool) -> Void) {
+        guard beginMaintenance() else {
+            completion(false)
+            return
+        }
         isAdding = true
         gateController.title = "keys.add".localized
         clearError()
@@ -285,6 +329,7 @@ class KeystoreViewModel: ObservableObject {
     @MainActor
     private func finishAddUI(cat: KeystoreCategory, success: Bool, completion: @escaping (Bool) -> Void) {
         self.isAdding = false
+        self.endMaintenance()
         if self.gateController.isPresented {
             success ? self.gateController.reportSuccess() : self.gateController.reportFailed()
         }
@@ -325,6 +370,10 @@ class KeystoreViewModel: ObservableObject {
 
     func updateEntry(cat: KeystoreCategory, idx: UInt8, name: String, service: String,
                      completion: @escaping (Bool) -> Void) {
+        guard beginMaintenance() else {
+            completion(false)
+            return
+        }
         isAdding = true
         gateController.title = "keys.add".localized
         clearError()
@@ -358,6 +407,7 @@ class KeystoreViewModel: ObservableObject {
                     KeyNameCache.shared.setChecksum(cat: cat, count: count, checksum: checksum)
                     Task { @MainActor in
                         self.isAdding = false
+                        self.endMaintenance()
                         if self.gateController.isPresented {
                             self.gateController.reportSuccess()
                         }
@@ -371,6 +421,7 @@ class KeystoreViewModel: ObservableObject {
             }
             Task { @MainActor in
                 self.isAdding = false
+                self.endMaintenance()
                 if self.gateController.isPresented {
                     self.gateController.reportFailed()
                 } else {
@@ -382,6 +433,7 @@ class KeystoreViewModel: ObservableObject {
     }
 
     func deleteEntry(cat: KeystoreCategory, idx: UInt8) {
+        guard beginMaintenance() else { return }
         isDeleting = true
         gateController.title = "keys.delete".localized
         clearError()
@@ -398,6 +450,7 @@ class KeystoreViewModel: ObservableObject {
                     if cat == .ssh { SSHKeyCache.shared.setChecksum(count: count, checksum: checksum) }
                     Task { @MainActor in
                         self.isDeleting = false
+                        self.endMaintenance()
                         if self.gateController.isPresented {
                             self.gateController.reportSuccess()
                         }
@@ -412,6 +465,7 @@ class KeystoreViewModel: ObservableObject {
             // Failure path
             Task { @MainActor in
                 self.isDeleting = false
+                self.endMaintenance()
                 if self.gateController.isPresented {
                     self.gateController.reportFailed()
                 } else {
@@ -422,6 +476,10 @@ class KeystoreViewModel: ObservableObject {
     }
 
     func deleteEntries(cat: KeystoreCategory, indices: [UInt8], completion: @escaping () -> Void) {
+        guard beginMaintenance() else {
+            completion()
+            return
+        }
         isDeleting = true
         deleteProgress = 0
         deleteTotal = indices.count
@@ -453,8 +511,11 @@ class KeystoreViewModel: ObservableObject {
                         self.entries = KeyNameCache.shared.entries(for: cat)
                             .map { Entry(index: $0.index, name: $0.name, service: $0.service) }
                             .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+                        // Release device ownership before completion so a
+                        // follow-up operation can immediately re-acquire.
+                        self.endMaintenance()
+                        completion()
                     }
-                    completion()
                 }
                 return
             }
@@ -497,6 +558,10 @@ class KeystoreViewModel: ObservableObject {
     /// Read all OTP entries with full 64B data (name + service + secret)
     /// Requires fingerprint verification first (sets device-side gate cooldown for batch reads)
     func readAllOTPEntries(completion: @escaping ([(name: String, service: String, secret: Data)]) -> Void) {
+        guard beginMaintenance() else {
+            completion([])
+            return
+        }
         isExporting = true
         gateController.present(title: "keys.export".localized)
         let ble = bleManager
@@ -508,6 +573,7 @@ class KeystoreViewModel: ObservableObject {
                 } else {
                     self.gateController.reportFailed()
                     self.isExporting = false
+                    self.endMaintenance()
                     completion([])
                     return
                 }
@@ -520,15 +586,21 @@ class KeystoreViewModel: ObservableObject {
                                             completion: @escaping ([(name: String, service: String, secret: Data)]) -> Void) {
         ble.getKeyCount(cat: .otp) { [weak self] count in
             guard let self = self, count > 0 else {
-                Task { @MainActor in self?.isExporting = false }
-                completion([])
+                Task { @MainActor in
+                    self?.isExporting = false
+                    self?.endMaintenance()
+                    completion([])
+                }
                 return
             }
             var results: [(name: String, service: String, secret: Data)] = []
             func readNext(index: Int) {
                 guard index < count else {
-                    Task { @MainActor in self.isExporting = false }
-                    completion(results)
+                    Task { @MainActor in
+                        self.isExporting = false
+                        self.endMaintenance()
+                        completion(results)
+                    }
                     return
                 }
                 ble.readKeyEntry(cat: .otp, idx: UInt8(index)) { data in
@@ -554,6 +626,10 @@ class KeystoreViewModel: ObservableObject {
     /// Import OTP entries serially (KEY_COMMIT has its own FP gate; rolling cooldown covers batch)
     func importOTPEntries(_ entries: [(name: String, service: String, secret: Data)],
                           completion: @escaping (Int) -> Void) {
+        guard beginMaintenance() else {
+            completion(0)
+            return
+        }
         isImporting = true
         importProgress = 0
         importTotal = entries.count
@@ -577,6 +653,12 @@ class KeystoreViewModel: ObservableObject {
                 // (each entry has been applyAdd'd locally below).
                 ble.getKeyCountAndChecksum(cat: .otp) { count, checksum in
                     KeyNameCache.shared.setChecksum(cat: .otp, count: count, checksum: checksum)
+                    // Device work is done — release ownership now, before the
+                    // 0.3s UI-repaint delay below.
+                    Task { @MainActor [weak self] in
+                        self?.endMaintenance()
+                        completion(successCount)
+                    }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                         Task { @MainActor in
                             guard let self = self else { return }
@@ -588,7 +670,6 @@ class KeystoreViewModel: ObservableObject {
                                 .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
                         }
                     }
-                    completion(successCount)
                 }
                 return
             }

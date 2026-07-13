@@ -67,7 +67,7 @@ enum AgentApproval {
         switch resp {
         case "OK":     return .approved
         case "REJECT": return .rejected
-        case "BUSY":   return .error("another auth is in flight")
+        case "BUSY":   return .error("another auth or key operation is in flight — retry in a moment")
         default:       return .error("unexpected response: \(resp)")
         }
     }

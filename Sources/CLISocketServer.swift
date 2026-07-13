@@ -17,6 +17,7 @@
  */
 
 import Foundation
+import AuthInjectionKit
 
 class CLISocketServer {
     private let socketPath: String
@@ -246,6 +247,18 @@ class CLISocketServer {
             handleGetSSH(clientSocket, name: name)
             return
         }
+
+        // OTP/API are FP-gated device flows — take the exclusive activity
+        // slot so a GET can't interleave with keystore maintenance (batch
+        // delete reindexes entries mid-flight → stale index reads) or with
+        // another in-flight auth.
+        guard let activityToken = DeviceActivityCoordinator.shared.tryBegin(.auth) else {
+            let blocker = DeviceActivityCoordinator.shared.currentActivity?.rawValue ?? "unknown"
+            NSLog("CLISocketServer: GET rejected — %@ in flight", blocker)
+            sendLine(clientSocket, "ERROR:BUSY:\(blocker)")
+            return
+        }
+        defer { DeviceActivityCoordinator.shared.end(activityToken) }
 
         // OTP uses device-side computation (includes FP gate)
         if cat == .otp {
