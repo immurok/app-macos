@@ -17,11 +17,6 @@ struct FingerprintView: View {
             // Fingerprint icons
             fingerprintIconsSection
 
-            Divider()
-
-            // Settings toggles
-            settingsSection
-
             Spacer()
         }
         .padding(24)
@@ -149,47 +144,6 @@ struct FingerprintView: View {
         }
     }
 
-    // MARK: - Settings Section
-
-    private var settingsSection: some View {
-        VStack(spacing: 0) {
-            settingRow(
-                title: "feature.unlock.mac".localized,
-                isOn: $viewModel.unlockEnabled
-            )
-
-            Divider().padding(.leading, 16)
-
-            settingRow(
-                title: "feature.sudo".localized,
-                isOn: $viewModel.sudoEnabled
-            )
-
-            Divider().padding(.leading, 16)
-
-            settingRow(
-                title: "feature.system.auth".localized,
-                isOn: $viewModel.systemPrefsEnabled
-            )
-        }
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(10)
-    }
-
-    private func settingRow(title: String, isOn: Binding<Bool>) -> some View {
-        HStack {
-            Text(title)
-                .font(.body)
-
-            Spacer()
-
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .labelsHidden()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
 }
 
 // Separate view for hover state
@@ -478,17 +432,6 @@ class FingerprintViewModel: ObservableObject {
         (0..<5).first { fingerprintBitmap & (1 << $0) == 0 }
     }
 
-    // Settings (stored in UserDefaults)
-    @Published var unlockEnabled: Bool {
-        didSet { UserDefaults.standard.set(unlockEnabled, forKey: "immurok.unlockEnabled") }
-    }
-    @Published var sudoEnabled: Bool {
-        didSet { UserDefaults.standard.set(sudoEnabled, forKey: "immurok.sudoEnabled") }
-    }
-    @Published var systemPrefsEnabled: Bool {
-        didSet { UserDefaults.standard.set(systemPrefsEnabled, forKey: "immurok.systemPrefsEnabled") }
-    }
-
     // Fingerprint names (stored in UserDefaults, not synced to firmware)
     @Published var fingerprintNames: [Int: String] = [:]
 
@@ -526,18 +469,6 @@ class FingerprintViewModel: ObservableObject {
     static var isCacheValid: Bool = false
 
     init() {
-        unlockEnabled = UserDefaults.standard.bool(forKey: "immurok.unlockEnabled")
-        sudoEnabled = UserDefaults.standard.bool(forKey: "immurok.sudoEnabled")
-        systemPrefsEnabled = UserDefaults.standard.bool(forKey: "immurok.systemPrefsEnabled")
-
-        // Default to enabled if not set
-        if !UserDefaults.standard.bool(forKey: "immurok.settingsInitialized") {
-            unlockEnabled = true
-            sudoEnabled = true
-            systemPrefsEnabled = true
-            UserDefaults.standard.set(true, forKey: "immurok.settingsInitialized")
-        }
-
         // Forward gate controller changes so SwiftUI sheet binding updates
         gateCancellable = gateController.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()

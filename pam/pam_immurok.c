@@ -145,6 +145,12 @@ static int authenticate_via_socket(const char *user, const char *service) {
                  * prompt never happens. EX_NOPERM (77) is the conventional
                  * "auth refused" exit code. */
                 _exit(77);
+            } else if (n > 0 && strncmp(response, "SKIP", 4) == 0) {
+                /* Feature disabled in app settings — stay completely
+                 * silent (no "✗ Denied" flash) and let the stack fall
+                 * through to the password prompt. */
+                result = PAM_IGNORE;
+                break;
             } else {
                 /* Final failure (DENY/TIMEOUT/other) — fall through to
                  * remaining auth modules (password prompt). */

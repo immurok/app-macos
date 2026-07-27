@@ -11,7 +11,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var pamSocketServer: PAMSocketServer?
     private var sshAgentServer: SSHAgentServer?
     private var cliSocketServer: CLISocketServer?
-    private var setupWindow: NSWindow?
 
     // Quick Fill
     private var globalHotKey: GlobalHotKey?
@@ -28,6 +27,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private static let lockSuppressWindow: TimeInterval = 3.0
 
     // (Password now stored in Keychain, not received via BLE)
+
+    // AppDelegate 在 immurokApp 中先于 AppViewModel 声明，随属性初始化最早创建，
+    // 在这里注册可保证所有后续 UserDefaults 读取（含 @StateObject 的 init）看到默认值。
+    override init() {
+        AppDefaults.register()
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ignore SIGPIPE process-wide. Without this, send() on a Unix socket
@@ -53,14 +59,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startPAMServer(bleManager)
 
         // Start SSH Agent server (if enabled)
-        if UserDefaults.standard.object(forKey: "immurok.sshAgentEnabled") == nil
-            || UserDefaults.standard.bool(forKey: "immurok.sshAgentEnabled") {
+        if UserDefaults.standard.bool(forKey: "immurok.sshAgentEnabled") {
             startSSHAgentServer()
         }
 
         // Start CLI socket server (if enabled)
-        if UserDefaults.standard.object(forKey: "immurok.cliEnabled") == nil
-            || UserDefaults.standard.bool(forKey: "immurok.cliEnabled") {
+        if UserDefaults.standard.bool(forKey: "immurok.cliEnabled") {
             startCLIServer(bleManager)
         }
 
@@ -78,8 +82,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Quick Fill (Ctrl+\)
-        if UserDefaults.standard.object(forKey: "immurok.quickFillEnabled") == nil
-            || UserDefaults.standard.bool(forKey: "immurok.quickFillEnabled") {
+        if UserDefaults.standard.bool(forKey: "immurok.quickFillEnabled") {
             setupQuickFill()
         }
 
@@ -109,9 +112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .accessibilityGranted, object: nil, queue: .main
         ) { [weak self] _ in
-            let enabled = UserDefaults.standard.object(forKey: "immurok.quickFillEnabled") == nil
-                || UserDefaults.standard.bool(forKey: "immurok.quickFillEnabled")
-            guard enabled else { return }
+            guard UserDefaults.standard.bool(forKey: "immurok.quickFillEnabled") else { return }
             self?.teardownQuickFill()
             self?.setupQuickFill()
             NSLog("Accessibility granted — Quick Fill hotkey re-registered")
@@ -131,6 +132,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] note in
             let version = note.object as? String ?? ""
             self?.sendFirmwareDoneNotification(version: version)
+        }
+
+        // App 有新正式版：弹系统通知（每版本一次，由 service 去重）
+        NotificationCenter.default.addObserver(
+            forName: .appUpdateAvailable, object: nil, queue: .main
+        ) { [weak self] note in
+            let version = note.object as? String ?? ""
+            self?.sendAppUpdateNotification(version: version)
         }
 
         // Register for Login Items (auto-start)
@@ -410,6 +419,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func unlockScreen() {
         let t0 = CFAbsoluteTimeGetCurrent()
+        // 用户关闭"屏幕解锁"后不再解锁——密码可能因 Passwords 填充仍留在
+        // Keychain，不能只靠密码存在与否判断。
+        guard UserDefaults.standard.bool(forKey: "immurok.screenUnlockEnabled") else {
+            NSLog("Screen unlock disabled, ignoring fingerprint")
+            Task { @MainActor in LogManager.shared.log("Unlock skipped: feature disabled") }
+            return
+        }
         guard AXIsProcessTrusted() else {
             NSLog("No accessibility permission, cannot unlock")
             sendPermissionNotification()
@@ -848,34 +864,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func checkAndShowSetupWizard() {
         let setupManager = SetupManager.shared
+        let wizardDone = UserDefaults.standard.bool(forKey: SetupWizardView.completedKey)
 
-        if setupManager.needsSetup {
-            NSLog("Setup incomplete, showing wizard")
-            showSetupWizard()
+        // 关键项缺失（PAM/辅助功能）始终唤起引导；
+        // 用户从未走完/跳过引导（未写 completed 标记）也唤起——覆盖配对、
+        // 密码、指纹等仅引导流程覆盖的首次设置项。
+        if setupManager.needsSetup || !wizardDone {
+            NSLog("Setup incomplete (needsSetup=%@, wizardDone=%@), showing wizard",
+                  setupManager.needsSetup ? "yes" : "no", wizardDone ? "yes" : "no")
+            NotificationCenter.default.post(name: .openSetupWizard, object: nil)
         } else {
             NSLog("Setup complete: PAM=%@, Accessibility=%@",
                   setupManager.isPAMModuleInstalled ? "yes" : "no",
                   setupManager.hasAccessibilityPermission ? "yes" : "no")
         }
-    }
-
-    @MainActor
-    private func showSetupWizard() {
-        // Create a new window for the setup wizard
-        let wizardView = SetupWizardView()
-        let hostingController = NSHostingController(rootView: wizardView)
-
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "wizard.title".localized
-        window.styleMask = [.titled, .closable]
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-
-        // Keep a reference to prevent deallocation
-        self.setupWindow = window
-
-        // Bring app to foreground
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Authorization Repair Notification
@@ -922,6 +924,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sub = "firmware.notify.subtitle".localized
         // version 来自网络 manifest（半可信）：先转义反斜杠再转义引号，并去掉换行，
         // 防止通过版本字符串注入/破坏 AppleScript。
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+             .replacingOccurrences(of: "\"", with: "\\\"")
+             .replacingOccurrences(of: "\n", with: " ")
+             .replacingOccurrences(of: "\r", with: " ")
+        }
+        let script = "display notification \"\(esc(body))\" with title \"immurok\" subtitle \"\(esc(sub))\""
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        try? task.run()
+    }
+
+    /// App 新版本系统通知。点通知不能直接回调 App，引导用户从设置「关于」页安装。
+    private func sendAppUpdateNotification(version: String) {
+        let body = String(format: "appupdate.notify.body".localized, version)
+        let sub = "appupdate.notify.subtitle".localized
+        // version 来自 GitHub API（半可信），同固件通知一样转义防 AppleScript 注入
         func esc(_ s: String) -> String {
             s.replacingOccurrences(of: "\\", with: "\\\\")
              .replacingOccurrences(of: "\"", with: "\\\"")

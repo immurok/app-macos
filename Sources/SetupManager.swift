@@ -176,6 +176,11 @@ class SetupManager: ObservableObject {
 
         func check() {
             if !FileManager.default.fileExists(atPath: pamModuleDestination) {
+                // 卸载 pkg 已完成。root postinstall 无法访问用户 Keychain，
+                // 锁屏密码等条目必须趁 App 进程还活着时由 App 自己清；
+                // 同时复位引导完成标记，重装后能重新走首次引导。
+                ImmurokSecurity.shared.clearAllKeychainData()
+                UserDefaults.standard.removeObject(forKey: SetupWizardView.completedKey)
                 refreshStatus()
                 completion(true, nil)
                 return

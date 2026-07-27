@@ -14,6 +14,10 @@ extension Notification.Name {
     static let firmwareUpdateFinished = Notification.Name("firmwareUpdateFinished")
     /// 请求打开固件升级独立窗口（强制升级时自动弹出）
     static let openFirmwareUpdateWindow = Notification.Name("openFirmwareUpdateWindow")
+    /// 检测到 App 新版本（object = 版本号 String），用于弹系统通知
+    static let appUpdateAvailable = Notification.Name("appUpdateAvailable")
+    /// 请求打开首次运行引导窗口
+    static let openSetupWizard = Notification.Name("openSetupWizard")
 }
 
 @MainActor
@@ -45,6 +49,9 @@ class AppViewModel: ObservableObject {
 
     /// 固件升级服务（懒建避免 init 顺序问题；连接就绪后 checkIfDue）
     private(set) lazy var firmwareUpdate = FirmwareUpdateService(bleManager: bleManager, viewModel: self)
+
+    /// App 自升级服务（不依赖设备，init 内自带启动延迟检查 + 定时复查）
+    let appUpdate = AppUpdateService()
 
     var deviceStatusText: String {
         // Check bluetooth status first
@@ -86,6 +93,7 @@ class AppViewModel: ObservableObject {
     private var gateObserver: Any?
     private var gateCancellable: AnyCancellable?
     private var fwUpdateCancellable: AnyCancellable?
+    private var appUpdateCancellable: AnyCancellable?
     private var pendingGatedOperation = false
 
     // 2026-05-16 battery sampling strategy:
@@ -115,6 +123,9 @@ class AppViewModel: ObservableObject {
             self?.objectWillChange.send()
         }
         fwUpdateCancellable = firmwareUpdate.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        appUpdateCancellable = appUpdate.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
 

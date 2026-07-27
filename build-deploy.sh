@@ -150,8 +150,8 @@ build_app() {
     log_info "App build complete (universal: $(lipo -archs .build/universal/release/immurokApp))"
 }
 
-# Sign and deploy
-sign_deploy() {
+# Assemble + sign the app bundle (no sudo needed) — shared by sign_deploy / agent_deploy
+prepare_bundle() {
     log_info "Preparing app bundle..."
     cd "$SCRIPT_DIR"
 
@@ -241,6 +241,11 @@ sign_deploy() {
 
     # Verify signature
     codesign -vv immurok.app
+}
+
+# Sign and deploy (interactive: sudo prompts in terminal)
+sign_deploy() {
+    prepare_bundle
 
     # Quit running immurok before deploying
     if pgrep -x immurok > /dev/null 2>&1; then
@@ -272,12 +277,51 @@ sign_deploy() {
     open /Applications/immurok.app
 }
 
+# Agent deploy: all privileged ops in ONE `imk run --agent -- sudo` —
+# imk pre-auth is single-consume and sudo timestamps don't cache on this
+# machine, so a second sudo would hit the fingerprint gate after the app
+# is already dead. Killing the app severs the imk wrapper (its exit code
+# becomes meaningless) but the root shell keeps running, so success is
+# judged by the DEPLOY_OK sentinel in the output, not the exit code.
+agent_deploy() {
+    prepare_bundle
+
+    if ! command -v imk >/dev/null || ! pgrep -x immurok >/dev/null; then
+        log_error "imk not installed or immurok app not running — use -s for interactive deploy"
+        exit 1
+    fi
+
+    log_info "Requesting single-sudo deploy via imk (touch the sensor)..."
+    local out
+    out=$(imk run --agent -- sudo /bin/bash -c "
+        pkill -x immurok 2>/dev/null || true
+        sleep 1
+        rm -rf /Applications/immurok.app
+        cp -R '$SCRIPT_DIR/immurok.app' /Applications/
+        mkdir -p /usr/local/bin
+        cp '$SCRIPT_DIR/.build/universal/release/imk' /usr/local/bin/imk
+        chmod 755 /usr/local/bin/imk
+        echo DEPLOY_OK
+    " 2>&1) || true
+    echo "$out"
+
+    if ! grep -q DEPLOY_OK <<< "$out"; then
+        log_error "Agent deploy failed — no DEPLOY_OK sentinel (denied or error above)"
+        exit 1
+    fi
+
+    log_info "App deployed to /Applications/immurok.app, imk CLI updated"
+    log_info "Relaunching immurok..."
+    open /Applications/immurok.app
+}
+
 # Parse arguments
 DO_FIRMWARE=false
 DO_FLASH=false
 DO_PAM=false
 DO_APP=false
 DO_SIGN=false
+DO_AGENT=false
 DO_ALL=false
 
 if [ $# -eq 0 ]; then
@@ -307,6 +351,10 @@ while [[ $# -gt 0 ]]; do
             DO_SIGN=true
             shift
             ;;
+        --agent)
+            DO_AGENT=true
+            shift
+            ;;
         --all)
             DO_ALL=true
             shift
@@ -320,6 +368,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -p, --pam         Build PAM module"
             echo "  -a, --app         Build app"
             echo "  -s, --sign        Sign and deploy to /Applications"
+            echo "  --agent           Sign and deploy via imk single-sudo (for AI agents)"
             echo "  --all             Build everything and deploy (default)"
             echo "  -h, --help        Show this help"
             exit 0
@@ -344,6 +393,7 @@ else
     $DO_PAM && build_pam
     $DO_APP && build_app
     $DO_SIGN && sign_deploy
+    $DO_AGENT && agent_deploy
 fi
 
 log_info "Complete!"

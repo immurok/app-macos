@@ -1744,19 +1744,24 @@ struct PermissionsTabView: View {
 
             // 屏幕解锁
             GroupBox {
-                permissionRow(
-                    icon: "lock.open",
-                    titleKey: "permission.screen.unlock",
-                    trailing: {
-                        if screenUnlockEnabled {
-                            unlockSoundPicker
-                        }
-                    },
-                    isOn: Binding(
-                        get: { screenUnlockEnabled },
-                        set: { tryEnableScreenUnlock($0) }
+                VStack(alignment: .leading, spacing: 8) {
+                    permissionRow(
+                        icon: "lock.open",
+                        titleKey: "permission.screen.unlock",
+                        trailing: {
+                            if screenUnlockEnabled {
+                                unlockSoundPicker
+                            }
+                        },
+                        isOn: Binding(
+                            get: { screenUnlockEnabled },
+                            set: { tryEnableScreenUnlock($0) }
+                        )
                     )
-                )
+                    if screenUnlockEnabled && !viewModel.isPasswordConfigured {
+                        loginPasswordMissingRow
+                    }
+                }
             }
 
             // App Store（新）
@@ -1766,15 +1771,20 @@ struct PermissionsTabView: View {
 
             // Passwords（新）
             GroupBox {
-                permissionRow(
-                    icon: "key.horizontal",
-                    titleKey: "permission.passwords",
-                    hintKey: "permission.passwords.hint",
-                    isOn: Binding(
-                        get: { passwordsFillEnabled },
-                        set: { tryEnablePasswords($0) }
+                VStack(alignment: .leading, spacing: 8) {
+                    permissionRow(
+                        icon: "key.horizontal",
+                        titleKey: "permission.passwords",
+                        hintKey: "permission.passwords.hint",
+                        isOn: Binding(
+                            get: { passwordsFillEnabled },
+                            set: { tryEnablePasswords($0) }
+                        )
                     )
-                )
+                    if passwordsFillEnabled && !viewModel.isPasswordConfigured {
+                        loginPasswordMissingRow
+                    }
+                }
             }
 
             // ===== 开发者工具 =====
@@ -1981,6 +1991,22 @@ struct PermissionsTabView: View {
     }
 
     // MARK: - Toggle Handlers
+
+    /// 开关显示"开"但 Keychain 还没有登录密码（首次安装默认开启时的状态）：
+    /// 功能实际不生效，给出提示 + 一键补配。
+    private var loginPasswordMissingRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+            Text("permission.password.missing".localized)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+            Button("permission.configure".localized) {
+                viewModel.setupLoginPasswordIfNeeded()
+            }
+        }
+    }
 
     private func tryEnableScreenUnlock(_ enable: Bool) {
         if enable {
@@ -2398,6 +2424,8 @@ struct AboutTabView: View {
                     }
                     .controlSize(.small)
                 }
+
+                appUpdateRow
             }
             .padding(.top, 16)
             .padding(.bottom, 8)
@@ -2501,6 +2529,53 @@ struct AboutTabView: View {
             }
         } message: {
             Text("about.uninstall.message".localized)
+        }
+    }
+
+    /// App 自升级状态行（版本号下方）：检查 → 有新版 → 下载 → 移交系统安装器
+    @ViewBuilder
+    private var appUpdateRow: some View {
+        let svc = viewModel.appUpdate
+        switch svc.state {
+        case .idle:
+            Button("appupdate.check".localized) { svc.checkIfDue(force: true) }
+                .controlSize(.small)
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("appupdate.checking".localized)
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        case .upToDate:
+            HStack(spacing: 8) {
+                Text("appupdate.upToDate".localized)
+                    .font(.caption).foregroundColor(.secondary)
+                Button("appupdate.check".localized) { svc.checkIfDue(force: true) }
+                    .controlSize(.small)
+            }
+        case .updateAvailable(let version, _):
+            HStack(spacing: 8) {
+                Text(String(format: "appupdate.available".localized, version))
+                    .font(.caption).foregroundColor(.orange)
+                Button("appupdate.install".localized) { svc.downloadAndInstall() }
+                    .controlSize(.small)
+            }
+        case .downloading:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("appupdate.downloading".localized)
+                    .font(.caption).foregroundColor(.secondary)
+            }
+        case .installerOpened:
+            Text("appupdate.installerOpened".localized)
+                .font(.caption).foregroundColor(.secondary)
+        case .failed(let message):
+            HStack(spacing: 8) {
+                Text(message)
+                    .font(.caption).foregroundColor(.red)
+                Button("appupdate.check".localized) { svc.checkIfDue(force: true) }
+                    .controlSize(.small)
+            }
         }
     }
 

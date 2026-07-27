@@ -30,6 +30,13 @@ struct immurokApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        // 首次运行引导窗口（AppDelegate 检测到未完成设置时经通知打开）
+        Window("wizard.title".localized, id: "setup-wizard") {
+            SetupWizardView(viewModel: viewModel)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
@@ -51,7 +58,7 @@ struct MenuBarStatusLabel: View {
             Circle()
                 .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
                 .frame(width: 6, height: 6)
-            if viewModel.firmwareUpdate.updateAvailable {
+            if viewModel.firmwareUpdate.updateAvailable || viewModel.appUpdate.updateAvailable {
                 Circle()
                     .fill(Color.orange)
                     .frame(width: 6, height: 6)
@@ -59,6 +66,10 @@ struct MenuBarStatusLabel: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFirmwareUpdateWindow)) { _ in
             openWindow(id: "firmware-update")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSetupWizard)) { _ in
+            openWindow(id: "setup-wizard")
             NSApp.activate(ignoringOtherApps: true)
         }
     }
@@ -154,6 +165,19 @@ struct MenuBarView: View {
                 .padding(.vertical, 8)
             }
 
+            if viewModel.appUpdate.updateAvailable {
+                Button(action: { openSettings(tab: .about) }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.app.fill").foregroundColor(.orange)
+                        Text("appupdate.menu.available".localized).foregroundColor(.orange)
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+
             // 整体状态 - 点击进入状态页面
             Button(action: {
                 openSettings(tab: .status)
@@ -176,6 +200,22 @@ struct MenuBarView: View {
                     Image(systemName: "cpu")
                         .frame(width: 16)
                     Text("fwupdate.title".localized)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            // 设置向导（可随时重新进入首次引导）
+            Button(action: {
+                openWindow(id: "setup-wizard")
+                NSApp.activate(ignoringOtherApps: true)
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .frame(width: 16)
+                    Text("menu.wizard".localized)
                     Spacer()
                 }
             }

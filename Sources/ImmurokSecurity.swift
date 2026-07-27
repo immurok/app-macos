@@ -206,6 +206,16 @@ class ImmurokSecurity {
         deleteFromKeychain(service: keychainServiceAppleIDPassword)
     }
 
+    /// 卸载时调用：清除本 App 写入的全部 Keychain 条目（登录密码、Apple ID
+    /// 密码、配对共享密钥、已验证设备）。卸载 pkg 的 postinstall 以 root 运行，
+    /// 够不到用户 Keychain，只能趁 App 进程还在时由 App 自己清。
+    func clearAllKeychainData() {
+        clearPassword()
+        clearAppleIDPassword()
+        clearPairingData()  // shared key + verified device
+        NSLog("ImmurokSecurity: All Keychain data cleared (uninstall)")
+    }
+
     // MARK: - Keychain Helpers
 
     private func saveToKeychain(service: String, data: Data) {

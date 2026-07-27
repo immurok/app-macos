@@ -15,13 +15,16 @@ class GlobalHotKey {
     static let defaultModifiers: UInt = NSEvent.ModifierFlags.control.rawValue
 
     static var storedKeyCode: UInt16 {
-        let v = UserDefaults.standard.integer(forKey: keyCodeKey)
-        return v == 0 ? defaultKeyCode : UInt16(v)
+        // keyCode 0 是字母 A，不能拿 0 当"未设置"哨兵，否则 Ctrl+A 等绑定被静默回落
+        guard UserDefaults.standard.object(forKey: keyCodeKey) != nil else { return defaultKeyCode }
+        return UInt16(UserDefaults.standard.integer(forKey: keyCodeKey))
     }
 
     static var storedModifiers: NSEvent.ModifierFlags {
-        let v = UserDefaults.standard.integer(forKey: modifiersKey)
-        return v == 0 ? NSEvent.ModifierFlags(rawValue: defaultModifiers) : NSEvent.ModifierFlags(rawValue: UInt(v))
+        guard UserDefaults.standard.object(forKey: modifiersKey) != nil else {
+            return NSEvent.ModifierFlags(rawValue: defaultModifiers)
+        }
+        return NSEvent.ModifierFlags(rawValue: UInt(UserDefaults.standard.integer(forKey: modifiersKey)))
     }
 
     func register() {

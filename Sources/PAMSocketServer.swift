@@ -2,7 +2,8 @@
  * PAMSocketServer.swift - Unix socket server for PAM module communication
  *
  * Listens on ~/.immurok/pam.sock for authentication requests from pam_immurok
- * Protocol: "AUTH:username:service" -> "OK" or "DENY"
+ * Protocol: "AUTH:username:service" -> "OK" / "DENY" / "SKIP" (feature
+ * disabled — PAM module stays silent and falls through to password)
  */
 
 import Foundation
@@ -345,18 +346,25 @@ class PAMSocketServer {
 
         NSLog("PAMSocketServer: Auth request for user=%@, service=%@", user, service)
 
-        // Check if this service is enabled in app settings
-        if !isServiceEnabled(service) {
-            NSLog("PAMSocketServer: Service '%@' is disabled, denying", service)
-            sendResponse(clientSocket, response: "DENY")
-            return
-        }
-
-        // Check pre-authorization first (user already verified fingerprint)
+        // Check pre-authorization first (user already verified fingerprint).
+        // This intentionally runs BEFORE the enabled-toggle check: pre-auth
+        // only exists because the user explicitly approved via AGENT_APPROVE
+        // (imk run --agent) seconds ago, so it must work even when passive
+        // sudo gating is switched off — otherwise the imk agent flow would
+        // dead-end at a password prompt.
         if consumePreAuthorization(service: service) {
             NSLog("PAMSocketServer: Auth approved via pre-authorization for %@", user)
             onAuthSuccess?()
             sendResponse(clientSocket, response: "OK")
+            return
+        }
+
+        // Check if this service is enabled in app settings. SKIP (not DENY)
+        // keeps the PAM module silent — no "✗ Denied" flash on the terminal,
+        // sudo falls straight through to the password prompt.
+        if !isServiceEnabled(service) {
+            NSLog("PAMSocketServer: Service '%@' is disabled, skipping silently", service)
+            sendResponse(clientSocket, response: "SKIP")
             return
         }
 

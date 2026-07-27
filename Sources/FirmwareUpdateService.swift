@@ -56,9 +56,7 @@ final class FirmwareUpdateService: ObservableObject {
         if defaults.string(forKey: Self.kClientID) == nil {
             defaults.set(UUID().uuidString, forKey: Self.kClientID)
         }
-        if defaults.object(forKey: Self.kTelemetryEnabled) == nil {
-            defaults.set(true, forKey: Self.kTelemetryEnabled)  // 默认开启（spec §5）
-        }
+        // 默认开启（spec §5）——由 AppDefaults.register() 统一注册，这里不再落盘 seed
         let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         telemetry = TelemetryClient(
             clientID: defaults.string(forKey: Self.kClientID)!,
