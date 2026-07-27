@@ -622,6 +622,18 @@ class FingerprintViewModel: ObservableObject {
         NSLog("FingerprintView: enrollFingerprint called with slot=%d, bitmap=0x%02X, nextAvailable=%@",
               slot, fingerprintBitmap, nextAvailableSlot.map { String($0) } ?? "nil")
 
+        // 已有指纹时固件会先要求用旧指纹验证，验证通过立即进入捕获——
+        // 用户容易顺手用同一根手指继续按，把旧手指又录一遍。先弹确认框
+        // 讲清楚「验证用旧手指、录入换新手指」再开始。
+        if fingerprintCount > 0 {
+            let alert = NSAlert()
+            alert.messageText = "enroll.confirm.newfinger.title".localized
+            alert.informativeText = "enroll.confirm.newfinger.message".localized
+            alert.addButton(withTitle: "enroll.confirm.continue".localized)
+            alert.addButton(withTitle: "alert.cancel".localized)
+            guard alert.runModalOverSettings() == .alertFirstButtonReturn else { return }
+        }
+
         isLoading = true  // Immediately block UI to prevent duplicate clicks
         currentEnrollSlot = slot
         enrollmentProgress = 0
@@ -645,7 +657,9 @@ class FingerprintViewModel: ObservableObject {
                     // fire the firmware's red 1s flash over the enroll green-blink.
                     self.gateController.resolveAndDismiss()
                     self.isEnrolling = true
-                    self.enrollmentStatus = "enroll.place.finger".localized
+                    // 验证后开始捕获：已有指纹时强调「换用新手指」
+                    self.enrollmentStatus = (self.fingerprintCount > 0
+                        ? "enroll.place.finger.new" : "enroll.place.finger").localized
                 } else {
                     // 用户主动 cancel 时 controller.cancel() 的 onCancel 已经
                     // 把 currentEnrollSlot 清空; cancelGateAndRelease 会用

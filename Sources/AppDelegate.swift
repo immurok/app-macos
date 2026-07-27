@@ -610,6 +610,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSLog("Lock request: locking screen")
         Task { @MainActor in LogManager.shared.log("Locking screen (long press)") }
+        // 锁定确认音：长按锁屏没有其它即时反馈，声音确认指令已生效。
+        // 放在所有抑制检查之后，只有真正执行锁定才响。空串 = 静音。
+        let lockSound = UserDefaults.standard.string(forKey: "immurok.lockSound") ?? "Bottle"
+        if !lockSound.isEmpty {
+            NSSound(named: lockSound)?.play()
+        }
         // Drop any pre-authorization a preceding 0x21 may have set; locking
         // makes that auth context invalid anyway.
         pamSocketServer?.clearPreAuthorization()

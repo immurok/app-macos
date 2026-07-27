@@ -1688,6 +1688,8 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.passwordsFillEnabled") private var passwordsFillEnabled = true
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
     @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
+    // 长按锁屏确认音。Empty string = silent. Read by AppDelegate.handleLockRequest.
+    @AppStorage("immurok.lockSound") private var lockSound = "Bottle"
 
     // macOS built-in system sounds (/System/Library/Sounds/*.aiff)
     private static let systemSounds = [
@@ -1707,6 +1709,12 @@ struct PermissionsTabView: View {
                     icon: "lock",
                     titleKey: "permission.screen.lock",
                     hintKey: "permission.screen.lock.hint",
+                    trailing: {
+                        if screenLockEnabled {
+                            soundPicker(selection: $lockSound,
+                                        tipKey: "permission.screen.lock.sound.tip")
+                        }
+                    },
                     isOn: $screenLockEnabled
                 )
             }
@@ -1750,7 +1758,8 @@ struct PermissionsTabView: View {
                         titleKey: "permission.screen.unlock",
                         trailing: {
                             if screenUnlockEnabled {
-                                unlockSoundPicker
+                                soundPicker(selection: $unlockSound,
+                                            tipKey: "permission.screen.unlock.sound.tip")
                             }
                         },
                         isOn: Binding(
@@ -1894,25 +1903,32 @@ struct PermissionsTabView: View {
         )
     }
 
-    // MARK: - Unlock Sound Picker
+    // MARK: - Sound Picker
 
-    /// Inline picker shown next to the screen-unlock toggle. Selecting a
-    /// non-silent option triggers an immediate preview play.
-    private var unlockSoundPicker: some View {
-        Picker("", selection: $unlockSound) {
-            Text("permission.screen.unlock.sound.silent".localized).tag("")
-            Divider()
-            ForEach(Self.systemSounds, id: \.self) { name in
-                Text(name).tag(name)
+    /// Inline sound picker shown next to a feature toggle. A speaker icon
+    /// makes clear the dropdown selects a sound; selecting a non-silent
+    /// option triggers an immediate preview play.
+    private func soundPicker(selection: Binding<String>, tipKey: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: selection.wrappedValue.isEmpty ? "speaker.slash" : "speaker.wave.2")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            Picker("", selection: selection) {
+                Text("permission.screen.unlock.sound.silent".localized).tag("")
+                Divider()
+                ForEach(Self.systemSounds, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 130)
+            .onChange(of: selection.wrappedValue) { newValue in
+                if !newValue.isEmpty {
+                    NSSound(named: newValue)?.play()
+                }
             }
         }
-        .labelsHidden()
-        .frame(maxWidth: 130)
-        .onChange(of: unlockSound) { newValue in
-            if !newValue.isEmpty {
-                NSSound(named: newValue)?.play()
-            }
-        }
+        .help(tipKey.localized)
     }
 
     // MARK: - Row Layout
@@ -2373,6 +2389,12 @@ struct AboutTabView: View {
     // 匿名使用统计开关（笔记本图标，带笔=开、不带笔=关）
     @AppStorage("immurok.telemetry.enabled") private var telemetryEnabled = true
     @Environment(\.openWindow) private var openWindow
+    // 诊断日志默认仅在 Debug 构建显示；正式版折叠，点左下角图标展开
+    #if DEBUG
+    @State private var showLogs = true
+    #else
+    @State private var showLogs = false
+    #endif
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0"
@@ -2431,8 +2453,20 @@ struct AboutTabView: View {
             Divider()
                 .padding(.horizontal, 16)
 
-            // Log view (selectable + copyable)
-            LogTextView(entries: logManager.entries)
+            // Log view (selectable + copyable) — 正式版默认隐藏
+            if showLogs {
+                LogTextView(entries: logManager.entries)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 28))
+                        .foregroundColor(.secondary.opacity(0.4))
+                    Text("about.logs.hidden".localized)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             Divider()
                 .padding(.horizontal, 16)
@@ -2465,7 +2499,7 @@ struct AboutTabView: View {
                     .onHover { isHoveringLanguage = $0 }
                     .help("settings.language".localized)
 
-                    Link(destination: URL(string: "https://github.com")!) {
+                    Link(destination: URL(string: "https://github.com/immurok/")!) {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
                             .font(.system(size: 16))
                             .frame(width: 32, height: 32)
@@ -2492,17 +2526,30 @@ struct AboutTabView: View {
 
                 Spacer()
 
-                // Right side: Clear log + Uninstall
+                // Right side: Show/hide logs + Clear log + Uninstall
                 Button {
-                    logManager.clear()
+                    showLogs.toggle()
                 } label: {
-                    Image(systemName: "trash.slash")
+                    Image(systemName: showLogs ? "doc.text.fill" : "doc.text")
                         .font(.system(size: 16))
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.secondary)
-                .help("清除日志")
+                .help("about.logs.toggle".localized)
+
+                if showLogs {
+                    Button {
+                        logManager.clear()
+                    } label: {
+                        Image(systemName: "trash.slash")
+                            .font(.system(size: 16))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.secondary)
+                    .help("about.logs.clear".localized)
+                }
 
                 Button(role: .destructive) {
                     showingUninstallConfirm = true
@@ -2583,6 +2630,12 @@ struct LogTextView: NSViewRepresentable {
         return scrollView
     }
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var didInitialScroll = false
+    }
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
 
@@ -2598,7 +2651,14 @@ struct LogTextView: NSViewRepresentable {
 
         textView.string = text
 
-        if wasAtBottom {
+        // 首次显示总是定位到最新一条（布局尚未完成时同步 scroll 会失效，
+        // 延后到下一个 runloop）；此后仅当用户本就停在底部才跟随滚动。
+        if !context.coordinator.didInitialScroll {
+            context.coordinator.didInitialScroll = true
+            DispatchQueue.main.async { [weak textView] in
+                textView?.scrollToEndOfDocument(nil)
+            }
+        } else if wasAtBottom {
             textView.scrollToEndOfDocument(nil)
         }
     }
