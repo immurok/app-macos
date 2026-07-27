@@ -106,6 +106,17 @@ final class AppUpdateService: ObservableObject {
         }
     }
 
+    /// 更新窗口关闭时调用：终态（已最新/失败）复位到 idle，下次打开重新检查。
+    /// 下载中与「安装器已打开」保留（后者对用户仍有意义）。
+    func resetIfInactive() {
+        switch state {
+        case .upToDate, .failed:
+            state = .idle
+        default:
+            break
+        }
+    }
+
     // MARK: - 下载 + 安装
 
     func downloadAndInstall() {

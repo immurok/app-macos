@@ -157,6 +157,11 @@ class LocalizationManager: ObservableObject {
         "tab.about": "关于",
 
         // Firmware update
+        "update.title": "软件更新",
+        "update.window.subtitle": "检查并安装 App 与设备固件更新",
+        "update.section.app": "macOS App",
+        "update.section.firmware": "设备固件",
+        "update.menu.available": "有可用更新",
         "fwupdate.title": "固件",
         "fwupdate.current": "当前版本",
         "fwupdate.check": "检查更新",
@@ -186,7 +191,7 @@ class LocalizationManager: ObservableObject {
         "fwupdate.window.subtitle": "检查并安装设备固件更新",
         "fwupdate.progress.downloading": "正在下载固件…",
         "fwupdate.menu.available": "有固件新版本",
-        "firmware.notify.body": "固件有新版本 %@，可从菜单栏「固件」升级",
+        "firmware.notify.body": "固件有新版本 %@，可从菜单栏「软件更新」升级",
         "firmware.notify.subtitle": "点开菜单栏 immurok 图标升级",
         "firmware.done.body": "固件已升级到 %@",
         "firmware.done.subtitle": "升级完成",
@@ -203,7 +208,7 @@ class LocalizationManager: ObservableObject {
         "appupdate.error.check": "检查 App 更新失败，请稍后重试",
         "appupdate.error.download": "安装包下载失败，请检查网络",
         "appupdate.error.verify": "安装包签名校验失败，已放弃安装",
-        "appupdate.notify.body": "App 有新版本 %@，可在设置「关于」页安装",
+        "appupdate.notify.body": "App 有新版本 %@，可从菜单栏「软件更新」安装",
         "appupdate.notify.subtitle": "点开菜单栏 immurok 图标升级",
 
         // Keys
@@ -642,6 +647,11 @@ class LocalizationManager: ObservableObject {
         "tab.about": "關於",
 
         // Firmware update
+        "update.title": "軟體更新",
+        "update.window.subtitle": "檢查並安裝 App 與裝置韌體更新",
+        "update.section.app": "macOS App",
+        "update.section.firmware": "裝置韌體",
+        "update.menu.available": "有可用更新",
         "fwupdate.title": "韌體",
         "fwupdate.current": "目前版本",
         "fwupdate.check": "檢查更新",
@@ -671,7 +681,7 @@ class LocalizationManager: ObservableObject {
         "fwupdate.window.subtitle": "檢查並安裝裝置韌體更新",
         "fwupdate.progress.downloading": "正在下載韌體…",
         "fwupdate.menu.available": "有韌體新版本",
-        "firmware.notify.body": "韌體有新版本 %@，可從選單列「韌體」升級",
+        "firmware.notify.body": "韌體有新版本 %@，可從選單列「軟體更新」升級",
         "firmware.notify.subtitle": "點開選單列 immurok 圖示升級",
         "firmware.done.body": "韌體已升級到 %@",
         "firmware.done.subtitle": "升級完成",
@@ -688,7 +698,7 @@ class LocalizationManager: ObservableObject {
         "appupdate.error.check": "檢查 App 更新失敗，請稍後重試",
         "appupdate.error.download": "安裝包下載失敗，請檢查網路",
         "appupdate.error.verify": "安裝包簽章校驗失敗，已放棄安裝",
-        "appupdate.notify.body": "App 有新版本 %@，可在設定「關於」頁安裝",
+        "appupdate.notify.body": "App 有新版本 %@，可從選單列「軟體更新」安裝",
         "appupdate.notify.subtitle": "點開選單列 immurok 圖示升級",
 
         // Keys
@@ -1128,6 +1138,11 @@ class LocalizationManager: ObservableObject {
         "tab.about": "About",
 
         // Firmware update
+        "update.title": "Software Update",
+        "update.window.subtitle": "Check and install app and device firmware updates",
+        "update.section.app": "macOS App",
+        "update.section.firmware": "Device Firmware",
+        "update.menu.available": "Updates available",
         "fwupdate.title": "Firmware",
         "fwupdate.current": "Current Version",
         "fwupdate.check": "Check for Updates",

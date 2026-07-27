@@ -2419,13 +2419,11 @@ struct AboutTabView: View {
                         .font(.headline)
                         .foregroundColor(.secondary)
                     Button("fwupdate.check".localized) {
-                        openWindow(id: "firmware-update")
+                        openWindow(id: "software-update")
                         NSApp.activate(ignoringOtherApps: true)
                     }
                     .controlSize(.small)
                 }
-
-                appUpdateRow
             }
             .padding(.top, 16)
             .padding(.bottom, 8)
@@ -2529,53 +2527,6 @@ struct AboutTabView: View {
             }
         } message: {
             Text("about.uninstall.message".localized)
-        }
-    }
-
-    /// App 自升级状态行（版本号下方）：检查 → 有新版 → 下载 → 移交系统安装器
-    @ViewBuilder
-    private var appUpdateRow: some View {
-        let svc = viewModel.appUpdate
-        switch svc.state {
-        case .idle:
-            Button("appupdate.check".localized) { svc.checkIfDue(force: true) }
-                .controlSize(.small)
-        case .checking:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("appupdate.checking".localized)
-                    .font(.caption).foregroundColor(.secondary)
-            }
-        case .upToDate:
-            HStack(spacing: 8) {
-                Text("appupdate.upToDate".localized)
-                    .font(.caption).foregroundColor(.secondary)
-                Button("appupdate.check".localized) { svc.checkIfDue(force: true) }
-                    .controlSize(.small)
-            }
-        case .updateAvailable(let version, _):
-            HStack(spacing: 8) {
-                Text(String(format: "appupdate.available".localized, version))
-                    .font(.caption).foregroundColor(.orange)
-                Button("appupdate.install".localized) { svc.downloadAndInstall() }
-                    .controlSize(.small)
-            }
-        case .downloading:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("appupdate.downloading".localized)
-                    .font(.caption).foregroundColor(.secondary)
-            }
-        case .installerOpened:
-            Text("appupdate.installerOpened".localized)
-                .font(.caption).foregroundColor(.secondary)
-        case .failed(let message):
-            HStack(spacing: 8) {
-                Text(message)
-                    .font(.caption).foregroundColor(.red)
-                Button("appupdate.check".localized) { svc.checkIfDue(force: true) }
-                    .controlSize(.small)
-            }
         }
     }
 

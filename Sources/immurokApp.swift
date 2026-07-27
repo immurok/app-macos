@@ -24,9 +24,9 @@ struct immurokApp: App {
         .defaultSize(width: 500, height: 640)
         .defaultPosition(.center)
 
-        // 固件升级独立窗口
-        Window("fwupdate.title".localized, id: "firmware-update") {
-            FirmwareUpdateView(viewModel: viewModel)
+        // 软件更新统一窗口（App + 设备固件）
+        Window("update.title".localized, id: "software-update") {
+            SoftwareUpdateView(viewModel: viewModel)
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
@@ -65,7 +65,7 @@ struct MenuBarStatusLabel: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openFirmwareUpdateWindow)) { _ in
-            openWindow(id: "firmware-update")
+            openWindow(id: "software-update")
             NSApp.activate(ignoringOtherApps: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSetupWizard)) { _ in
@@ -105,9 +105,9 @@ struct MenuBarView: View {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// 打开固件升级独立窗口
-    private func openFirmwareWindow() {
-        openWindow(id: "firmware-update")
+    /// 打开软件更新统一窗口（App + 固件）
+    private func openUpdateWindow() {
+        openWindow(id: "software-update")
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -152,24 +152,12 @@ struct MenuBarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
-            if viewModel.firmwareUpdate.updateAvailable {
-                Button(action: { openFirmwareWindow() }) {
+            // App 或固件任一有新版本 → 统一入口进软件更新窗口
+            if viewModel.firmwareUpdate.updateAvailable || viewModel.appUpdate.updateAvailable {
+                Button(action: { openUpdateWindow() }) {
                     HStack(spacing: 8) {
                         Image(systemName: "arrow.down.circle.fill").foregroundColor(.orange)
-                        Text("fwupdate.menu.available".localized).foregroundColor(.orange)
-                        Spacer()
-                    }
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            }
-
-            if viewModel.appUpdate.updateAvailable {
-                Button(action: { openSettings(tab: .about) }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.down.app.fill").foregroundColor(.orange)
-                        Text("appupdate.menu.available".localized).foregroundColor(.orange)
+                        Text("update.menu.available".localized).foregroundColor(.orange)
                         Spacer()
                     }
                 }
@@ -194,12 +182,12 @@ struct MenuBarView: View {
 
             Divider()
 
-            // 固件升级（常驻入口）
-            Button(action: { openFirmwareWindow() }) {
+            // 软件更新（常驻入口，App + 固件）
+            Button(action: { openUpdateWindow() }) {
                 HStack(spacing: 8) {
-                    Image(systemName: "cpu")
+                    Image(systemName: "arrow.triangle.2.circlepath")
                         .frame(width: 16)
-                    Text("fwupdate.title".localized)
+                    Text("update.title".localized)
                     Spacer()
                 }
             }
