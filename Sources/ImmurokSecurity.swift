@@ -14,6 +14,8 @@ class ImmurokSecurity {
     private let keychainServiceSharedKey = "com.immurok.shared-key"
     private let keychainServicePassword = "com.immurok.password"
     private let keychainServiceAppleIDPassword = "com.immurok.appleid-password"
+    private let keychainServiceOnePasswordPassword = "com.immurok.onepassword-password"
+    private let keychainServiceBitwardenPassword = "com.immurok.bitwarden-password"
     private let keychainServiceVerifiedDevice = "com.immurok.verified-device"
     private let keychainAccount = "immurok"
 
@@ -206,12 +208,59 @@ class ImmurokSecurity {
         deleteFromKeychain(service: keychainServiceAppleIDPassword)
     }
 
+    // MARK: - 1Password 解锁密码 (Keychain)
+    // 1Password 的解锁密码未必等于系统登录密码——用户可自设。故独立存储，
+    // 与登录密码/Apple ID 密码互不影响，随 1Password 解锁开关 setup/clear。
+
+    func saveOnePasswordPassword(_ password: String) {
+        guard let data = password.data(using: .utf8) else { return }
+        saveToKeychain(service: keychainServiceOnePasswordPassword, data: data)
+        NSLog("ImmurokSecurity: 1Password password saved to Keychain")
+    }
+
+    func loadOnePasswordPassword() -> String? {
+        guard let data = loadFromKeychain(service: keychainServiceOnePasswordPassword) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func hasOnePasswordPassword() -> Bool {
+        loadFromKeychain(service: keychainServiceOnePasswordPassword) != nil
+    }
+
+    func clearOnePasswordPassword() {
+        deleteFromKeychain(service: keychainServiceOnePasswordPassword)
+    }
+
+    // MARK: - Bitwarden 解锁密码 (Keychain)
+    // Bitwarden 浏览器扩展的解锁密码，独立存储，随 Bitwarden 解锁开关 setup/clear。
+
+    func saveBitwardenPassword(_ password: String) {
+        guard let data = password.data(using: .utf8) else { return }
+        saveToKeychain(service: keychainServiceBitwardenPassword, data: data)
+        NSLog("ImmurokSecurity: Bitwarden password saved to Keychain")
+    }
+
+    func loadBitwardenPassword() -> String? {
+        guard let data = loadFromKeychain(service: keychainServiceBitwardenPassword) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func hasBitwardenPassword() -> Bool {
+        loadFromKeychain(service: keychainServiceBitwardenPassword) != nil
+    }
+
+    func clearBitwardenPassword() {
+        deleteFromKeychain(service: keychainServiceBitwardenPassword)
+    }
+
     /// 卸载时调用：清除本 App 写入的全部 Keychain 条目（登录密码、Apple ID
-    /// 密码、配对共享密钥、已验证设备）。卸载 pkg 的 postinstall 以 root 运行，
-    /// 够不到用户 Keychain，只能趁 App 进程还在时由 App 自己清。
+    /// 密码、1Password 解锁密码、Bitwarden 解锁密码、配对共享密钥、已验证设备）。
+    /// 卸载 pkg 的 postinstall 以 root 运行，够不到用户 Keychain，只能趁 App 进程还在时由 App 自己清。
     func clearAllKeychainData() {
         clearPassword()
         clearAppleIDPassword()
+        clearOnePasswordPassword()
+        clearBitwardenPassword()
         clearPairingData()  // shared key + verified device
         NSLog("ImmurokSecurity: All Keychain data cleared (uninstall)")
     }

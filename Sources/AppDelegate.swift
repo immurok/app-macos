@@ -295,33 +295,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // pending-PAM 已在上方早返回（PAM 优先仲裁天然满足），此处只可能是主动路径。
             let injectionContext = AuthContextDetector().detect()
             switch injectionContext {
-            case .secureField(let kind, let field, let sheet):
-                let enabled = (kind == .loginPassword)
-                    ? UserDefaults.standard.bool(forKey: "immurok.passwordsFillEnabled")
-                    : UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled")
-                if enabled, kind == .loginPassword, let pw = ImmurokSecurity.shared.loadPassword() {
-                    LogManager.shared.log("[注入] 登录密码框（Passwords / Sign in with Apple 等）→ 登录密码")
+            case .secureField(let kind, let field, let sheet, let bundleID):
+                // 每种密码框各有独立门控开关与密码来源。1Password 用它自己的解锁密码
+                //（可与系统密码不同），并走专用提交路径。
+                let flagKey: String
+                let secret: String?
+                switch kind {
+                case .loginPassword:
+                    flagKey = "immurok.passwordsFillEnabled"
+                    secret = ImmurokSecurity.shared.loadPassword()
+                case .appleIDPassword:
+                    flagKey = "immurok.appStoreFillEnabled"
+                    secret = ImmurokSecurity.shared.loadAppleIDPassword()
+                case .onePasswordPassword:
+                    flagKey = "immurok.onePasswordUnlockEnabled"
+                    secret = ImmurokSecurity.shared.loadOnePasswordPassword()
+                case .bitwardenPassword:
+                    flagKey = "immurok.bitwardenUnlockEnabled"
+                    secret = ImmurokSecurity.shared.loadBitwardenPassword()
+                }
+                let enabled = UserDefaults.standard.bool(forKey: flagKey)
+                if enabled, let pw = secret {
+                    LogManager.shared.log("[注入] 密码框（\(bundleID)）kind=\(kind)")
                     lastAuthFlowAt = Date()
                     let injector = AuthInjector()
                     injector.focus(field)
                     injector.inject(pw, into: field)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        injector.submit(container: sheet, field: field)
+                    // 1Password / Bitwarden 是 Chromium 网页表单：需专用提交（鼠标点击解锁按钮，SEI 拦回车、
+                    // AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
+                    let isWebManager = (kind == .onePasswordPassword || kind == .bitwardenPassword)
+                    let delay = isWebManager ? 0.3 : 0.15
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        switch kind {
+                        case .onePasswordPassword:
+                            injector.submitOnePassword(field: field, container: sheet)
+                        case .bitwardenPassword:
+                            injector.submitBitwarden(field: field, container: sheet)
+                        default:
+                            injector.submit(container: sheet, field: field)
+                        }
                     }
                     return   // 已处理，不再走原 authorization 逻辑
                 }
-                if enabled, kind == .appleIDPassword, let pw = ImmurokSecurity.shared.loadAppleIDPassword() {
-                    LogManager.shared.log("[注入] App Store 密码页 → Apple ID 密码")
-                    lastAuthFlowAt = Date()
-                    let injector = AuthInjector()
-                    injector.focus(field)
-                    injector.inject(pw, into: field)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        injector.submit(container: sheet, field: field)
-                    }
-                    return
-                }
-                LogManager.shared.log("[注入检测] secureField kind=\(kind) enabled=\(enabled) 未注入（flag off / 无存储密码），fall through")
+                LogManager.shared.log("[注入检测] secureField kind=\(kind) bundle=\(bundleID) enabled=\(enabled) 未注入（flag off / 无存储密码），fall through")
             case .appStoreConfirmSheet(let sheet):
                 if UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled"),
                    let pw = ImmurokSecurity.shared.loadAppleIDPassword() {

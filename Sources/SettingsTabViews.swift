@@ -1686,6 +1686,8 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
     @AppStorage("immurok.appStoreFillEnabled") private var appStoreFillEnabled = false
     @AppStorage("immurok.passwordsFillEnabled") private var passwordsFillEnabled = true
+    @AppStorage("immurok.onePasswordUnlockEnabled") private var onePasswordUnlockEnabled = false
+    @AppStorage("immurok.bitwardenUnlockEnabled") private var bitwardenUnlockEnabled = false
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
     @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
     // 长按锁屏确认音。Empty string = silent. Read by AppDelegate.handleLockRequest.
@@ -1796,6 +1798,16 @@ struct PermissionsTabView: View {
                 }
             }
 
+            // 1Password 解锁（新）——用 1Password 自己的解锁密码，开启时按需索取。
+            GroupBox {
+                onePasswordRow
+            }
+
+            // Bitwarden 解锁（新）——浏览器扩展，用 Bitwarden 自己的解锁密码。
+            GroupBox {
+                bitwardenRow
+            }
+
             // ===== 开发者工具 =====
             sectionLabel("permission.section.devtools")
 
@@ -1899,6 +1911,32 @@ struct PermissionsTabView: View {
             isOn: Binding(
                 get: { appStoreFillEnabled },
                 set: { tryEnableAppStore($0) }
+            )
+        )
+    }
+
+    // MARK: - 1Password Row
+    private var onePasswordRow: some View {
+        permissionRow(
+            icon: "lock.shield",
+            titleKey: "permission.onepassword",
+            hintKey: "permission.onepassword.hint",
+            isOn: Binding(
+                get: { onePasswordUnlockEnabled },
+                set: { tryEnableOnePassword($0) }
+            )
+        )
+    }
+
+    // MARK: - Bitwarden Row
+    private var bitwardenRow: some View {
+        permissionRow(
+            icon: "lock.shield",
+            titleKey: "permission.bitwarden",
+            hintKey: "permission.bitwarden.hint",
+            isOn: Binding(
+                get: { bitwardenUnlockEnabled },
+                set: { tryEnableBitwarden($0) }
             )
         )
     }
@@ -2042,7 +2080,7 @@ struct PermissionsTabView: View {
             }
         } else {
             screenUnlockEnabled = false
-            // 解锁与 Passwords 都关了 → 清除登录密码。
+            // 解锁与 Passwords 都关了 → 清除登录密码（1Password 用独立密码，不参与）。
             if !passwordsFillEnabled {
                 viewModel.clearLoginPassword()
             }
@@ -2057,10 +2095,36 @@ struct PermissionsTabView: View {
             }
         } else {
             passwordsFillEnabled = false
-            // 解锁与 Passwords 都关了 → 清除登录密码。
+            // 解锁与 Passwords 都关了 → 清除登录密码（1Password 用独立密码，不参与）。
             if !screenUnlockEnabled {
                 viewModel.clearLoginPassword()
             }
+        }
+    }
+
+    private func tryEnableOnePassword(_ enable: Bool) {
+        if enable {
+            // 开启前按需索取 1Password 的解锁密码（可与系统密码不同）；取消则不开启。
+            if viewModel.setupOnePasswordPasswordIfNeeded() {
+                onePasswordUnlockEnabled = true
+            }
+        } else {
+            onePasswordUnlockEnabled = false
+            // 1Password 用独立密码，关闭即清除，不影响登录密码。
+            viewModel.clearOnePasswordPassword()
+        }
+    }
+
+    private func tryEnableBitwarden(_ enable: Bool) {
+        if enable {
+            // 开启前按需索取 Bitwarden 的解锁密码（独立密码）；取消则不开启。
+            if viewModel.setupBitwardenPasswordIfNeeded() {
+                bitwardenUnlockEnabled = true
+            }
+        } else {
+            bitwardenUnlockEnabled = false
+            // Bitwarden 用独立密码，关闭即清除。
+            viewModel.clearBitwardenPassword()
         }
     }
 

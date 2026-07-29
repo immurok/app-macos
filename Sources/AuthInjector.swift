@@ -72,6 +72,87 @@ struct AuthInjector {
         return pressReturnKey()
     }
 
+    /// 1Password 专用提交。1P 是 Chromium 网页表单，通用 `submit` 在这里三处都栽：
+    /// ① 聚焦密码框时 **Secure Event Input 开启**，合成回车被拦（用户手按物理回车才行）；
+    /// ② 密码框不支持 `AXConfirm`（桌面）或 `kAXConfirmAction` 在 Chromium 上**假成功却空操作**（浏览器），
+    ///    导致 `submit` 误判已提交而提前返回；③ 解锁箭头按钮在 AX 树 depth 10–12、空标题，
+    ///    超出 `submit` 的 maxDepth 6 扫不到，`AXDefaultButton` 也是 nil。
+    ///
+    /// 策略（跨"桌面锁定窗 + 浏览器扩展浮层"两界面实测一致）：深扫容器，用**几何**锁定
+    /// "与密码框同一排、位于其右侧"的解锁箭头（桌面 x=741/浏览器 x=1096，均紧贴框右、~40×40），
+    /// 天然排除框上方的账户头像与框下方的 Cancel，再 `AXPress`（AX 动作不受 SEI 拦，与 kAXValue
+    /// 写值可行同理）。找不到箭头才退回通用 `submit` 兜底。
+    @discardableResult
+    func submitOnePassword(field: AXUIElement, container: AXUIElement) -> Bool {
+        guard let fieldFrame = frame(of: field) else {
+            logLine("submitOnePassword: 无 field frame，退回通用 submit")
+            return submit(container: container, field: field)
+        }
+        // 排除窗口控件与取消键——submitOnePassword 会真点这个按钮，误点破坏性控件后果严重。
+        let excludedSubroles: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXFullScreenButton", "AXZoomButton", "AXCancelButton"]
+        let buttons = collectButtons(container, maxDepth: 16).filter { b in
+            if let sr = subrole(of: b), excludedSubroles.contains(sr) { return false }
+            if title(of: b)?.caseInsensitiveCompare("Cancel") == .orderedSame { return false }
+            return true
+        }
+        // 解锁箭头：与密码框**同一行**（垂直中心落在框 Y 区间内），且**紧贴框右缘**
+        // （左缘距框右边缘不超过约一个框高——避免误点同排远处的无关按钮）；多个取最靠近框右缘的。
+        let adjacency = fieldFrame.height * 1.5
+        let arrow = buttons
+            .compactMap { b -> (AXUIElement, CGRect)? in frame(of: b).map { (b, $0) } }
+            .filter { $0.1.midY >= fieldFrame.minY && $0.1.midY <= fieldFrame.maxY
+                      && $0.1.minX >= fieldFrame.midX
+                      && $0.1.minX <= fieldFrame.maxX + adjacency }
+            .min(by: { abs($0.1.minX - fieldFrame.maxX) < abs($1.1.minX - fieldFrame.maxX) })
+        if let arrow {
+            // 网页按钮的 AXPress 在 Chromium 上假成功空操作（实测），改用**合成鼠标点击**箭头中心：
+            // 鼠标事件不受 Secure Event Input 限制，是真正能触发网页 <button> 的点击。
+            let center = CGPoint(x: arrow.1.midX, y: arrow.1.midY)
+            logLine("submitOnePassword → click 解锁箭头 center=\(center) frame=\(arrow.1)")
+            clickMouse(at: center)
+            return true
+        }
+        logLine("submitOnePassword: 未按几何定位到箭头，退回通用 submit")
+        return submit(container: container, field: field)
+    }
+
+    /// Bitwarden 专用提交。Bitwarden 扩展 popup 也是 Chromium 网页表单——`AXPress` 空操作、
+    /// 密码框可能开 SEI（回车被拦），故同样走**合成鼠标点击**解锁按钮。
+    ///
+    /// 与 1Password 的"箭头在框右侧"不同：Bitwarden 的 `Unlock` 按钮在密码框**正下方**、整宽
+    /// （实测 field y=391/h=38，Unlock y=446；更下方还有 Log out y=546）。策略：深扫容器，排除
+    /// 窗口控件/Cancel，取"位于密码框下方、横向与框重叠、最靠上（紧挨框下）"的按钮 = Unlock，
+    /// 天然排除框上方的账户/弹出键与更下方的 Log out。找不到才退回通用 submit。
+    @discardableResult
+    func submitBitwarden(field: AXUIElement, container: AXUIElement) -> Bool {
+        guard let ff = frame(of: field) else {
+            logLine("submitBitwarden: 无 field frame，退回通用 submit")
+            return submit(container: container, field: field)
+        }
+        let excludedSubroles: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXFullScreenButton", "AXZoomButton", "AXCancelButton"]
+        let buttons = collectButtons(container, maxDepth: 16).filter { b in
+            if let sr = subrole(of: b), excludedSubroles.contains(sr) { return false }
+            if title(of: b)?.caseInsensitiveCompare("Cancel") == .orderedSame { return false }
+            return true
+        }
+        // 位于密码框**紧下方**（顶缘不高于框底，且距框底不超过约 2.5 个框高——排除更下方的 Log out）
+        // + 横向与框重叠；多个取最靠上者（紧挨框下 = Unlock）。若 Unlock 按钮缺失，最近的也超距 → 不点，退回。
+        let unlock = buttons
+            .compactMap { b -> (AXUIElement, CGRect)? in frame(of: b).map { (b, $0) } }
+            .filter { $0.1.minY >= ff.maxY - ff.height * 0.5
+                      && $0.1.minY <= ff.maxY + ff.height * 2.5
+                      && $0.1.maxX > ff.minX && $0.1.minX < ff.maxX }
+            .min(by: { $0.1.minY < $1.1.minY })
+        if let unlock {
+            let center = CGPoint(x: unlock.1.midX, y: unlock.1.midY)
+            logLine("submitBitwarden → click Unlock center=\(center) frame=\(unlock.1)")
+            clickMouse(at: center)
+            return true
+        }
+        logLine("submitBitwarden: 未按几何定位到解锁按钮，退回通用 submit")
+        return submit(container: container, field: field)
+    }
+
     // MARK: - 主按钮定位（默认/取消按钮 + 诊断）
 
     /// 读取容器（及其所在窗口）的 `AXDefaultButton`——回车会触发的按钮。

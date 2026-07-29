@@ -413,6 +413,16 @@ class AppViewModel: ObservableObject {
         return true
     }
 
+    /// 开启 1Password 解锁前，按需索取 1Password 的解锁密码（可与系统密码不同）。取消返回 false。
+    @discardableResult
+    func setupOnePasswordPasswordIfNeeded() -> Bool {
+        if ImmurokSecurity.shared.hasOnePasswordPassword() { return true }
+        guard let password = promptSinglePassword(title: "permission.onepassword.configure".localized,
+                                                  message: "permission.onepassword.configure.hint".localized) else { return false }
+        ImmurokSecurity.shared.saveOnePasswordPassword(password)
+        return true
+    }
+
     /// 解锁与 Passwords 均已关闭后调用：清除本地登录密码。
     func clearLoginPassword() {
         ImmurokSecurity.shared.clearPassword()
@@ -422,6 +432,26 @@ class AppViewModel: ObservableObject {
     /// 关闭 App Store 自动填充后调用：清除本地 Apple ID 密码。
     func clearAppleIDPassword() {
         ImmurokSecurity.shared.clearAppleIDPassword()
+    }
+
+    /// 关闭 1Password 解锁后调用：清除本地 1Password 解锁密码。
+    func clearOnePasswordPassword() {
+        ImmurokSecurity.shared.clearOnePasswordPassword()
+    }
+
+    /// 开启 Bitwarden 解锁前，按需索取 Bitwarden 的解锁密码（独立密码）。取消返回 false。
+    @discardableResult
+    func setupBitwardenPasswordIfNeeded() -> Bool {
+        if ImmurokSecurity.shared.hasBitwardenPassword() { return true }
+        guard let password = promptSinglePassword(title: "permission.bitwarden.configure".localized,
+                                                  message: "permission.bitwarden.configure.hint".localized) else { return false }
+        ImmurokSecurity.shared.saveBitwardenPassword(password)
+        return true
+    }
+
+    /// 关闭 Bitwarden 解锁后调用：清除本地 Bitwarden 解锁密码。
+    func clearBitwardenPassword() {
+        ImmurokSecurity.shared.clearBitwardenPassword()
     }
 
     // MARK: - ECDH Pairing

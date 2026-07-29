@@ -151,8 +151,43 @@ final class AppUpdateService: ObservableObject {
             // 装完这个版本后允许下个版本再弹通知
             UserDefaults.standard.removeObject(forKey: Self.kNotifiedVersion)
             state = .installerOpened(version: version)
+            watchForInstallAndRelaunch(version: version)
         } catch {
             state = .failed(message: "appupdate.error.download".localized)
+        }
+    }
+
+    /// 安装器交给用户后轮询磁盘上的 bundle 版本；检测到已替换为目标版本
+    /// 即自动重启（老进程继续跑的是内存里的旧版本，不重启版本不生效）。
+    /// 15 分钟内未完成视为用户取消，静默复位。
+    private func watchForInstallAndRelaunch(version: String) {
+        Task { [weak self] in
+            let plistPath = "/Applications/immurok.app/Contents/Info.plist"
+            let deadline = Date().addingTimeInterval(15 * 60)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if let dict = NSDictionary(contentsOfFile: plistPath),
+                   let onDisk = dict["CFBundleShortVersionString"] as? String,
+                   onDisk == version {
+                    // 再等 2s 让 Installer 完成收尾（postinstall/收据落盘）
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    Self.relaunch()
+                    return
+                }
+            }
+            self?.state = .idle
+        }
+    }
+
+    /// 先派生一个脱离本进程的 shell 延迟重开 App，再退出自己。
+    /// applicationWillTerminate 会正常停掉 BLE/PAM 等服务。
+    nonisolated private static func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; /usr/bin/open \"/Applications/immurok.app\""]
+        try? p.run()
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
         }
     }
 

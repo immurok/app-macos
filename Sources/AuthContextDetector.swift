@@ -4,7 +4,7 @@ import AuthInjectionKit
 
 enum AuthContext {
     case none
-    case secureField(kind: SecretKind, field: AXUIElement, sheet: AXUIElement)
+    case secureField(kind: SecretKind, field: AXUIElement, sheet: AXUIElement, bundleID: String)
     case appStoreConfirmSheet(sheet: AXUIElement)
 }
 
@@ -21,9 +21,35 @@ struct AuthContextDetector {
         if let focused = systemWideFocusedSecureField(),
            let ownerPID = ownerPID(of: focused),
            let ownerBundle = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
+           // 1Password **不走这条**：它必须经下面 Path 1.5 的"恰好一个 secure field"硬化判据，
+           // 否则改主密码等多字段表单的某个框被聚焦时会从这里绕过 guard 被误注入。
+           ownerBundle != "com.1password.1password",
            let kind = InjectionWhitelist.secretKind(forPID: ownerPID, bundleID: ownerBundle),
            let container = enclosingContainer(of: focused) {
-            return .secureField(kind: kind, field: focused, sheet: container)
+            return .secureField(kind: kind, field: focused, sheet: container, bundleID: ownerBundle)
+        }
+
+        // 1.5) 1Password 解锁：浏览器扩展解锁浮层是 layer-101 popover，未必是系统焦点元素，
+        //      systemWideFocused 可能命不中。改用进程定向扫描 com.1password.1password 的 AX 树
+        //      找 secure field（不依赖焦点），统一覆盖"整屏锁定窗 + 扩展浮层"。1P 未锁定时树内
+        //      无 secure field，自然不触发。
+        if let onep = NSRunningApplication.runningApplications(withBundleIdentifier: "com.1password.1password").first,
+           InjectionWhitelist.secretKind(forPID: onep.processIdentifier, bundleID: "com.1password.1password") == .onePasswordPassword {
+            let appEl = AXUIElementCreateApplication(onep.processIdentifier)
+            // 下行扫描直接拿到 (密码框, 所在窗口)——不能用 enclosingContainer 上行爬，
+            // 1P 的 Chromium 树 kAXParent 链断裂，上行会得 nil 导致检测失败。
+            // 仅当树里"恰好一个"secure field 才触发（硬化：排除改主密码等多字段表单）。
+            if let hit = soleSecureFieldWithWindow(under: appEl) {
+                return .secureField(kind: .onePasswordPassword, field: hit.field, sheet: hit.window, bundleID: "com.1password.1password")
+            }
+        }
+
+        // 1.6) Bitwarden 浏览器扩展解锁：密码框归浏览器进程，靠"浏览器签名 + WebArea URL 属于
+        //      Bitwarden 扩展 + 恰好一个 secure field"识别（见 BitwardenDetector）。扫浏览器 AX 树
+        //      较重，仅在功能开启时才扫。
+        if UserDefaults.standard.bool(forKey: "immurok.bitwardenUnlockEnabled"),
+           let bw = BitwardenDetector().detect() {
+            return .secureField(kind: .bitwardenPassword, field: bw.field, sheet: bw.container, bundleID: bw.browserBundle)
         }
 
         // 2) App Store 特有：还在 Install/Cancel 确认页（尚无焦点密码框）——按前台应用判定。
@@ -126,5 +152,37 @@ struct AuthContextDetector {
             if hasButtonDescendant(kid, maxDepth: maxDepth - 1) { return true }
         }
         return false
+    }
+
+    /// 扫描 root 子树里的**全部** AXSecureTextField（有界，>1 即提前收手），
+    /// **仅当恰好一个时**返回它及所在 AXWindow/AXSheet 容器，否则 nil。
+    ///
+    /// 两层用意：
+    /// 1. 容器用**下行追踪**得到——1Password 是 Chromium 内核，密码框到窗口的 `kAXParent` 上行链
+    ///    是断的，从框往上爬（`enclosingContainer`）会拿到 nil；从 app 往下扫时窗口就是祖先，顺手记住。
+    /// 2. **恰好一个**是硬化判据（locale-independent）：解锁框（桌面锁定窗 / 浏览器扩展浮层）永远是
+    ///    单个密码框；而"修改主密码"等表单有当前/新/确认多个 secure field，用"恰好一个"即可天然排除，
+    ///    避免把登录密码误注入多字段表单。解锁后的编辑登录条目是明文框（0 个 secure field），也不触发。
+    ///    其余"单个密码框"场景（确认密码以显示/授权）本身也要账户密码，注入登录密码无害。
+    private func soleSecureFieldWithWindow(under root: AXUIElement) -> (field: AXUIElement, window: AXUIElement)? {
+        var budget = 8000
+        var results: [(AXUIElement, AXUIElement?)] = []
+        func rec(_ el: AXUIElement, _ nearestWindow: AXUIElement?) {
+            if budget <= 0 || results.count > 1 { return }
+            budget -= 1
+            let r = role(of: el)
+            let win = (r == "AXWindow" || r == "AXSheet") ? el : nearestWindow
+            if subrole(of: el) == (kAXSecureTextFieldSubrole as String) || r == "AXSecureTextField" {
+                results.append((el, win))
+                return   // 命中即止，不下钻密码框内部
+            }
+            for c in children(of: el) {
+                rec(c, win)
+                if results.count > 1 { return }
+            }
+        }
+        rec(root, nil)
+        guard results.count == 1, let win = results[0].1 else { return nil }
+        return (results[0].0, win)
     }
 }
