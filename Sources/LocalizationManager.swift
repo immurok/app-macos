@@ -328,6 +328,7 @@ class LocalizationManager: ObservableObject {
         "pairing.already.paired": "设备已与本机配对。如需重新配对，请先点击「解除配对」。",
         "pairing.needs.reset": "设备仍有指纹模板，请先恢复出厂设置后再配对。",
         "pairing.cancelled": "配对已取消（用户长按设备按钮）。",
+        "pairing.link.params": "配对失败：蓝牙连接参数不满足安全计算要求。请断开并重新连接设备后重试。",
         "pairing.stale.local.title": "检测到旧配对数据",
         "pairing.stale.local.message": "本机仍保留上一次配对的密钥和锁屏密码，但当前设备已不再配对（可能更换或已重置）。\n\n继续将清除本地数据，然后与当前设备重新配对。",
         "pairing.stale.local.continue": "清除并配对",
@@ -809,6 +810,7 @@ class LocalizationManager: ObservableObject {
         "device.pair": "配對",
         "device.reset.pairing": "重置配對",
         "device.not.paired.hint": "裝置未配對。請點擊「配對」並按下裝置上的按鈕。",
+        "device.not.verified": "裝置驗證失敗，敏感操作已停用",
 
         // Pairing
         "pairing.title": "安全配對",
@@ -833,6 +835,7 @@ class LocalizationManager: ObservableObject {
         "pairing.already.paired": "裝置已與本機配對。如需重新配對，請先點擊「解除配對」。",
         "pairing.needs.reset": "裝置仍有指紋資料，請先恢復出廠設定後再配對。",
         "pairing.cancelled": "配對已取消（使用者長按裝置按鈕）。",
+        "pairing.link.params": "配對失敗：藍牙連線參數不滿足安全運算要求。請中斷並重新連線裝置後重試。",
         "pairing.stale.local.title": "偵測到舊配對資料",
         "pairing.stale.local.message": "本機仍保留上一次配對的金鑰和鎖屏密碼，但目前裝置已不再配對（可能更換或已重置）。\n\n繼續將清除本機資料，然後與目前裝置重新配對。",
         "pairing.stale.local.continue": "清除並配對",
@@ -1317,6 +1320,7 @@ class LocalizationManager: ObservableObject {
         "device.pair": "Pair",
         "device.reset.pairing": "Reset Pairing",
         "device.not.paired.hint": "Device not paired. Click \"Pair\" and press the button on the device.",
+        "device.not.verified": "Device verification failed. Sensitive operations are disabled.",
 
         // Pairing
         "pairing.title": "Secure Pairing",
@@ -1341,6 +1345,7 @@ class LocalizationManager: ObservableObject {
         "pairing.already.paired": "Device is already paired with this Mac. Tap \"Unpair\" first if you want to re-pair.",
         "pairing.needs.reset": "Device still has fingerprint templates. Factory reset before pairing.",
         "pairing.cancelled": "Pairing cancelled (user long-pressed the device button).",
+        "pairing.link.params": "Pairing failed: the Bluetooth connection parameters are inadequate for the secure key exchange. Disconnect and reconnect the device, then try again.",
         "pairing.stale.local.title": "Stale Pairing Data Detected",
         "pairing.stale.local.message": "This Mac still holds the previous pairing key and lock-screen password, but the current device is no longer paired (likely swapped or reset).\n\nContinue to clear local data and pair with the current device.",
         "pairing.stale.local.continue": "Clear & Pair",

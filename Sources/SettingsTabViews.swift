@@ -212,19 +212,36 @@ struct DeviceTabView: View {
 
                             Spacer()
 
+                            // Both buttons must stay reachable when device-side and
+                            // local pairing state diverge, or the UI dead-ends.
+                            //
+                            // The bad case: device reports paired but this Mac has no
+                            // shared key (device paired elsewhere / local Keychain
+                            // cleared). Verification then fails, and with Pair gated
+                            // purely on isDevicePaired and Unpair purely on
+                            // hasLocalPairing, BOTH were greyed out with no way back.
+                            //
+                            // Pair is only pointless when the pairing is actually
+                            // usable — device-side AND locally present. Firmware still
+                            // has final say: PAIR_INIT answers needsReset when
+                            // fingerprints are enrolled, which we already surface.
                             Button("pairing.start".localized) {
                                 viewModel.startPairing()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .disabled(!viewModel.isDeviceConnected || viewModel.isPairing || viewModel.isDevicePaired)
+                            .disabled(!viewModel.isDeviceConnected || viewModel.isPairing
+                                      || (viewModel.isDevicePaired && viewModel.hasLocalPairing))
 
+                            // Unpair is meaningful whenever there is state to clear on
+                            // either side. (clearLocalPairing also resets
+                            // isDevicePaired, so this is the escape hatch.)
                             Button("unpair.confirm".localized) {
                                 viewModel.unpair()
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .disabled(!viewModel.hasLocalPairing)
+                            .disabled(!viewModel.hasLocalPairing && !viewModel.isDevicePaired)
                         }
 
                         if viewModel.isPairing {

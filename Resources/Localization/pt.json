@@ -204,5 +204,6 @@
   "ssh.generate.success": "Chave gerada",
   "settings.language": "Idioma",
   "common.cancel": "Cancel",
-  "common.save": "Save"
+  "common.save": "Save",
+  "pairing.link.params": "Falha no pareamento: os parâmetros de conexão Bluetooth não são adequados para a troca segura de chaves. Desconecte e reconecte o dispositivo e tente novamente."
 }

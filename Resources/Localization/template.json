@@ -192,5 +192,6 @@
   "notification.need.accessibility": "",
   "notification.cannot.unlock": "",
   "ssh.generate.success": "",
-  "settings.language": ""
+  "settings.language": "",
+  "pairing.link.params": ""
 }

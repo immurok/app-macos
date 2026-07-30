@@ -204,5 +204,6 @@
   "ssh.generate.success": "Clave generada",
   "settings.language": "Idioma",
   "common.cancel": "Cancel",
-  "common.save": "Save"
+  "common.save": "Save",
+  "pairing.link.params": "El emparejamiento falló: los parámetros de conexión Bluetooth no son adecuados para el intercambio seguro de claves. Desconecta y vuelve a conectar el dispositivo, luego inténtalo de nuevo."
 }

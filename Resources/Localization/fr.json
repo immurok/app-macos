@@ -204,5 +204,6 @@
   "ssh.generate.success": "Clé générée",
   "settings.language": "Langue",
   "common.cancel": "Cancel",
-  "common.save": "Save"
+  "common.save": "Save",
+  "pairing.link.params": "Échec de l'appairage : les paramètres de connexion Bluetooth ne conviennent pas à l'échange de clés sécurisé. Déconnectez puis reconnectez l'appareil, puis réessayez."
 }

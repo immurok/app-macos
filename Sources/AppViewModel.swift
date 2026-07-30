@@ -538,6 +538,7 @@ class AppViewModel: ObservableObject {
                 case .needsReset:       messageKey = "pairing.needs.reset"
                 case .buttonTimeout:    messageKey = "pairing.timeout"
                 case .buttonCancelled:  messageKey = "pairing.cancelled"
+                case .linkParams:       messageKey = "pairing.link.params"
                 case .generic:          messageKey = "pairing.failed"
                 }
                 self.showAlert(title: "alert.error".localized, message: messageKey.localized)

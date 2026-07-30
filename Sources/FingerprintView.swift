@@ -308,11 +308,17 @@ struct EnrollmentSheet: View {
                     .frame(width: 120, height: 120)
 
                 // pulse 圆（不变，等待手指视觉提示）
+                // repeatForever 必须挂在这里，绝不能用 onAppear 里的
+                // withAnimation：sheet 呈现时 onAppear 与布局在同一个事务中，
+                // withAnimation 会把「内容从原点落到居中」这段位移也一起
+                // repeatForever，整个对话框内容就在居中与左上角之间无限摆动。
                 Circle()
                     .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
                     .frame(width: 60, height: 60)
                     .scaleEffect(pulseScale)
                     .opacity(2.0 - Double(pulseScale))
+                    .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                               value: pulseScale)
 
                 // 手指椭圆（按 progress 偏移）
                 RoundedRectangle(cornerRadius: 30)
@@ -330,6 +336,9 @@ struct EnrollmentSheet: View {
                     .offset(enrollArrowOffsetForStep(animProgress))
                     .opacity(showArrow ? arrowOpacity : 0)
                     .animation(.easeInOut(duration: 0.3), value: animProgress)
+                    // 同上：脉动只绑到 arrowOpacity，不走 onAppear 的 withAnimation
+                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                               value: arrowOpacity)
             }
 
             // 主步骤标题（切换步加粗）
@@ -388,13 +397,10 @@ struct EnrollmentSheet: View {
             }
         }
         .onAppear {
-            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
-                pulseScale = 1.6
-            }
-            // 箭头脉动节奏（0.8s 周期）
-            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
-                arrowOpacity = 0.4
-            }
+            // 只改值，动画由上面各自的 .animation(_:value:) 承担（作用域限定在
+            // 对应视图内）。这里不能包 withAnimation —— 见 pulse 圆处的注释。
+            pulseScale = 1.6
+            arrowOpacity = 0.4   // 箭头脉动节奏（0.8s 周期）
         }
     }
 }

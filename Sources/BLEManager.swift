@@ -109,6 +109,7 @@ enum PairFailureReason: Error {
     case needsReset       // Device still has fingerprints; user must factory reset first
     case buttonTimeout    // 30s elapsed without button press
     case buttonCancelled  // User long-pressed to cancel
+    case linkParams       // Device refused ECDH: BLE connection params inadequate (0xE1)
 }
 
 // Enrollment status notifications (from device)
@@ -679,17 +680,9 @@ class BLEManager: NSObject {
                 return
             }
 
-            // 0xE1 = BLE supervision timeout too short for ECC — auto-retry
+            // 0xE1 = BLE connection params inadequate for ECC — auto-retry
             if response[0] == 0xE1 {
-                if retries > 0 {
-                    NSLog("BLEManager: PAIR_INIT rejected (param timeout too short), retrying in 5s...")
-                    self.queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-                        self?.startPairingAttempt(retries: retries - 1, completion: completion)
-                    }
-                } else {
-                    NSLog("BLEManager: PAIR_INIT failed after retries (BLE params not accepted)")
-                    completion(.generic)
-                }
+                self.retryAfterLinkParams(retries: retries, completion: completion)
                 return
             }
 
@@ -712,7 +705,7 @@ class BLEManager: NSObject {
                     DispatchQueue.main.async { [weak self] in
                         self?.onPairWaitButton?()
                     }
-                    self.startPairButtonWait(completion: completion)
+                    self.startPairButtonWait(retries: retries, completion: completion)
                     return
                 }
                 NSLog("BLEManager: PAIR_INIT error: 0x%02x", code)
@@ -729,11 +722,37 @@ class BLEManager: NSObject {
         }
     }
 
+    /// Shared handling for the device rejecting ECDH with 0xE1 (BLE connection
+    /// params inadequate). The rejection can arrive either as the direct
+    /// PAIR_INIT response or — because the device only runs ECDH after the
+    /// button press — as a bare 1-byte notification during the button wait.
+    private func retryAfterLinkParams(retries: Int,
+                                      completion: @escaping (PairFailureReason?) -> Void) {
+        guard retries > 0 else {
+            NSLog("BLEManager: PAIR_INIT failed after retries (BLE params not accepted)")
+            Task { @MainActor in
+                LogManager.shared.log("Pairing failed: BLE connection params inadequate for ECDH")
+            }
+            completion(.linkParams)
+            return
+        }
+        NSLog("BLEManager: PAIR_INIT rejected (link params), retrying in 5s...")
+        Task { @MainActor in
+            LogManager.shared.log("Pairing rejected (BLE params), retrying…")
+        }
+        queue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            self?.startPairingAttempt(retries: retries - 1, completion: completion)
+        }
+    }
+
     /// Install the pair-button waiter. Resolves when device sends:
     ///   - [0x30][33B pubkey] — button pressed, ECDH done → continue PAIR_CONFIRM
     ///   - [0x34, 0x00] timeout, [0x34, 0x02] cancel → fail with reason
+    ///   - [0xE1] — button was pressed but the device refused to run ECDH
+    ///     because the BLE connection params were inadequate → retry
     /// Outer 45s safety timeout: 30s button window + ~5s ECC + headroom.
-    private func startPairButtonWait(completion: @escaping (PairFailureReason?) -> Void) {
+    private func startPairButtonWait(retries: Int,
+                                     completion: @escaping (PairFailureReason?) -> Void) {
         pendingPairButtonGeneration &+= 1
         let myGen = pendingPairButtonGeneration
         pendingPairButton = { [weak self] result in
@@ -742,6 +761,8 @@ class BLEManager: NSObject {
             switch result {
             case .success(let pubkey):
                 self.continuePairing(devicePubKey: pubkey, completion: completion)
+            case .failure(.linkParams):
+                self.retryAfterLinkParams(retries: retries, completion: completion)
             case .failure(let reason):
                 completion(reason)
             }
@@ -2097,6 +2118,19 @@ extension BLEManager: CBPeripheralDelegate {
            let cb = self.pendingPairButton {
             self.pendingPairButton = nil
             cb(.success(data.subdata(in: 1..<34)))
+            return
+        }
+
+        // Device refused to run ECDH: BLE connection params inadequate.
+        // The device only starts ECDH after the button press, so this arrives
+        // during the button wait rather than as the PAIR_INIT response. Left
+        // unhandled it would fall through to the 45s outer timeout and be
+        // reported as .buttonTimeout — telling users to press a button they
+        // already pressed. Route it to the real reason instead.
+        if data[0] == 0xE1 && data.count == 1, let cb = self.pendingPairButton {
+            NSLog("BLEManager: ECDH rejected by device (0xE1, link params)")
+            self.pendingPairButton = nil
+            cb(.failure(.linkParams))
             return
         }
 

@@ -204,5 +204,6 @@
   "ssh.generate.success": "鍵を生成しました",
   "settings.language": "言語",
   "common.cancel": "Cancel",
-  "common.save": "Save"
+  "common.save": "Save",
+  "pairing.link.params": "ペアリングに失敗しました：Bluetooth の接続パラメータが安全な鍵交換の要件を満たしていません。デバイスを切断して再接続してから、もう一度お試しください。"
 }
