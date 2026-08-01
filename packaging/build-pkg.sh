@@ -74,6 +74,10 @@ mkdir -p "$DIST_DIR"
 #    (matches build-deploy.sh: CLT-friendly, no full Xcode needed).
 # ---------------------------------------------------------------------------
 log_step "Building universal binaries (arm64 + x86_64)"
+# imk 没有 Info.plist 可以事后 stamp，版本号是编译进去的常量 —— 必须在
+# swift build 之前用本次发布的版本覆盖掉仓库里的值，否则 pkg 里的 imk
+# 会报上一次本地构建的版本。
+"$PKG_DIR/sync-cli-version.sh" "$VERSION"
 swift build -c release --arch arm64
 swift build -c release --arch x86_64
 mkdir -p .build/universal/release

@@ -10,7 +10,8 @@
 
 import Foundation
 
-let version = "1.0.0"
+// `version` 在 CLISources/Version.swift 里，由 packaging/sync-cli-version.sh
+// 从 app 的 CFBundleShortVersionString 生成。
 
 // MARK: - Main
 
@@ -261,41 +262,91 @@ func cmdRun(_ args: [String]) -> Int32 {
         return 1
     }
 
-    // Launch subprocess
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = cmdArgs
-    process.environment = env
+    // Launch the subprocess with posix_spawn rather than Foundation's
+    // Process. Process puts the child in a NEW process group, which breaks
+    // terminal semantics for anything interactive:
+    //   - Ctrl+C goes to the terminal's foreground process group (ours), so
+    //     the wrapped command never sees it.
+    //   - Worse, a child in a background process group that reads /dev/tty
+    //     (sudo's password prompt) takes SIGTTIN and STOPS. `imk run -- sudo`
+    //     printed "Password:" and then froze, ignoring every Ctrl+C.
+    // posix_spawn without POSIX_SPAWN_SETPGROUP leaves the child in our
+    // process group — i.e. in the terminal's foreground group — so signals
+    // and tty reads behave exactly as they would without the wrapper.
+    var childPid: pid_t = 0
+    let argvStrings = ["/usr/bin/env"] + cmdArgs
+    var argv: [UnsafeMutablePointer<CChar>?] = argvStrings.map { strdup($0) }
+    argv.append(nil)
+    var envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") }
+    envp.append(nil)
+    defer {
+        for p in argv where p != nil { free(p) }
+        for p in envp where p != nil { free(p) }
+    }
 
-    // Forward signals
-    let sigSources = setupSignalForwarding(to: process)
+    // Install the no-op handlers BEFORE spawning, so a Ctrl+C landing in the
+    // window between spawn and waitpid can't kill us before we've reaped the
+    // child and removed its agent marker. A handler (unlike SIG_IGN) is reset
+    // to SIG_DFL by exec, so the child still dies on Ctrl+C normally.
+    for sig in [SIGINT, SIGTERM] {
+        signal(sig, { _ in })
+    }
 
-    do {
-        try process.run()
-        process.waitUntilExit()
-    } catch {
-        stderr("Failed to run \(cmdArgs[0]): \(error)")
+    let spawnResult = posix_spawn(&childPid, "/usr/bin/env", nil, nil, argv, envp)
+    guard spawnResult == 0 else {
+        stderr("Failed to run \(cmdArgs[0]): \(String(cString: strerror(spawnResult)))")
         return 1
+    }
+
+    let sigSources = setupSignalForwarding(toChild: childPid)
+
+    var status: Int32 = 0
+    while waitpid(childPid, &status, 0) < 0 {
+        if errno != EINTR {
+            stderr("waitpid failed: \(String(cString: strerror(errno)))")
+            return 1
+        }
     }
 
     // Clean up signal sources
     for src in sigSources { src.cancel() }
 
-    return process.terminationStatus
+    // If the wrapped command died from a signal (Ctrl+C → SIGINT), die the
+    // same way instead of exiting with the bare signal number. That's what
+    // the shell expects: it prints ^C and reports 130, exactly as if the
+    // command had not been wrapped at all.
+    if _WSTATUS(status) != 0 {
+        let sig = _WSTATUS(status)
+        if isAgent { AgentMarker.remove() }  // `defer` never runs once we re-raise
+        signal(sig, SIG_DFL)
+        raise(sig)
+    }
+
+    return (status >> 8) & 0xFF
 }
 
-/// Forward SIGINT/SIGTERM to child process
-func setupSignalForwarding(to process: Process) -> [DispatchSourceSignal] {
+/// Low 7 bits of a wait(2) status: 0 when the child exited normally,
+/// otherwise the signal that killed it. (Darwin's WIFSIGNALED/WTERMSIG
+/// macros aren't exposed to Swift.)
+private func _WSTATUS(_ status: Int32) -> Int32 { status & 0x7F }
+
+/// Forward SIGINT/SIGTERM to the child when — and only when — the terminal
+/// can't reach it itself.
+func setupSignalForwarding(toChild pid: pid_t) -> [DispatchSourceSignal] {
     var sources: [DispatchSourceSignal] = []
 
+    // With posix_spawn the child shares our process group, so the tty already
+    // delivers Ctrl+C to it directly; forwarding on top would hand it a second
+    // SIGINT and cut short whatever cleanup it started on the first. Only
+    // forward if the child somehow ended up in a group of its own.
+    let childPgid = getpgid(pid)
+    let needsForwarding = childPgid != getpgrp()
+
+    guard needsForwarding else { return sources }
+
     for sig in [SIGINT, SIGTERM] {
-        signal(sig, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-        src.setEventHandler {
-            if process.isRunning {
-                kill(process.processIdentifier, sig)
-            }
-        }
+        src.setEventHandler { kill(pid, sig) }
         src.resume()
         sources.append(src)
     }

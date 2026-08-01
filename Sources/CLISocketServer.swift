@@ -273,6 +273,16 @@ class CLISocketServer {
         let previousAttemptFailed = bleManager.onFingerprintAttemptFailed
         bleManager.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
 
+        // Ctrl+C kills `imk` instantly; nothing else would tell us. Without
+        // this the device kept waiting for a touch and the spinner kept
+        // repainting over the shell prompt for the remaining ~30 s.
+        let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) { [weak self] in
+            NSLog("CLISocketServer: GET client gone (Ctrl+C) — cancelling fingerprint gate")
+            spinner?.abandon()
+            self?.bleManager.cancelUnlock()
+        }
+        defer { disconnectWatcher.stop() }
+
         let sem = DispatchSemaphore(value: 0)
         var approved = false
 
@@ -283,6 +293,9 @@ class CLISocketServer {
 
         let waitResult = sem.wait(timeout: .now() + 35)
         bleManager.onFingerprintAttemptFailed = previousAttemptFailed
+        // Stop watching before the secret read below: cancelUnlock() releases
+        // the BLE queue hold, which would corrupt an in-flight KEY_READ.
+        disconnectWatcher.stop()
 
         guard waitResult == .success, approved else {
             spinner?.stop(waitResult == .timedOut ? .timeout : .tryAgain)
@@ -359,6 +372,16 @@ class CLISocketServer {
         let previousAttemptFailed = bleManager.onFingerprintAttemptFailed
         bleManager.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
 
+        // Same Ctrl+C handling as GET:api. OTP runs on the device behind the
+        // FP gate, so the cancel goes through cancelGateAndRelease() (which
+        // clears pendingGateDataCompletion) rather than cancelUnlock().
+        let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) { [weak self] in
+            NSLog("CLISocketServer: OTP client gone (Ctrl+C) — cancelling fingerprint gate")
+            spinner?.abandon()
+            self?.bleManager.cancelGateAndRelease()
+        }
+        defer { disconnectWatcher.stop() }
+
         let sem = DispatchSemaphore(value: 0)
         var otpCode: String?
 
@@ -368,6 +391,7 @@ class CLISocketServer {
         }
 
         let waitResult = sem.wait(timeout: .now() + 35)
+        disconnectWatcher.stop()
         bleManager.onFingerprintAttemptFailed = previousAttemptFailed
 
         guard waitResult == .success, let code = otpCode else {

@@ -19,6 +19,8 @@
 #include <signal.h>
 #include <syslog.h>
 #include <sys/types.h>
+#include <sys/event.h>
+#include <sys/time.h>
 
 #define PAM_SM_AUTH
 #define PAM_SM_ACCOUNT
@@ -78,6 +80,31 @@ static int authenticate_via_socket(const char *user, const char *service) {
      * never read from /dev/tty here. */
     tty_fd = open("/dev/tty", O_WRONLY);
 
+    /* Catch Ctrl+C via kqueue/EVFILT_SIGNAL rather than a sigaction() handler.
+     * A handler would be a function pointer INTO this module, and libpam
+     * dlclose()s the module in pam_end() — a lingering reference into unmapped
+     * memory crashes the host. A kqueue installs no such pointer: SIGINT is
+     * delivered to a file descriptor we poll and close before returning.
+     *
+     * Why a kqueue at all instead of just trusting EINTR: the host owns the
+     * SIGINT disposition and we must work for every case. sudo(8) installs its
+     * own handler (init_signals(), no SA_RESTART) so we DO get EINTR there,
+     * but other hosts may block or SIG_IGN the signal, in which case select()
+     * never returns EINTR. EVFILT_SIGNAL records the signal in all three cases
+     * (verified on macOS 26: blocked / handler / SIG_IGN all fire), and the
+     * kqueue fd is selectable, so it folds straight into the loop below. */
+    int kq = kqueue();
+    if (kq >= 0) {
+        struct kevent kev;
+        EV_SET(&kev, SIGINT, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        if (kevent(kq, &kev, 1, NULL, 0, NULL) < 0) {
+            close(kq);
+            kq = -1;
+        }
+    }
+    int nfds = sock + 1;
+    if (kq >= sock) nfds = kq + 1;
+
     /* Wait for response with animated spinner */
     fd_set readfds;
     struct timeval tv;
@@ -88,10 +115,35 @@ static int authenticate_via_socket(const char *user, const char *service) {
     while (total_ms < max_ms) {
         FD_ZERO(&readfds);
         FD_SET(sock, &readfds);
+        if (kq >= 0)
+            FD_SET(kq, &readfds);
         tv.tv_sec = 0;
         tv.tv_usec = 80000; /* 80ms per frame */
 
-        int ret = select(sock + 1, &readfds, NULL, NULL, &tv);
+        int ret = select(nfds, &readfds, NULL, NULL, &tv);
+        if (ret > 0 && kq >= 0 && FD_ISSET(kq, &readfds)) {
+            /* Ctrl+C — abandon the fingerprint wait and let the rest of the
+             * auth stack (pam_opendirectory) prompt for a password. Same
+             * semantics as the Linux module. Erasing the line also wipes the
+             * "^C" the tty echoed onto it, so the password prompt starts
+             * clean. Closing the socket below makes the App drop the device's
+             * fingerprint gate (LED stops) instead of blinking until timeout. */
+            struct kevent out;
+            struct timespec ts = { 0, 0 };
+            (void)kevent(kq, NULL, 0, &out, 1, &ts);
+            if (tty_fd >= 0)
+                write(tty_fd, "\r\033[K", 4);
+            syslog(LOG_AUTH | LOG_INFO,
+                   "pam_immurok: fingerprint wait cancelled by SIGINT (user=%s service=%s)",
+                   user, service);
+            result = PAM_IGNORE;
+            break;
+        }
+        if (ret > 0 && !FD_ISSET(sock, &readfds)) {
+            /* Nothing on the socket (only the kqueue could have been ready,
+             * and that's handled above) — keep waiting. */
+            ret = 0;
+        }
         if (ret > 0) {
             /* Socket readable — read response */
             memset(response, 0, sizeof(response));
@@ -174,7 +226,12 @@ static int authenticate_via_socket(const char *user, const char *service) {
             frame++;
             total_ms += 80;
         } else {
-            if (errno == EINTR) continue; /* signal interrupted, retry */
+            /* EINTR: a signal ran a host handler (sudo records SIGINT in its
+             * own pipe and returns). Don't decide anything here — loop once
+             * more and let the kqueue branch above tell us whether it was
+             * SIGINT. Any other signal (SIGWINCH on a window resize, ...)
+             * must NOT abort a fingerprint wait. */
+            if (errno == EINTR) continue;
             break; /* real select error */
         }
     }
@@ -189,6 +246,11 @@ static int authenticate_via_socket(const char *user, const char *service) {
         }
     }
 
+    /* Tear the kqueue down before returning: no handler was installed, so
+     * nothing points into this module once we're back in libpam and it is
+     * free to dlclose() us in pam_end(). */
+    if (kq >= 0)
+        close(kq);
     if (tty_fd >= 0)
         close(tty_fd);
     close(sock);

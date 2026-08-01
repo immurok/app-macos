@@ -14,6 +14,9 @@ import AuthInjectionKit
 enum UserAuthIntent {
     case none
     case reject
+    /// The terminal client went away mid-wait (Ctrl+C). Not a rejection —
+    /// there is nobody left to answer, so we just drop the device gate.
+    case cancel
 }
 
 class PAMSocketServer {
@@ -454,6 +457,21 @@ class PAMSocketServer {
             }
         }
 
+        // Ctrl+C in the terminal: the PAM module closes its socket and returns
+        // so sudo can fall through to the password prompt. Without this the
+        // App stayed parked on the semaphore below and the device kept
+        // blinking for the rest of the 30 s gate. Cancelling drops the gate
+        // (GATE_CANCEL) as soon as the peer is gone.
+        let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) { [weak self] in
+            NSLog("PAMSocketServer: PAM client gone (Ctrl+C) — cancelling fingerprint gate")
+            intent.value = .cancel
+            if showOverlay {
+                DispatchQueue.main.async { AuthRequestOverlay.shared.dismiss(status: .denied) }
+            }
+            self?.bleManager.cancelUnlock()
+        }
+        defer { disconnectWatcher.stop() }
+
         // Request unlock from device (wait for fingerprint)
         var authResult = false
         var isTimeout = false
@@ -504,6 +522,12 @@ class PAMSocketServer {
         if authResult {
             response = "OK"
             onAuthSuccess?()
+        } else if intent.value == .cancel {
+            // Client hit Ctrl+C — the socket is already closed, so this is
+            // only for the log. Never REJECT here: that code path kills the
+            // caller, and the user asked to fall back to a password, not to
+            // abort the command.
+            response = "DENY"
         } else if intent.value == .reject || isTimeout {
             // User clicked Reject OR didn't act in time — both kill sudo.
             // Treating timeout as reject matches user expectation: "I walked
@@ -590,6 +614,17 @@ class PAMSocketServer {
                 }
             )
         }
+
+        // Ctrl+C while the approval overlay is up: `imk run --agent` dies and
+        // its socket closes. Tear the overlay + device gate down immediately
+        // instead of leaving both hanging for the full 30 s.
+        let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) { [weak self] in
+            NSLog("PAMSocketServer: AGENT_APPROVE client gone (Ctrl+C) — cancelling")
+            intent.value = .cancel
+            DispatchQueue.main.async { AuthRequestOverlay.shared.dismiss(status: .denied) }
+            self?.bleManager.cancelUnlock()
+        }
+        defer { disconnectWatcher.stop() }
 
         // Wait for fingerprint result via BLE.
         let semaphore = DispatchSemaphore(value: 0)

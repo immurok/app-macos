@@ -89,6 +89,20 @@ class TerminalSpinner {
         }
     }
 
+    /// Stop the spinner without touching the terminal.
+    ///
+    /// For when the client process is already gone (Ctrl+C): the shell has
+    /// printed a fresh prompt on that line, so `\r\u{1B}[K` would erase the
+    /// prompt instead of our spinner. We still sleep one frame before closing
+    /// the handle so the animation thread can't write into a closed FileHandle.
+    func abandon() {
+        isRunning = false
+        generation += 1
+        Thread.sleep(forTimeInterval: 0.1)
+        ttyHandle?.closeFile()
+        ttyHandle = nil
+    }
+
     /// Stop the spinner silently (erase line, no message)
     func dismiss() {
         isRunning = false

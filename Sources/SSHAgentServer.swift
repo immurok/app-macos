@@ -321,6 +321,17 @@ class SSHAgentServer {
         BLEManager.shared.onFingerprintAttemptFailed = { remaining in spinner?.showTryAgain(remaining: remaining) }
         BLEManager.shared.onFingerprintGateApproved = { spinner?.showSigning() }
 
+        // Ctrl+C on `ssh` / `git push`: the client dies and its agent socket
+        // closes, but we used to sit here for the full 50 s with the device's
+        // fingerprint gate open (LED blinking) and the spinner repainting over
+        // the shell prompt. Drop the gate as soon as the peer is gone.
+        let disconnectWatcher = ClientDisconnectWatcher.start(socket: clientSocket) {
+            NSLog("SSHAgentServer: client gone (Ctrl+C) — cancelling sign gate")
+            spinner?.abandon()
+            BLEManager.shared.cancelGateAndRelease()
+        }
+        defer { disconnectWatcher.stop() }
+
         // Sign via BLE (blocking)
         let semaphore = DispatchSemaphore(value: 0)
         var signature: Data?
@@ -332,6 +343,7 @@ class SSHAgentServer {
 
         // Wait up to 50 seconds (30s FP gate + 15s ECDSA/param-update + 5s margin)
         let result = semaphore.wait(timeout: .now() + 50.0)
+        disconnectWatcher.stop()
         BLEManager.shared.onFingerprintAttemptFailed = previousAttemptFailed
         BLEManager.shared.onFingerprintGateApproved = previousGateApproved
         BLEManager.shared.onFingerprintGateRequired = previousGateRequired

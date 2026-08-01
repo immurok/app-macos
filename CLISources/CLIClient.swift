@@ -41,8 +41,12 @@ struct CLIClient {
             )
         }
 
-        // Set recv timeout
-        var tv = timeval(tv_sec: 15, tv_usec: 0)
+        // Set recv timeout. Must exceed the App's own wait budget for a
+        // fingerprint-gated GET (30 s device gate + 5 s margin = 35 s),
+        // otherwise `imk get imk://api/...` gave up at 15 s with "Empty
+        // response from server" while the device was still waiting for a
+        // touch — and left the gate open behind it.
+        var tv = timeval(tv_sec: 40, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
         // Send

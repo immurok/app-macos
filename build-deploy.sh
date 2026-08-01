@@ -134,6 +134,12 @@ build_pam_pkg() {
 build_app() {
     log_info "Building app (v4.0 - Menu Bar) [universal arm64 + x86_64]..."
     cd "$SCRIPT_DIR"
+
+    # imk 的版本号是编译进去的常量，必须在 swift build 之前从 app 的
+    # CFBundleShortVersionString 同步过去。改了 Info.plist 版本号后，
+    # 生成的 CLISources/Version.swift 会出现在 git status 里，记得一起提交。
+    "$SCRIPT_DIR/packaging/sync-cli-version.sh" \
+        "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)"
     # swift build's `--arch arm64 --arch x86_64` flag needs the xcbuild backend
     # which only ships with full Xcode.app. To stay CLT-friendly we build each
     # arch separately and lipo-combine. Cross-compile from arm64 host to
