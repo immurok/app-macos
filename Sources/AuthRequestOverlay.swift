@@ -29,6 +29,14 @@ final class AuthRequestOverlay {
     /// "the user said no".
     var onReject: (() -> Void)?
 
+    /// UserDefaults key + default for the prompt sound. Empty string = silent.
+    /// Written by the picker in Settings → 权限 → imk CLI, mirroring
+    /// `immurok.unlockSound` / `immurok.lockSound`.
+    /// `nonisolated` so the settings UI can name them in a property
+    /// initializer without hopping to the main actor.
+    nonisolated static let soundDefaultsKey = "immurok.agentAuthSound"
+    nonisolated static let defaultSoundName = "Ping"
+
     private init() {}
 
     func show(
@@ -53,6 +61,19 @@ final class AuthRequestOverlay {
         resizePanelForCurrentState()
         positionPanelAtTopCenter()
         panel?.orderFrontRegardless()
+        playPromptSound()
+    }
+
+    /// Audible cue for the approval prompt. The panel deliberately never
+    /// steals focus, so a user looking at another window (or another Space)
+    /// can miss it entirely and the request just times out. A short beep is
+    /// what makes an agent request noticeable while the terminal is in the
+    /// background.
+    private func playPromptSound() {
+        let name = UserDefaults.standard.string(forKey: Self.soundDefaultsKey)
+            ?? Self.defaultSoundName
+        guard !name.isEmpty else { return }
+        NSSound(named: name)?.play()
     }
 
     func reportRetry(remaining: Int) {

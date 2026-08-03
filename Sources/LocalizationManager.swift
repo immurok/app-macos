@@ -61,59 +61,70 @@ class LocalizationManager: ObservableObject {
         loadStrings()
     }
 
-    /// Get localized string for key
+    /// Get localized string for key. `strings` already carries the full
+    /// English table as its base layer; the extra `enStrings` lookup is belt
+    /// and braces, and returning the key itself only happens for a key that
+    /// exists nowhere — a programming error, not a translation gap.
     func string(_ key: String) -> String {
-        return strings[key] ?? key
+        return strings[key] ?? Self.enStrings[key] ?? key
     }
 
-    /// Load strings for current language
+    /// Load strings for current language.
+    ///
+    /// Layered, lowest priority first — English is always the base, so a
+    /// missing or partial translation degrades to English instead of leaking
+    /// a raw key like `about.logs.clear` into the UI. Before this was
+    /// layered, a JSON language pack replaced the table wholesale and every
+    /// key it lacked rendered as its own identifier.
+    ///
+    ///   English built-in  →  same-language built-in  →  bundled JSON  →  user JSON
     private func loadStrings() {
-        // First try to load from external JSON file
-        if let externalStrings = loadExternalJSON() {
-            strings = externalStrings
-            NSLog("Loaded external localization for %@", currentLanguage)
-            return
+        var merged = Self.enStrings
+        var sources = ["en(base)"]
+
+        for (label, layer) in translationLayers() {
+            // Empty values must not shadow the English base — a blank entry
+            // in a hand-edited pack would otherwise render as blank UI.
+            merged.merge(layer.filter { !$0.value.isEmpty }) { _, new in new }
+            sources.append(label)
         }
 
-        // Fall back to built-in strings
-        switch currentLanguage {
-        case "zh-Hans":
-            strings = Self.zhHansStrings
-        case "zh-Hant":
-            strings = Self.zhHantStrings
-        case "en":
-            strings = Self.enStrings
-        default:
-            // For unsupported languages, try external JSON or fall back to English
-            strings = Self.enStrings
-        }
-        NSLog("Loaded built-in localization for %@", currentLanguage)
+        strings = merged
+        NSLog("Localization for %@: %@ (%d keys)",
+              currentLanguage, sources.joined(separator: " + "), merged.count)
     }
 
-    /// Load localization from external JSON file (user directory) or bundled JSON
-    private func loadExternalJSON() -> [String: String]? {
-        // First try user's custom localization directory
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let externalPath = homeDir
+    /// Translation layers for `currentLanguage`, lowest priority first.
+    /// The English base is applied by `loadStrings` and is not repeated here.
+    private func translationLayers() -> [(String, [String: String])] {
+        var layers: [(String, [String: String])] = []
+
+        switch currentLanguage {
+        case "zh-Hans": layers.append(("zh-Hans(built-in)", Self.zhHansStrings))
+        case "zh-Hant": layers.append(("zh-Hant(built-in)", Self.zhHantStrings))
+        case "en":      break   // already the base layer
+        default:        break   // JSON-only languages (ja/fr/es/pt/ru/…)
+        }
+
+        // Bundled pack in app Resources.
+        if let bundleURL = Bundle.main.url(forResource: currentLanguage,
+                                           withExtension: "json",
+                                           subdirectory: "Localization"),
+           let dict = loadJSON(from: bundleURL) {
+            layers.append(("bundled", dict))
+        }
+
+        // User override in ~/.immurok/localization — highest priority, and
+        // may be partial: anything it omits falls through to the layers below.
+        let userURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".immurok/localization")
             .appendingPathComponent("\(currentLanguage).json")
-
-        if FileManager.default.fileExists(atPath: externalPath.path) {
-            if let dict = loadJSON(from: externalPath) {
-                NSLog("Loaded user localization for %@", currentLanguage)
-                return dict
-            }
+        if FileManager.default.fileExists(atPath: userURL.path),
+           let dict = loadJSON(from: userURL) {
+            layers.append(("user", dict))
         }
 
-        // Then try bundled JSON in app Resources
-        if let bundlePath = Bundle.main.url(forResource: currentLanguage, withExtension: "json", subdirectory: "Localization") {
-            if let dict = loadJSON(from: bundlePath) {
-                NSLog("Loaded bundled localization for %@", currentLanguage)
-                return dict
-            }
-        }
-
-        return nil
+        return layers
     }
 
     /// Load and parse JSON file
@@ -470,6 +481,7 @@ class LocalizationManager: ObservableObject {
         "enroll.place.finger.new": "验证通过！请改用要录入的新手指触摸传感器",
         "permission.screen.unlock.sound.tip": "解锁提示音",
         "permission.screen.lock.sound.tip": "锁定提示音",
+        "permission.agent.auth.sound.tip": "AI agent 认证请求提示音（imk run --agent）",
         "about.logs.hidden": "诊断日志已隐藏，点击右下角文档图标显示",
         "about.logs.toggle": "显示/隐藏诊断日志",
         "about.logs.clear": "清除日志",
@@ -636,6 +648,25 @@ class LocalizationManager: ObservableObject {
 
         // Settings
         "settings.language": "语言",
+
+        // Strings lifted out of Swift code during the 2026-08 l10n pass
+        "ssh.import.error.fileread": "无法读取文件",
+        "ssh.import.error.format": "不是已知的 SSH 私钥格式",
+        "ssh.import.error.keytype": "不支持的密钥类型：%@。设备仅支持 ECDSA P-256 (ecdsa-sha2-nistp256)。",
+        "ssh.import.error.encrypted": "私钥处于加密保护中。请先运行 `ssh-keygen -p -N '' -f <文件>` 去除密码后再导入。",
+        "ssh.import.error.parse": "解析失败：%@",
+        "ssh.import.error.scalar": "私钥不是合法的 P-256 标量",
+        "ssh.import.panel.message": "选择 SSH ECDSA P-256 私钥文件（OpenSSH 或 PEM 格式）",
+        "ssh.import.name.prompt": "请输入名称（最长 16 字节）：",
+        "ssh.import.name.toolong": "名称超过 16 字节（当前 %d 字节）",
+        "ssh.hint.invalid.format": "OpenSSH 格式无效。请粘贴完整私钥（包含 BEGIN/END 行）",
+        "ssh.hint.encrypted": "不支持加密私钥。生成时请勿设置 passphrase，或用:\nssh-keygen -p -N '' -f ~/.ssh/id_ecdsa",
+        "ssh.hint.unsupported.type": "不支持 %@，仅支持 P-256。请用:\nssh-keygen -t ecdsa -b 256",
+        "ssh.hint.corrupted": "私钥数据损坏，无法解析",
+        "notify.accessibility.body": "请在系统设置中授予辅助功能权限",
+        "notify.accessibility.subtitle": "无法解锁屏幕",
+        "alert.uninstall.pkg.missing": "找不到卸载包 immurok_uninstall.pkg",
+        "alert.operation.timeout": "操作超时或已取消",
     ]
 
     /// Traditional Chinese (完整)
@@ -977,6 +1008,7 @@ class LocalizationManager: ObservableObject {
         "enroll.place.finger.new": "驗證通過！請改用要錄入的新手指觸摸感應器",
         "permission.screen.unlock.sound.tip": "解鎖提示音",
         "permission.screen.lock.sound.tip": "鎖定提示音",
+        "permission.agent.auth.sound.tip": "AI agent 認證請求提示音（imk run --agent）",
         "about.logs.hidden": "診斷日誌已隱藏，點擊右下角文件圖示顯示",
         "about.logs.toggle": "顯示/隱藏診斷日誌",
         "about.logs.clear": "清除日誌",
@@ -1143,6 +1175,25 @@ class LocalizationManager: ObservableObject {
 
         // Settings
         "settings.language": "語言",
+
+        // Strings lifted out of Swift code during the 2026-08 l10n pass
+        "ssh.import.error.fileread": "無法讀取檔案",
+        "ssh.import.error.format": "不是已知的 SSH 私鑰格式",
+        "ssh.import.error.keytype": "不支援的密鑰類型：%@。裝置僅支援 ECDSA P-256 (ecdsa-sha2-nistp256)。",
+        "ssh.import.error.encrypted": "私鑰處於加密保護中。請先執行 `ssh-keygen -p -N '' -f <檔案>` 移除密碼後再匯入。",
+        "ssh.import.error.parse": "解析失敗：%@",
+        "ssh.import.error.scalar": "私鑰不是合法的 P-256 純量",
+        "ssh.import.panel.message": "選擇 SSH ECDSA P-256 私鑰檔案（OpenSSH 或 PEM 格式）",
+        "ssh.import.name.prompt": "請輸入名稱（最長 16 位元組）：",
+        "ssh.import.name.toolong": "名稱超過 16 位元組（目前 %d 位元組）",
+        "ssh.hint.invalid.format": "OpenSSH 格式無效。請貼上完整私鑰（包含 BEGIN/END 行）",
+        "ssh.hint.encrypted": "不支援加密私鑰。產生時請勿設定 passphrase，或用:\nssh-keygen -p -N '' -f ~/.ssh/id_ecdsa",
+        "ssh.hint.unsupported.type": "不支援 %@，僅支援 P-256。請用:\nssh-keygen -t ecdsa -b 256",
+        "ssh.hint.corrupted": "私鑰資料損毀，無法解析",
+        "notify.accessibility.body": "請在系統設定中授予輔助使用權限",
+        "notify.accessibility.subtitle": "無法解鎖螢幕",
+        "alert.uninstall.pkg.missing": "找不到解除安裝套件 immurok_uninstall.pkg",
+        "alert.operation.timeout": "操作逾時或已取消",
     ]
 
     /// English (完整)
@@ -1484,6 +1535,7 @@ class LocalizationManager: ObservableObject {
         "enroll.place.finger.new": "Verified! Now touch the sensor with the NEW finger you want to enroll",
         "permission.screen.unlock.sound.tip": "Unlock sound",
         "permission.screen.lock.sound.tip": "Lock sound",
+        "permission.agent.auth.sound.tip": "AI agent auth request sound (imk run --agent)",
         "about.logs.hidden": "Diagnostic logs are hidden \u{2014} click the document icon at bottom right to show them",
         "about.logs.toggle": "Show/hide diagnostic logs",
         "about.logs.clear": "Clear logs",
@@ -1650,6 +1702,25 @@ class LocalizationManager: ObservableObject {
 
         // Settings
         "settings.language": "Language",
+
+        // Strings lifted out of Swift code during the 2026-08 l10n pass
+        "ssh.import.error.fileread": "Cannot read file",
+        "ssh.import.error.format": "Not a recognized SSH private key format",
+        "ssh.import.error.keytype": "Unsupported key type: %@. The device supports ECDSA P-256 (ecdsa-sha2-nistp256) only.",
+        "ssh.import.error.encrypted": "The private key is passphrase-protected. Run `ssh-keygen -p -N '' -f <file>` to strip the passphrase, then import again.",
+        "ssh.import.error.parse": "Parse failed: %@",
+        "ssh.import.error.scalar": "The private key is not a valid P-256 scalar",
+        "ssh.import.panel.message": "Choose an SSH ECDSA P-256 private key file (OpenSSH or PEM)",
+        "ssh.import.name.prompt": "Enter a name (16 bytes max):",
+        "ssh.import.name.toolong": "Name exceeds 16 bytes (currently %d bytes)",
+        "ssh.hint.invalid.format": "Invalid OpenSSH format. Paste the complete private key, including the BEGIN/END lines",
+        "ssh.hint.encrypted": "Encrypted private keys are not supported. Generate without a passphrase, or run:\nssh-keygen -p -N '' -f ~/.ssh/id_ecdsa",
+        "ssh.hint.unsupported.type": "%@ is not supported — P-256 only. Use:\nssh-keygen -t ecdsa -b 256",
+        "ssh.hint.corrupted": "The private key data is corrupted and cannot be parsed",
+        "notify.accessibility.body": "Grant Accessibility permission in System Settings",
+        "notify.accessibility.subtitle": "Cannot unlock screen",
+        "alert.uninstall.pkg.missing": "Uninstall package immurok_uninstall.pkg not found",
+        "alert.operation.timeout": "The operation timed out or was cancelled",
     ]
 }
 

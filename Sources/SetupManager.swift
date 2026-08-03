@@ -164,7 +164,7 @@ class SetupManager: ObservableObject {
     /// Complete uninstall: open uninstall pkg which handles all cleanup
     func uninstall(completion: @escaping (Bool, String?) -> Void) {
         guard let pkgPath = uninstallPkgPath else {
-            completion(false, "找不到卸载包 immurok_uninstall.pkg")
+            completion(false, "alert.uninstall.pkg.missing".localized)
             return
         }
 
@@ -188,7 +188,7 @@ class SetupManager: ObservableObject {
 
             if Date().timeIntervalSince(startTime) >= timeout {
                 refreshStatus()
-                completion(false, "操作超时或已取消")
+                completion(false, "alert.operation.timeout".localized)
                 return
             }
 

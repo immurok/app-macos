@@ -779,7 +779,7 @@ struct KeysTabView: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "选择 SSH ECDSA P-256 私钥文件（OpenSSH 或 PEM 格式）"
+        panel.message = "ssh.import.panel.message".localized
         // Allow any file — SSH keys often have no extension
         panel.allowedContentTypes = []
         panel.showsHiddenFiles = true  // ~/.ssh is hidden by default
@@ -801,7 +801,8 @@ struct KeysTabView: View {
         // Prompt for a name (default to filename without extension)
         let alert = NSAlert()
         alert.messageText = "ssh.import".localized
-        alert.informativeText = "fingerprint: \(imported.openSSHFingerprint)\n\n请输入名称（最长 16 字节）："
+        alert.informativeText = "fingerprint: \(imported.openSSHFingerprint)\n\n"
+            + "ssh.import.name.prompt".localized
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "alert.cancel".localized)
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
@@ -816,7 +817,8 @@ struct KeysTabView: View {
             let a = NSAlert()
             a.alertStyle = .warning
             a.messageText = "ssh.import.failed".localized
-            a.informativeText = "名称超过 16 字节（当前 \(name.utf8.count) 字节）"
+            a.informativeText = String(format: "ssh.import.name.toolong".localized,
+                                       name.utf8.count)
             a.addButton(withTitle: "OK")
             a.runModalOverSettings()
             return
@@ -1563,13 +1565,13 @@ struct AddKeyEntrySheet: View {
         case .success:
             return nil
         case .failure(.invalidFormat):
-            return "OpenSSH 格式无效。请粘贴完整私钥（包含 BEGIN/END 行）"
+            return "ssh.hint.invalid.format".localized
         case .failure(.encrypted):
-            return "不支持加密私钥。生成时请勿设置 passphrase，或用:\nssh-keygen -p -N '' -f ~/.ssh/id_ecdsa"
+            return "ssh.hint.encrypted".localized
         case .failure(.unsupportedType(let t)):
-            return "不支持 \(t)，仅支持 P-256。请用:\nssh-keygen -t ecdsa -b 256"
+            return String(format: "ssh.hint.unsupported.type".localized, t)
         case .failure(.corrupted):
-            return "私钥数据损坏，无法解析"
+            return "ssh.hint.corrupted".localized
         }
     }
 
@@ -1709,6 +1711,10 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
     // 长按锁屏确认音。Empty string = silent. Read by AppDelegate.handleLockRequest.
     @AppStorage("immurok.lockSound") private var lockSound = "Bottle"
+    // `imk run --agent` 弹出认证浮层时的提示音。Empty string = silent.
+    // Read by AuthRequestOverlay.show.
+    @AppStorage(AuthRequestOverlay.soundDefaultsKey)
+    private var agentAuthSound = AuthRequestOverlay.defaultSoundName
 
     // macOS built-in system sounds (/System/Library/Sounds/*.aiff)
     private static let systemSounds = [
@@ -1874,11 +1880,17 @@ struct PermissionsTabView: View {
                 )
             }
 
-            // imk CLI
+            // imk CLI — 声音选择器控制 `imk run --agent` 弹出认证浮层时的提示音
             GroupBox {
                 permissionRow(
                     icon: "command",
                     titleKey: "permission.cli",
+                    trailing: {
+                        if cliEnabled {
+                            soundPicker(selection: $agentAuthSound,
+                                        tipKey: "permission.agent.auth.sound.tip")
+                        }
+                    },
                     isOn: Binding(
                         get: { cliEnabled },
                         set: { toggleCLI($0) }

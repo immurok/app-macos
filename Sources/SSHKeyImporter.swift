@@ -19,16 +19,24 @@ enum SSHKeyImporter {
         case parseFailed(String)
         case invalidScalar                // privkey scalar fails P-256 sanity check
 
+        /// Surfaced verbatim in an NSAlert (SettingsTabViews.importSSHKey),
+        /// so every branch must be localized. The `parseFailed` payload is
+        /// deliberately left as English technical detail — it names file
+        /// format internals, not UI copy.
         var errorDescription: String? {
             switch self {
-            case .fileReadFailed: return "无法读取文件"
-            case .unrecognizedFormat: return "不是已知的 SSH 私钥格式"
+            case .fileReadFailed:
+                return "ssh.import.error.fileread".localized
+            case .unrecognizedFormat:
+                return "ssh.import.error.format".localized
             case .unsupportedKeyType(let t):
-                return "不支持的密钥类型：\(t)。设备仅支持 ECDSA P-256 (ecdsa-sha2-nistp256)。"
+                return String(format: "ssh.import.error.keytype".localized, t)
             case .encryptedKey:
-                return "私钥加密保护中。请先运行 `ssh-keygen -p -N '' -f <文件>` 去除密码后再导入。"
-            case .parseFailed(let detail): return "解析失败：\(detail)"
-            case .invalidScalar: return "私钥不是合法的 P-256 标量"
+                return "ssh.import.error.encrypted".localized
+            case .parseFailed(let detail):
+                return String(format: "ssh.import.error.parse".localized, detail)
+            case .invalidScalar:
+                return "ssh.import.error.scalar".localized
             }
         }
     }
@@ -104,13 +112,13 @@ enum SSHKeyImporter {
             .joined()
             .filter { !$0.isWhitespace }
         guard let blob = Data(base64Encoded: lines) else {
-            throw ImportError.parseFailed("base64 解码失败")
+            throw ImportError.parseFailed("base64 decode failed")
         }
 
         var p = ByteReader(blob)
         let magic = p.read(15)
         guard magic == Data("openssh-key-v1\0".utf8) else {
-            throw ImportError.parseFailed("magic 不是 openssh-key-v1")
+            throw ImportError.parseFailed("magic is not openssh-key-v1")
         }
         let cipher = try p.readSSHString()
         let kdf = try p.readSSHString()
@@ -156,7 +164,7 @@ enum SSHKeyImporter {
         // Q: 0x04 || x[32] || y[32] — 65 bytes uncompressed
         let q = try pr.readSSHString()
         guard q.count == 65, q.first == 0x04 else {
-            throw ImportError.parseFailed("Q 不是未压缩 65B 格式")
+            throw ImportError.parseFailed("Q is not in uncompressed 65-byte form")
         }
         let publicKeyRaw = q.subdata(in: 1..<65)  // 64B (x || y)
 
@@ -173,7 +181,7 @@ enum SSHKeyImporter {
             padded.append(scalarRaw)
             privateKeyRaw = padded
         } else {
-            throw ImportError.parseFailed("private scalar 长度异常 (\(scalarRaw.count)B)")
+            throw ImportError.parseFailed("unexpected private scalar length (\(scalarRaw.count)B)")
         }
 
         // Sanity-check by importing into CryptoKit. P256 rejects zero or
@@ -187,7 +195,7 @@ enum SSHKeyImporter {
         let derivedPub = priv.publicKey.rawRepresentation
         guard derivedPub == publicKeyRaw else {
             throw ImportError.parseFailed(
-                "私钥派生的公钥与文件中的公钥不一致（解析或字节序错误）"
+                "public key derived from the private key does not match the one in the file (parse or endianness bug)"
             )
         }
 
@@ -200,7 +208,7 @@ enum SSHKeyImporter {
     private static func validatePair(privateKeyRaw: Data, publicKeyRaw: Data) throws {
         guard let priv = try? P256.Signing.PrivateKey(rawRepresentation: privateKeyRaw),
               priv.publicKey.rawRepresentation == publicKeyRaw else {
-            throw ImportError.parseFailed("私钥与公钥不配对")
+            throw ImportError.parseFailed("private key does not match its public key")
         }
     }
 }

@@ -85,7 +85,7 @@ struct AuthInjector {
     @discardableResult
     func submitOnePassword(field: AXUIElement, container: AXUIElement) -> Bool {
         guard let fieldFrame = frame(of: field) else {
-            logLine("submitOnePassword: 无 field frame，退回通用 submit")
+            logLine("submitOnePassword: no field frame, falling back to generic submit")
             return submit(container: container, field: field)
         }
         // 排除窗口控件与取消键——submitOnePassword 会真点这个按钮，误点破坏性控件后果严重。
@@ -108,11 +108,11 @@ struct AuthInjector {
             // 网页按钮的 AXPress 在 Chromium 上假成功空操作（实测），改用**合成鼠标点击**箭头中心：
             // 鼠标事件不受 Secure Event Input 限制，是真正能触发网页 <button> 的点击。
             let center = CGPoint(x: arrow.1.midX, y: arrow.1.midY)
-            logLine("submitOnePassword → click 解锁箭头 center=\(center) frame=\(arrow.1)")
+            logLine("submitOnePassword -> click unlock arrow center=\(center) frame=\(arrow.1)")
             clickMouse(at: center)
             return true
         }
-        logLine("submitOnePassword: 未按几何定位到箭头，退回通用 submit")
+        logLine("submitOnePassword: arrow not located geometrically, falling back to generic submit")
         return submit(container: container, field: field)
     }
 
@@ -126,7 +126,7 @@ struct AuthInjector {
     @discardableResult
     func submitBitwarden(field: AXUIElement, container: AXUIElement) -> Bool {
         guard let ff = frame(of: field) else {
-            logLine("submitBitwarden: 无 field frame，退回通用 submit")
+            logLine("submitBitwarden: no field frame, falling back to generic submit")
             return submit(container: container, field: field)
         }
         let excludedSubroles: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXFullScreenButton", "AXZoomButton", "AXCancelButton"]
@@ -149,7 +149,7 @@ struct AuthInjector {
             clickMouse(at: center)
             return true
         }
-        logLine("submitBitwarden: 未按几何定位到解锁按钮，退回通用 submit")
+        logLine("submitBitwarden: unlock button not located geometrically, falling back to generic submit")
         return submit(container: container, field: field)
     }
 
@@ -213,7 +213,7 @@ struct AuthInjector {
 
     private func logLine(_ s: String) {
         NSLog("AuthInjector: %@", s)
-        Task { @MainActor in LogManager.shared.log("[注入] " + s) }
+        Task { @MainActor in LogManager.shared.log("[inject] " + s) }
     }
 
     /// 合成 Return 键（虚拟键 0x24）。secure field 上可能被 Secure Event Input 拦，仅作最后兜底。
@@ -238,7 +238,7 @@ struct AuthInjector {
     /// - Parameter confirmSheet: 检测器传入的初始确认页（此实现改为按进程重新扫描，保留参数仅为兼容）。
     func driveAppStore(confirmSheet: AXUIElement, secret: String, completion: @escaping (Bool) -> Void) {
         guard let app = appStoreApp() else {
-            logLine("driveAppStore: App Store 进程未找到")
+            logLine("driveAppStore: App Store process not found")
             completion(false)
             return
         }

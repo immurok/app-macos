@@ -316,7 +316,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let enabled = UserDefaults.standard.bool(forKey: flagKey)
                 if enabled, let pw = secret {
-                    LogManager.shared.log("[注入] 密码框（\(bundleID)）kind=\(kind)")
+                    LogManager.shared.log("[inject] secure field (\(bundleID)) kind=\(kind)")
                     lastAuthFlowAt = Date()
                     let injector = AuthInjector()
                     injector.focus(field)
@@ -337,18 +337,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     return   // 已处理，不再走原 authorization 逻辑
                 }
-                LogManager.shared.log("[注入检测] secureField kind=\(kind) bundle=\(bundleID) enabled=\(enabled) 未注入（flag off / 无存储密码），fall through")
+                LogManager.shared.log("[inject/detect] secureField kind=\(kind) bundle=\(bundleID) enabled=\(enabled) not injected (flag off / no stored password), fall through")
             case .appStoreConfirmSheet(let sheet):
                 if UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled"),
                    let pw = ImmurokSecurity.shared.loadAppleIDPassword() {
-                    LogManager.shared.log("[注入] App Store 向导驱动")
+                    LogManager.shared.log("[inject] driving App Store wizard")
                     lastAuthFlowAt = Date()
                     AuthInjector().driveAppStore(confirmSheet: sheet, secret: pw) { ok in
-                        LogManager.shared.log("[注入] App Store 流程结果 ok=\(ok)")
+                        LogManager.shared.log("[inject] App Store flow result ok=\(ok)")
                     }
                     return
                 }
-                LogManager.shared.log("[注入检测] App Store 确认页（阶段1 仅记录）")
+                LogManager.shared.log("[inject/detect] App Store confirm page (phase 1: log only)")
             case .none:
                 // 诊断：注入未触发时记录前台 App + 焦点元素子角色，便于 on-device 定位
                 //（未命中白名单/签名、焦点非 AXSecureTextField、或找不到容器都会落到这里）。
@@ -362,7 +362,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     AXUIElementCopyAttributeValue(f as! AXUIElement, kAXSubroleAttribute as CFString, &sr)
                     focusedSubrole = (sr as? String) ?? "nil"
                 }
-                LogManager.shared.log("[注入检测] 未匹配 front=\(frontBundle) focusedSubrole=\(focusedSubrole)")
+                LogManager.shared.log("[inject/detect] no match front=\(frontBundle) focusedSubrole=\(focusedSubrole)")
             }
 
             let isAuthorizationEnabled = SetupManager.shared.isAuthorizationEnabled
@@ -928,10 +928,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Accessibility Permission
 
     private func sendPermissionNotification() {
-        // Send notification about missing permission
-        let script = """
-        display notification "请在系统设置中授予辅助功能权限" with title "immurok" subtitle "无法解锁屏幕"
-        """
+        // Send notification about missing permission. The strings are
+        // localized, so escape them for the AppleScript literal — a
+        // translation containing a quote would otherwise break the script.
+        func escapeForAppleScript(_ s: String) -> String {
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        let body = escapeForAppleScript("notify.accessibility.body".localized)
+        let subtitle = escapeForAppleScript("notify.accessibility.subtitle".localized)
+        let script = "display notification \"\(body)\" "
+            + "with title \"immurok\" subtitle \"\(subtitle)\""
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")

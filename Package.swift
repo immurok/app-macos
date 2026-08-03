@@ -31,6 +31,11 @@ let package = Package(
             name: "AuthInjectionKitTests",
             dependencies: ["AuthInjectionKit"],
             path: "Tests/AuthInjectionKitTests"
+        ),
+        .testTarget(
+            name: "LocalizationTests",
+            dependencies: ["immurokApp"],
+            path: "Tests/LocalizationTests"
         )
     ]
 )
