@@ -52,6 +52,22 @@ struct AuthContextDetector {
             return .secureField(kind: .bitwardenPassword, field: bw.field, sheet: bw.container, bundleID: bw.browserBundle)
         }
 
+        // 1.7) Passwords（系统密码 App）：焦点不在密码框时（刚打开、焦点落在列表 /
+        //      搜索框等），Path 1 的 systemWideFocused 命不中，就出现"焦点已经在
+        //      Passwords App 上却注入不了"。改用进程定向下行扫描 com.apple.Passwords
+        //      的 AX 树找 secure field（不依赖焦点），与 1P Path 1.5 同一套路。
+        //      安全边界：仅前台 Passwords 才扫（后台窗口不注入）；白名单 + 代码签名
+        //      校验（applePlatform）防冒充；硬化同 1P —— soleSecureFieldWithWindow
+        //      恰好一个 secure field 才触发，排除改密码等多字段表单。
+        if let pw = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Passwords").first,
+           pw.isActive,
+           let kind = InjectionWhitelist.secretKind(forPID: pw.processIdentifier, bundleID: "com.apple.Passwords") {
+            let appEl = AXUIElementCreateApplication(pw.processIdentifier)
+            if let hit = soleSecureFieldWithWindow(under: appEl) {
+                return .secureField(kind: kind, field: hit.field, sheet: hit.window, bundleID: "com.apple.Passwords")
+            }
+        }
+
         // 2) App Store 特有：还在 Install/Cancel 确认页（尚无焦点密码框）——按前台应用判定。
         guard let frontApp = NSWorkspace.shared.frontmostApplication,
               let bundleID = frontApp.bundleIdentifier,
