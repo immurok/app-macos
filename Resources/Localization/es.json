@@ -493,5 +493,9 @@
   "dualhost.card.thismac": "Este Mac",
   "dualhost.card.bound": "Vinculado",
   "dualhost.card.empty": "Vacío",
-  "dualhost.card.otherhint": "Para ocupar esta ranura, abre immurok en ese ordenador y pulsa Emparejar."
+  "dualhost.card.otherhint": "Para ocupar esta ranura, abre immurok en ese ordenador y pulsa Emparejar.",
+  "unpair.failed": "Error al desvincular",
+  "unpair.failed.wrong_slot": "El dispositivo no se desvinculó: su ranura activa no es la de este Mac (puede estar en el otro host o en una ranura vacía). Cámbialo de nuevo a este Mac en el dispositivo (pulsa la huella de cambio) y vuelve a desvincular. Los datos de emparejamiento de este Mac no se modificaron.",
+  "unpair.done.forget.hint": "El dispositivo cambió a una nueva identidad Bluetooth, así que el host antiguo no se reconectará automáticamente. Si la lista de Bluetooth de este Mac todavía muestra «immurok IK-1», ve a Ajustes del Sistema → Bluetooth, haz clic en la ℹ️ junto a él y elige «Olvidar este dispositivo» para borrar la entrada obsoleta (no afecta el uso normal).",
+  "dualhost.clear.press.fp": "Toca una huella registrada en el dispositivo para confirmar la desvinculación del otro host."
 }

@@ -493,5 +493,9 @@
   "dualhost.card.thismac": "Ce Mac",
   "dualhost.card.bound": "Associé",
   "dualhost.card.empty": "Vide",
-  "dualhost.card.otherhint": "Pour occuper cet emplacement, ouvrez immurok sur cet ordinateur et cliquez sur Associer."
+  "dualhost.card.otherhint": "Pour occuper cet emplacement, ouvrez immurok sur cet ordinateur et cliquez sur Associer.",
+  "unpair.failed": "Échec de la dissociation",
+  "unpair.failed.wrong_slot": "L'appareil n'a pas été dissocié : son emplacement actif n'est pas celui de ce Mac (il est peut-être sur l'autre hôte ou sur un emplacement vide). Rebasculez-le sur ce Mac depuis l'appareil (appuyez sur l'empreinte de bascule), puis dissociez à nouveau. Les données d'appairage de ce Mac n'ont pas été modifiées.",
+  "unpair.done.forget.hint": "L'appareil est passé à une nouvelle identité Bluetooth ; l'ancien hôte ne s'y reconnectera donc plus automatiquement. Si la liste Bluetooth de ce Mac affiche encore « immurok IK-1 », allez dans Réglages Système → Bluetooth, cliquez sur le ℹ️ à côté et choisissez « Oublier cet appareil » pour supprimer l'entrée obsolète (sans effet sur l'usage normal).",
+  "dualhost.clear.press.fp": "Touchez une empreinte enregistrée sur l'appareil pour confirmer la dissociation de l'autre hôte."
 }

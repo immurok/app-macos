@@ -493,5 +493,9 @@
   "dualhost.card.thismac": "このMac",
   "dualhost.card.bound": "紐付け済み",
   "dualhost.card.empty": "未紐付け",
-  "dualhost.card.otherhint": "このスロットを使うには、そのコンピュータで immurok を開いて「ペアリング」を押してください。"
+  "dualhost.card.otherhint": "このスロットを使うには、そのコンピュータで immurok を開いて「ペアリング」を押してください。",
+  "unpair.failed": "ペア解除に失敗しました",
+  "unpair.failed.wrong_slot": "デバイスはペア解除されませんでした——現在のスロットがこの Mac のものではありません（別のホスト側、または空きスロットに留まっている可能性があります）。デバイスで切り替え指紋を押してこの Mac に戻してから、もう一度ペア解除してください。この Mac のペアリングデータは変更されていません。",
+  "unpair.done.forget.hint": "デバイスは新しい Bluetooth ID に切り替わったため、古いホストが自動的に再接続することはありません。この Mac の Bluetooth リストにまだ「immurok IK-1」が残っている場合は、システム設定 → Bluetooth を開き、右側の ℹ️ をクリックして「このデバイスの登録を解除」を選ぶと古い記録を消せます（通常の使用には影響しません）。",
+  "dualhost.clear.press.fp": "デバイスで登録済みの指紋に触れて、もう一方のホストの解除を確認してください。"
 }
