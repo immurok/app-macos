@@ -189,7 +189,10 @@ chmod 644 "$WORK/payload/usr/local/lib/pam/pam_immurok.so"
 # Disable bundle relocation (else Installer may target an existing copy
 # elsewhere instead of /Applications).
 pkgbuild --analyze --root "$WORK/payload" "$WORK/component.plist"
-/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$WORK/component.plist"
+# macOS 26 的 pkgbuild --analyze 不再默认写出 BundleIsRelocatable，只 Set 会
+# 因为「键不存在」失败并被 set -e 打断；先 Set 不成再 Add。
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$WORK/component.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :0:BundleIsRelocatable bool false" "$WORK/component.plist"
 
 INST_SCRIPTS="$WORK/scripts"
 mkdir -p "$INST_SCRIPTS"

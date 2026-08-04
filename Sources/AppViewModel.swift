@@ -33,6 +33,17 @@ class AppViewModel: ObservableObject {
     @Published var isPairing = false  // ECDH pairing in progress
     @Published var pairingPrompt: String? = nil  // UI prompt during pair (e.g. "press device button")
 
+    /* 配对引导框的状态。两步操作（按指纹 → 按设备按钮）光靠一行小字提示，
+     * 用户读不出来那是两个动作。每一步的推进都由设备的通知驱动，不猜。 */
+    enum PairingGuideStep: Int {
+        case waitingFingerprint = 1   // 登记第二台主机才有这一步
+        case waitingButton      = 2
+        case computing          = 3   // ECDH，约 4 秒
+    }
+    @Published var pairingStep: PairingGuideStep = .waitingButton
+    /// 本次配对是否需要指纹那一步（登记第二台主机 = true，首次配对 = false）
+    @Published var pairingNeedsFingerprint = false
+
     // Firmware version
     @Published var firmwareVersion: String?
 
@@ -211,6 +222,8 @@ class AppViewModel: ObservableObject {
 
                 // Invalidate FingerprintView cache on reconnect
                 FingerprintViewModel.invalidateCache()
+                // 通知指纹列表刷新（重连后重新拉取,否则停在断开前的旧列表）
+                NotificationCenter.default.post(name: .deviceConnectionChanged, object: nil)
 
                 // Serialize BLE commands to avoid responseCallback race:
                 // GET_STATUS first, then SSH key sync
@@ -264,6 +277,8 @@ class AppViewModel: ObservableObject {
 
                 FingerprintViewModel.cachedBitmap = 0
                 FingerprintViewModel.isCacheValid = false
+                // 通知指纹列表刷新（断开后清空,不再停在旧列表）
+                NotificationCenter.default.post(name: .deviceConnectionChanged, object: nil)
             }
         }
 
@@ -483,33 +498,64 @@ class AppViewModel: ObservableObject {
             clearLocalPairing()
         }
 
-        // Pre-check device fingerprint bitmap. Firmware refuses PAIR_INIT
-        // when bitmap != 0; we mirror the check here for an immediate UI
-        // message rather than waiting for the device round-trip.
-        bleManager.getDeviceStatus { [weak self] bitmap, _, _, _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                if bitmap != 0 {
-                    self.showAlert(title: "alert.error".localized, message: "pairing.needs.reset".localized)
-                    return
+        /* 先问槽位：本槽是空的、别的槽有货 == 本机是第二台主机。
+         *
+         * 下面那道指纹位图预检是固件规则的本地镜像，为的是不用等一次往返
+         * 就能给出提示。但固件那条规则有登记第二台主机的例外（指纹 + 按键
+         * 两道门代替 factory reset），镜像必须跟着放行 —— 否则 app 自己就把
+         * 流程堵死了，PAIR_INIT 根本发不出去，用户只看到「请先恢复出厂」。
+         * 2026-08-03 实机踩到：设备日志里连一条 PAIR_INIT 都没有。
+         *
+         * 顺序不能反：槽位应答回来之前不能发 PAIR_INIT，否则后面的按键提示
+         * 也会用错分支。 */
+        bleManager.getSlotStatus { [weak self] slotBitmap, activeSlot in
+            let mine = UInt8(1) << max(Int(activeSlot) - 1, 0)
+            let asSecondHost = slotBitmap != 0 && (slotBitmap & mine) == 0
+
+            // Pre-check device fingerprint bitmap. Firmware refuses PAIR_INIT
+            // when bitmap != 0; we mirror the check here for an immediate UI
+            // message rather than waiting for the device round-trip.
+            self?.bleManager.getDeviceStatus { [weak self] bitmap, _, _, _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if bitmap != 0 && !asSecondHost {
+                        self.showAlert(title: "alert.error".localized,
+                                       message: "pairing.needs.reset".localized)
+                        return
+                    }
+                    self.runPairing(asSecondHost: asSecondHost)
                 }
-                self.runPairing()
             }
         }
     }
 
-    private func runPairing() {
+    /* asSecondHost：设备已被另一台电脑占了槽，本机走「登记第二台主机」
+     * 分支 —— 设备会先要指纹、再要按键。两种情况的 WAIT_BUTTON 应答完全
+     * 一样，提示文案只能靠调用方查过的槽位来选；选错了用户会一直按按钮，
+     * 直到 30s 超时。 */
+    private func runPairing(asSecondHost: Bool) {
         isPairing = true
         pairingPrompt = "pairing.in.progress".localized
+        pairingNeedsFingerprint = asSecondHost
+        pairingStep = asSecondHost ? .waitingFingerprint : .waitingButton
 
         // Wire up button-press status callbacks for UI feedback.
         bleManager.onPairWaitButton = { [weak self] in
             Task { @MainActor in
+                self?.pairingPrompt = asSecondHost
+                    ? "pairing.press.fp.button".localized
+                    : "pairing.press.button".localized
+            }
+        }
+        bleManager.onPairFingerprintConfirmed = { [weak self] in
+            Task { @MainActor in
+                self?.pairingStep = .waitingButton
                 self?.pairingPrompt = "pairing.press.button".localized
             }
         }
         bleManager.onPairButtonConfirmed = { [weak self] in
             Task { @MainActor in
+                self?.pairingStep = .computing
                 self?.pairingPrompt = "pairing.in.progress".localized
             }
         }
@@ -520,6 +566,7 @@ class AppViewModel: ObservableObject {
                 self.isPairing = false
                 self.pairingPrompt = nil
                 self.bleManager.onPairWaitButton = nil
+                self.bleManager.onPairFingerprintConfirmed = nil
                 self.bleManager.onPairButtonConfirmed = nil
 
                 if failure == nil {
@@ -528,20 +575,24 @@ class AppViewModel: ObservableObject {
                     self.isDeviceVerified = self.bleManager.isDeviceVerified
                     self.isPasswordConfigured = false
                     self.hasLocalPairing = true
+                    // 配对成功后刷新设备状态(槽 bitmap/paired)+ 指纹列表 ——
+                    // 否则页面还停在配对前的空指纹列表 / 旧槽状态。
+                    self.refreshDeviceStatus()
+                    self.refreshFingerprintCount()
                     self.showAlert(title: "pairing.success".localized, message: "pairing.success.set.password".localized)
                     self.configurePassword()
                     return
                 }
 
-                let messageKey: String
+                let message: String
                 switch failure! {
-                case .needsReset:       messageKey = "pairing.needs.reset"
-                case .buttonTimeout:    messageKey = "pairing.timeout"
-                case .buttonCancelled:  messageKey = "pairing.cancelled"
-                case .linkParams:       messageKey = "pairing.link.params"
-                case .generic:          messageKey = "pairing.failed"
+                case .needsReset:       message = "pairing.needs.reset".localized
+                case .buttonTimeout:    message = "pairing.timeout".localized
+                case .buttonCancelled:  message = "pairing.cancelled".localized
+                case .linkParams:       message = "pairing.link.params".localized
+                case .generic:          message = "pairing.failed".localized
                 }
-                self.showAlert(title: "alert.error".localized, message: messageKey.localized)
+                self.showAlert(title: "alert.error".localized, message: message)
             }
         }
     }
@@ -556,9 +607,25 @@ class AppViewModel: ObservableObject {
     // MARK: - Unpair
 
     func unpair() {
+        /* 清掉最后一个被占用的槽是个单向门：设备上没有任何主机、指纹却还在，
+         * 此时 PAIR_INIT 的守卫（有指纹 && 没有别的槽有货 → NEEDS_RESET）会
+         * 要求 factory reset，连同全部 SSH 私钥一起毁掉。必须在确认框里说清楚
+         * （spec §8.3）。设备没连上时按最坏情况提示。 */
+        bleManager.getSlotStatus { [weak self] bitmap, active in
+            let mine = UInt8(1) << max(Int(active) - 1, 0)
+            let isLastOccupiedSlot = (bitmap & ~mine) == 0
+            Task { @MainActor in
+                self?.confirmUnpair(isLastSlot: isLastOccupiedSlot)
+            }
+        }
+    }
+
+    private func confirmUnpair(isLastSlot: Bool) {
         let alert = NSAlert()
         alert.messageText = "unpair.title".localized
-        alert.informativeText = "unpair.message".localized
+        alert.informativeText = isLastSlot && fingerprintCount > 0
+            ? "unpair.message".localized + "\n\n" + "unpair.message.lastslot".localized
+            : "unpair.message".localized
         alert.alertStyle = .warning
         alert.addButton(withTitle: "alert.cancel".localized)
         alert.addButton(withTitle: "unpair.confirm".localized)
@@ -570,8 +637,43 @@ class AppViewModel: ObservableObject {
     }
 
     private func doUnpair() {
-        clearLocalPairing()
-        showAlert(title: "unpair.done".localized, message: "unpair.done.message".localized)
+        /* 必须先让设备清掉这个槽，再清本地。
+         *
+         * 曾经这里只有 clearLocalPairing() —— 设备那边槽位照旧占着，于是
+         * 重新配对走的是「重新配对一个已占用的槽」，被守卫要求先 factory
+         * reset，用户被卡死在「解绑了却配不上」。SLOT_CLEAR 命令和
+         * clearOwnSlot() 当时都已经写好，只是没人调用。2026-08-03 实机踩到。
+         *
+         * 设备侧成功后会重启，所以本地清理不等它的连接恢复。设备没连上时
+         * 仍允许只清本地 —— 否则设备丢了就永远解绑不了。 */
+        guard bleManager.deviceState.isConnected else {
+            clearLocalPairing()
+            showAlert(title: "unpair.done".localized,
+                      message: "unpair.done.local.only".localized)
+            return
+        }
+        bleManager.clearOwnSlot { [weak self] result in
+            Task { @MainActor in
+                guard let self = self else { return }
+                switch result {
+                case .rejected:
+                    /* 设备连着却明确回 NOT_PAIRED —— active 槽不是本机这一个
+                     * （停在另一台主机或空槽），SLOT_CLEAR 被未配对白名单按
+                     * active_slot_paired() 挡回。**不能**清本地假装成功：本机
+                     * 配对还在、设备那边也没动。提示用户先切回本机。见
+                     * keng_unpair_empty_slot_false_success。 */
+                    self.showAlert(title: "unpair.failed".localized,
+                                   message: "unpair.failed.wrong_slot".localized)
+                case .cleared:
+                    /* 设备清掉本槽并重启换地址（断开/无响应也算成功，设备就是
+                     * 要重启）。清本地 + 引导忽略旧设备。 */
+                    self.clearLocalPairing()
+                    self.showAlert(title: "unpair.done".localized,
+                                   message: "unpair.done.message".localized + "\n\n"
+                                            + "unpair.done.forget.hint".localized)
+                }
+            }
+        }
     }
 
     /// Clear all locally-stored pairing data. UI-less; callers handle messaging.
@@ -584,6 +686,9 @@ class AppViewModel: ObservableObject {
         ImmurokSecurity.shared.clearPassword()
         FingerprintViewModel.cachedBitmap = 0
         FingerprintViewModel.isCacheValid = true
+        // 指纹名字存在 UserDefaults、不随配对数据走，必须显式清除，
+        // 否则重新绑定后旧名字还在。
+        FingerprintViewModel.clearAllNames()
         NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
     }
 

@@ -51,10 +51,14 @@ enum ImmurokCommand: UInt8 {
     case pairConfirm = 0x31
     case pairStatus = 0x32
     case authRequest = 0x33
-    // Notification cmd from device: [0x34, 0x00=timeout, 0x01=confirmed, 0x02=cancel]
+    // Notification cmd from device:
+    //   [0x34, 0x00=timeout, 0x01=按键已按下, 0x02=长按取消, 0x03=指纹已通过]
     case pairButton = 0x34
     case gateCancel = 0x37
     case challenge = 0x38
+    // 双主机槽位（spec 2026-08-03-dual-host-design.md）
+    case slotStatus = 0x39
+    case slotClear = 0x3C
     case keyCount = 0x60
     case keyRead = 0x61
     case keyWrite = 0x62
@@ -110,6 +114,7 @@ enum PairFailureReason: Error {
     case buttonTimeout    // 30s elapsed without button press
     case buttonCancelled  // User long-pressed to cancel
     case linkParams       // Device refused ECDH: BLE connection params inadequate (0xE1)
+    // 双主机槽 2 登记专有
 }
 
 // Enrollment status notifications (from device)
@@ -173,6 +178,9 @@ class BLEManager: NSObject {
     var onLockRequest: (() -> Void)?
     /// PAIR_INIT accepted: user must press the device button within 30s to confirm.
     var onPairWaitButton: (() -> Void)?
+    /// 登记第二台主机时，设备确认指纹已通过、开始等按键。引导框据此点亮
+    /// 第一步的勾 —— 没有这条通知就只能猜，猜出来的勾是假的。
+    var onPairFingerprintConfirmed: (() -> Void)?
     /// User pressed the button — ECDH key exchange is now running on the device.
     var onPairButtonConfirmed: (() -> Void)?
     var onPairingCompleted: ((Bool) -> Void)?
@@ -657,6 +665,10 @@ class BLEManager: NSObject {
     /// Start ECDH pairing with device. The device requires the user to
     /// physically press its button to confirm; UI should listen to
     /// onPairWaitButton / onPairButtonConfirmed for status updates.
+    /// 槽 2 登记用的 PIN。非 nil 时，PAIR_CONFIRM 之后追加 SLOT_PAIR + proof，
+    /// 且只有设备那边 proof + 指纹都过了才算配对成功 —— 本机的 shared_key
+    /// 也要等到那时才写进 Keychain，否则会出现「主机 2 以为配好了、设备
+    /// 其实没写槽 2」的状态分裂。
     func startPairing(completion: @escaping (PairFailureReason?) -> Void) {
         startPairingAttempt(retries: 3, completion: completion)
     }
@@ -805,6 +817,70 @@ class BLEManager: NSObject {
 
     /// Get fingerprint bitmap (which slots have fingerprints)
     /// Returns bitmap where bit N = 1 means slot N has a fingerprint
+    // MARK: - 双主机槽位
+
+    /// 槽位占用与当前活跃槽。响应 `[0x39][OK][bitmap][active]`。
+    /// bit0 = 槽 1、bit1 = 槽 2。未配对时也可读 —— 新主机据此得知自己是第二台。
+    func getSlotStatus(completion: @escaping (_ bitmap: UInt8, _ active: UInt8) -> Void) {
+        guard deviceState.isConnected else { completion(0, 0); return }
+        sendCommand(.slotStatus) { response in
+            guard let r = response, r.count >= 4, r[1] == 0x00 else {
+                completion(0, 0)
+                return
+            }
+            completion(r[2], r[3])
+        }
+    }
+
+    /// own 解绑结果。设备清掉本槽后**立即重启换地址**,所以「断开 / 无响应 /
+    /// 超时」恰恰是成功信号(设备重启了),不能当失败。**只有明确收到
+    /// NOT_PAIRED(0xF2)**——设备连着却因 active 槽不是本机把 SLOT_CLEAR 挡回
+    /// ——才是真正的拒绝。2026-08-04 修:原来把重启断开当成 ok=false,误报
+    /// "unpair failed"。
+    enum OwnSlotClearResult {
+        case cleared    // 3c 00,或断开/无响应(设备成功重启)
+        case rejected   // 3c f2:active 槽不是本机,需先切回本机
+    }
+
+    /// 清除本主机所在的槽。设备成功后会重启（本槽密钥已失效）。
+    func clearOwnSlot(completion: @escaping (OwnSlotClearResult) -> Void) {
+        guard deviceState.isConnected else { completion(.cleared); return }
+        sendCommand(.slotClear, timeout: 10.0) { response in
+            if let r = response, r.count >= 2, r[1] == 0xF2 {
+                completion(.rejected)   // 明确拒绝
+            } else {
+                completion(.cleared)    // 3c 00 / 断开 / 超时 = 设备已重启,成功
+            }
+        }
+    }
+
+    /// 清除**另一个**槽（解绑不在身边的那台主机）。
+    ///
+    /// 设备先回 1 字节 `0x11`(WAIT_FP) 再等指纹，指纹过后才回最终状态 ——
+    /// 与 ENROLL_START / DELETE_FP 同一套门协议。必须走 pendingGateCompletion，
+    /// 否则那条 1 字节的 WAIT_FP 会被当成畸形应答，用户先看到一个错误弹窗、
+    /// 之后才被要求按指纹（2026-08-04 实机反馈）。
+    ///
+    /// 成功后设备不重启 —— 本槽密钥完好。
+    func clearSlot(_ slot: UInt8, completion: @escaping (Bool) -> Void) {
+        guard deviceState.isConnected else { completion(false); return }
+        sendCommand(.slotClear, payload: [slot]) { [weak self] response in
+            guard let r = response, r.count >= 1 else { completion(false); return }
+            if r[0] == ImmurokStatus.waitFingerprint.rawValue {
+                NSLog("BLEManager: SLOT_CLEAR waiting for FP gate")
+                self?.pendingGateCompletion = completion
+                self?.startGateTimeout()
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: BLEManager.fingerprintGateRequiredNotification, object: nil)
+                }
+                return
+            }
+            // 无门路径（清自己的槽）应答是 [0x3C][status]。
+            completion(r.count >= 2 ? r[1] == 0x00 : r[0] == 0x00)
+        }
+    }
+
     func getFingerprintBitmap(completion: @escaping (UInt8) -> Void) {
         guard deviceState.isConnected else {
             completion(0)
@@ -2087,11 +2163,16 @@ extension BLEManager: CBPeripheralDelegate {
         }
 
         // PAIR button event notification: [0x34, status]
-        //   0x00 = 30s timeout, 0x01 = pressed (ECDH starting), 0x02 = cancelled
+        //   0x00 = 30s timeout, 0x01 = pressed (ECDH starting), 0x02 = cancelled,
+        //   0x03 = 指纹已通过，改等按键（仅登记第二台主机时出现）
         if data[0] == ImmurokCommand.pairButton.rawValue && data.count == 2 {
             let status = data[1]
             NSLog("BLEManager: Pair button event: 0x%02x", status)
             switch status {
+            case 0x03:
+                DispatchQueue.main.async { [weak self] in
+                    self?.onPairFingerprintConfirmed?()
+                }
             case 0x01:
                 DispatchQueue.main.async { [weak self] in
                     self?.onPairButtonConfirmed?()
@@ -2231,6 +2312,15 @@ extension BLEManager: CBPeripheralDelegate {
             } else {
                 let success = data[0] == ImmurokStatus.ok.rawValue
                 NSLog("BLEManager: FP gate result: 0x%02x (%@)", data[0], success ? "OK" : "failed")
+                if data[0] == 0xE1 {
+                    // 设备长 ECC 门在 5s 内没谈到足够的 supervision timeout,拒绝签名
+                    // (多见于刚重连时 macOS 压低 timeout 的 override 窗口)。SSH agent
+                    // 协议只能回失败码,ssh 客户端固定显示 "agent refused operation",
+                    // 无法追加文字;这里补记可诊断的原因与重试建议到 immurok.log。
+                    Task { @MainActor in
+                        LogManager.shared.log("签名被拒：BLE 链路参数不足(设备 0xE1)——多为刚重连时 macOS 压低了 supervision timeout。约 30 秒后重试即可 (agent refused operation, please try again ~30s later)")
+                    }
+                }
                 pendingGateCompletion = nil
                 releaseGateHold { gateCompletion(success) }
                 return

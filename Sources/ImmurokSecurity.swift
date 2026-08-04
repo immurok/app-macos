@@ -158,6 +158,8 @@ class ImmurokSecurity {
         loadFromKeychain(service: keychainServiceSharedKey) != nil
     }
 
+    // MARK: - 双主机登记
+
     func clearPairingData() {
         deleteFromKeychain(service: keychainServiceSharedKey)
         clearVerifiedDevice()

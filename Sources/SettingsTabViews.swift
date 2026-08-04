@@ -72,6 +72,7 @@ private func batteryTooltipText(level: Int, mv: Int?) -> String {
 struct DeviceTabView: View {
     @ObservedObject var viewModel: AppViewModel
     @StateObject private var fpViewModel = FingerprintViewModel()
+    @StateObject private var dualHostVM = DualHostViewModel()
     @State private var isRefreshingBattery = false
 
     var body: some View {
@@ -149,13 +150,16 @@ struct DeviceTabView: View {
                             .disabled(!fpViewModel.isDeviceConnected)
                         }
 
-                        Text("fingerprint.count".localized(fpViewModel.fingerprintCount))
+                        Text("fingerprint.count".localized(fpViewModel.authCount,
+                                                            FingerprintViewModel.authSlotMax))
                             .font(.callout)
                             .foregroundColor(.secondary)
 
-                        // Fingerprint icons
-                        HStack(spacing: 24) {
-                            ForEach(fpViewModel.enrolledSlots, id: \.self) { slotIndex in
+                        // 认证指纹（顺序录入）在左，主机切换指纹独立在右。
+                        // 分开是因为它们语义不同：切换指纹不参与认证，且
+                        // 不该要求用户先把 5 根认证指纹录满才能用切换功能。
+                        HStack(alignment: .top, spacing: 24) {
+                            ForEach(fpViewModel.authSlots, id: \.self) { slotIndex in
                                 FingerprintIconView(
                                     index: slotIndex,
                                     name: fpViewModel.fingerprintName(for: slotIndex),
@@ -168,11 +172,19 @@ struct DeviceTabView: View {
                                 )
                             }
 
-                            if fpViewModel.fingerprintCount < 5 {
+                            if fpViewModel.nextAvailableAuthSlot != nil {
                                 addFingerprintButton
+                            }
+
+                            if fpViewModel.supportsSwitchSlot {
+                                Divider().frame(height: 72)
+                                switchFingerSlot
                             }
                         }
                         .padding(.vertical, 4)
+                        // 上限随固件变化时位图往往没变，必须把它纳入 id
+                        // 才会重建，否则切换槽那一块出不来。
+                        .id("\(fpViewModel.fingerprintBitmap)-\(fpViewModel.maxSlots)")
 
                         Divider()
 
@@ -192,76 +204,37 @@ struct DeviceTabView: View {
                     .padding(4)
                 }
 
-                // Pairing & Unpair
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("pairing.title".localized, systemImage: "lock.shield")
-                            .font(.headline)
+                // 双主机面板。取代了原先「槽位徽章 + 独立 Pairing 区块」的
+                // 两段式布局 —— 配对/解绑现在就在各自的主机卡片里。
+                DualHostPanel(viewModel: dualHostVM, appViewModel: viewModel)
 
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(viewModel.isDevicePaired ? "pairing.status.paired".localized : "pairing.status.unpaired".localized)
-                                    .font(.callout)
-                                    .foregroundColor(viewModel.isDevicePaired ? .green : .orange)
-                                if viewModel.isDeviceConnected && viewModel.isDevicePaired && !viewModel.isDeviceVerified {
-                                    Text("device.not.verified".localized)
-                                        .font(.caption)
-                                        .foregroundColor(.red)
-                                }
-                            }
-
-                            Spacer()
-
-                            // Both buttons must stay reachable when device-side and
-                            // local pairing state diverge, or the UI dead-ends.
-                            //
-                            // The bad case: device reports paired but this Mac has no
-                            // shared key (device paired elsewhere / local Keychain
-                            // cleared). Verification then fails, and with Pair gated
-                            // purely on isDevicePaired and Unpair purely on
-                            // hasLocalPairing, BOTH were greyed out with no way back.
-                            //
-                            // Pair is only pointless when the pairing is actually
-                            // usable — device-side AND locally present. Firmware still
-                            // has final say: PAIR_INIT answers needsReset when
-                            // fingerprints are enrolled, which we already surface.
-                            Button("pairing.start".localized) {
-                                viewModel.startPairing()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(!viewModel.isDeviceConnected || viewModel.isPairing
-                                      || (viewModel.isDevicePaired && viewModel.hasLocalPairing))
-
-                            // Unpair is meaningful whenever there is state to clear on
-                            // either side. (clearLocalPairing also resets
-                            // isDevicePaired, so this is the escape hatch.)
-                            Button("unpair.confirm".localized) {
-                                viewModel.unpair()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(!viewModel.hasLocalPairing && !viewModel.isDevicePaired)
-                        }
-
-                        if viewModel.isPairing {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                    .scaleEffect(0.6)
-                                Text(viewModel.pairingPrompt ?? "pairing.in.progress".localized)
-                                    .font(.caption)
-                                    .foregroundColor(.blue)
-                            }
-                        }
-
-                    }
-                    .padding(4)
-                }
             }
             .padding(20)
         }
         .onAppear {
             fpViewModel.refresh()
+            // 必须在页面级刷新，不能只放在两个双主机区块自己的 onAppear：
+            // isSecondHostCandidate 依赖 slotBitmap，而 bitmap 为 0 时两块
+            // 都不显示 —— 刷新永远不会被触发，成了鸡生蛋。
+            dualHostVM.refresh()
+        }
+        .onChange(of: viewModel.isDeviceConnected) { connected in
+            if connected { dualHostVM.refresh() }
+        }
+        .onChange(of: viewModel.isPairing) { pairing in
+            // 配对一结束设备侧状态全变了：槽位占用、指纹位图、验证结果。
+            // 不在这里重新拉一次的话，槽位卡片还画着灰点（"host2 还是灰色"），
+            // 指纹页也还拿着配对前的缓存位图 —— 表现为「添加」要点两三次
+            // 才生效，切走再切回来（触发 onAppear 刷新）就好了。
+            // 2026-08-04 实机反馈。
+            if !pairing {
+                viewModel.refreshDeviceStatus()
+                dualHostVM.refresh()
+                fpViewModel.refresh()
+            }
+        }
+        .sheet(isPresented: $viewModel.isPairing) {
+            PairingGuideSheet(viewModel: viewModel)
         }
         .sheet(isPresented: $fpViewModel.isEnrolling) {
             EnrollmentSheet(viewModel: fpViewModel)
@@ -276,10 +249,52 @@ struct DeviceTabView: View {
 
     // MARK: - Add Fingerprint Button
 
+    /// 主机切换指纹（第 6 槽）。独立成一块、可直接录入 —— 不要求先把
+    /// 5 根认证指纹录满。已录入时显示图标，未录入时显示添加位。
+    @ViewBuilder
+    private var switchFingerSlot: some View {
+        if fpViewModel.hasSwitchFinger {
+            FingerprintIconView(
+                index: FingerprintViewModel.switchSlotIndex,
+                name: fpViewModel.fingerprintName(for: FingerprintViewModel.switchSlotIndex),
+                onDelete: {
+                    fpViewModel.deleteFingerprint(slot: FingerprintViewModel.switchSlotIndex)
+                },
+                onRename: { newName in
+                    fpViewModel.setFingerprintName(newName,
+                                                   for: FingerprintViewModel.switchSlotIndex)
+                }
+            )
+        } else {
+            VStack(spacing: 8) {
+                Button(action: {
+                    fpViewModel.enrollFingerprint(slot: FingerprintViewModel.switchSlotIndex)
+                }) {
+                    ZStack {
+                        Circle()
+                            .strokeBorder(Color.secondary.opacity(0.3),
+                                          style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                            .frame(width: 64, height: 64)
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 20, weight: .light))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!fpViewModel.isDeviceConnected || fpViewModel.isEnrolling)
+
+                Text("fingerprint.switch.name".localized)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .help("fingerprint.switch.hint".localized)
+        }
+    }
+
     private var addFingerprintButton: some View {
         VStack(spacing: 8) {
             Button(action: {
-                if let slot = fpViewModel.nextAvailableSlot {
+                if let slot = fpViewModel.nextAvailableAuthSlot {
                     fpViewModel.enrollFingerprint(slot: slot)
                 }
             }) {
@@ -294,7 +309,7 @@ struct DeviceTabView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(!fpViewModel.isDeviceConnected || fpViewModel.isEnrolling || fpViewModel.nextAvailableSlot == nil)
+            .disabled(!fpViewModel.isDeviceConnected || fpViewModel.isEnrolling || fpViewModel.nextAvailableAuthSlot == nil)
 
             Text("fingerprint.add".localized)
                 .font(.caption)

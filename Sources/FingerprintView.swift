@@ -1,8 +1,12 @@
 import SwiftUI
+import FirmwareUpdateKit
 import Combine
 
 extension Notification.Name {
     static let fingerprintCacheUpdated = Notification.Name("fingerprintCacheUpdated")
+    /// 设备 connect / disconnect 时由 AppViewModel 发出,让指纹列表刷新
+    /// （BLEManager.deviceState 不是 @Published,无法 Combine 订阅）。
+    static let deviceConnectionChanged = Notification.Name("deviceConnectionChanged")
 }
 
 struct FingerprintView: View {
@@ -89,15 +93,18 @@ struct FingerprintView: View {
                         fingerprintIcon(slot: slotIndex)
                     }
 
-                    // Show add button if less than 5 fingerprints
-                    if viewModel.fingerprintCount < 5 {
+                    // Show add button while slots remain (5 认证 + 可选的第 6 切换槽)
+                    if viewModel.fingerprintCount < viewModel.maxSlots {
                         addFingerprintButton
                     }
 
                     Spacer()
                 }
                 .padding(.vertical, 16)
-                .id(viewModel.fingerprintBitmap)  // Force refresh when bitmap changes
+                // 上限也要纳入 id：supportsSwitchSlot 翻转时位图往往没变（一直是
+                // 0x1f），只按位图做 id 会让 SwiftUI 不重建这棵子树，第 6 个
+                // 添加位就永远出不来。
+                .id("\(viewModel.fingerprintBitmap)-\(viewModel.maxSlots)")
             }
         }
     }
@@ -397,10 +404,18 @@ struct EnrollmentSheet: View {
             }
         }
         .onAppear {
-            // 只改值，动画由上面各自的 .animation(_:value:) 承担（作用域限定在
-            // 对应视图内）。这里不能包 withAnimation —— 见 pulse 圆处的注释。
-            pulseScale = 1.6
-            arrowOpacity = 0.4   // 箭头脉动节奏（0.8s 周期）
+            // 必须推到下一个 runloop：onAppear 与首次布局在同一个事务里，
+            // 此刻改这两个值会让 repeatForever 的 .animation 把「内容从原点
+            // 落到最终位置」这段位移也一起动画化并无限重复 —— 表现为圆环
+            // 反复从旁边飞入。async 到独立事务后，布局已定，动画只作用于
+            // scale/opacity 本身。
+            //
+            // 同理绝不能在这里包 withAnimation（见 pulse 圆处的注释），那是
+            // 同一个坑的另一种触发方式。
+            DispatchQueue.main.async {
+                pulseScale = 1.6
+                arrowOpacity = 0.4   // 箭头脉动节奏（0.8s 周期）
+            }
         }
     }
 }
@@ -423,26 +438,99 @@ class FingerprintViewModel: ObservableObject {
     // Track current enrollment slot
     private var currentEnrollSlot: Int?
 
+    // MARK: - Slot capacity
+    //
+    // 固件 1.6.4 起把 FP_USER_MAX 从 5 提到 6：第 6 槽（index 5）专用于
+    // 双主机切换，不参与认证。按设备实际固件版本决定上限，这样连着旧固件
+    // 的设备不会多出一个点了没用的槽位。
+
+    /// 第 6 槽起用的固件版本
+    private static let dualHostMinFirmware = FirmwareVersion("1.6.4")!
+
+    /// 专用切换指纹的槽位（固件 FP_SWITCH_SLOT）
+    static let switchSlotIndex = 5
+
+    /// 设备是否支持双主机切换槽。
+    ///
+    /// 必须是 @Published 的存储属性，不能写成读 bleManager.firmwareVersion
+    /// 的计算属性 —— 那个字段不是 @Published，SwiftUI 不会因它变化而重绘，
+    /// 而固件版本往往晚于视图首次渲染才到，界面就会永远停在 5 槽。
+    /// 2026-08-03 真机踩到。
+    @Published var supportsSwitchSlot: Bool = false
+
+    /// 从 BLEManager 上报的版本串刷新 supportsSwitchSlot。
+    /// 设备上报的可能带 build 号（"1.6.5.d664"），取前三段比较。
+    private func refreshSwitchSlotSupport() {
+        guard let raw = bleManager.firmwareVersion else {
+            supportsSwitchSlot = false
+            return
+        }
+        let core = raw.split(separator: ".").prefix(3).joined(separator: ".")
+        let ok = FirmwareVersion(core).map { $0 >= Self.dualHostMinFirmware } ?? false
+        if ok != supportsSwitchSlot {
+            // 用 LogManager 而非 NSLog —— 本 app 的 NSLog 进不了 immurok.log，
+            // 诊断信息看不到等于没有。
+            LogManager.shared.log("FP slots: fw=\(raw) core=\(core) "
+                                  + "switchSlot=\(ok ? "yes" : "no") max=\(ok ? 6 : 5)")
+            supportsSwitchSlot = ok
+        }
+    }
+
+    /// 用户可见的指纹槽总数（含切换槽）
+    var maxSlots: Int { supportsSwitchSlot ? 6 : 5 }
+
+    // MARK: - 认证槽 vs 切换槽
+    //
+    // 前 5 槽是认证指纹，顺序录入；第 6 槽（switchSlotIndex）专用于主机
+    // 切换，UI 上独立成一块、可直接录入 —— 用户不必先把 5 根认证指纹录满
+    // 才能拿到切换功能。
+
+    /// 认证指纹的槽位上限（不含切换槽）
+    static let authSlotMax = 5
+
+    /// 已录入的认证指纹槽位
+    var authSlots: [Int] {
+        (0..<Self.authSlotMax).filter { fingerprintBitmap & (1 << $0) != 0 }
+    }
+
+    var authCount: Int { authSlots.count }
+
+    /// 下一个可用的认证槽（顺序分配）
+    var nextAvailableAuthSlot: Int? {
+        (0..<Self.authSlotMax).first { fingerprintBitmap & (1 << $0) == 0 }
+    }
+
+    /// 切换指纹是否已录入
+    var hasSwitchFinger: Bool {
+        supportsSwitchSlot && (fingerprintBitmap & (1 << Self.switchSlotIndex)) != 0
+    }
+
     // Computed properties for bitmap
     var fingerprintCount: Int {
-        (0..<5).filter { fingerprintBitmap & (1 << $0) != 0 }.count
+        (0..<maxSlots).filter { fingerprintBitmap & (1 << $0) != 0 }.count
     }
 
     /// List of enrolled slot indices
     var enrolledSlots: [Int] {
-        (0..<5).filter { fingerprintBitmap & (1 << $0) != 0 }
+        (0..<maxSlots).filter { fingerprintBitmap & (1 << $0) != 0 }
     }
 
     /// Find first available slot for enrollment (returns nil if all slots full)
     var nextAvailableSlot: Int? {
-        (0..<5).first { fingerprintBitmap & (1 << $0) == 0 }
+        (0..<maxSlots).first { fingerprintBitmap & (1 << $0) == 0 }
     }
 
     // Fingerprint names (stored in UserDefaults, not synced to firmware)
     @Published var fingerprintNames: [Int: String] = [:]
 
     func fingerprintName(for slot: Int) -> String {
-        fingerprintNames[slot] ?? "fingerprint.finger".localized(slot + 1)
+        if let custom = fingerprintNames[slot] { return custom }
+        // 第 6 槽是双主机切换指纹，不参与认证 —— 默认名要说清楚，
+        // 否则用户会以为它是第 6 根普通指纹，按下去却不解锁。
+        if slot == Self.switchSlotIndex && supportsSwitchSlot {
+            return "fingerprint.switch.name".localized
+        }
+        return "fingerprint.finger".localized(slot + 1)
     }
 
     func setFingerprintName(_ name: String, for slot: Int) {
@@ -457,6 +545,12 @@ class FingerprintViewModel: ObservableObject {
     private func saveFingerprintNames() {
         let dict = fingerprintNames.reduce(into: [String: String]()) { $0["\($1.key)"] = $1.value }
         UserDefaults.standard.set(dict, forKey: "immurok.fingerprintNames")
+    }
+
+    /// 清除全部自定义指纹名。解除配对时必须调用 —— 名字存在 UserDefaults，
+    /// 不随配对数据走；不清的话重新绑定后旧名字还在，让人以为指纹没清干净。
+    static func clearAllNames() {
+        UserDefaults.standard.removeObject(forKey: "immurok.fingerprintNames")
     }
 
     private func loadFingerprintNames() {
@@ -482,7 +576,17 @@ class FingerprintViewModel: ObservableObject {
 
         loadFingerprintNames()
         setupEnrollmentCallback()
+
+        // 连接变化时刷新指纹列表:断开→清空(refresh 里 guard 清 bitmap),
+        // 重连→强制重新拉取(forceRefresh 跳过旧缓存)。否则列表停在断开前。
+        connObserver = NotificationCenter.default.addObserver(
+            forName: .deviceConnectionChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh(forceRefresh: true) }
+        }
     }
+
+    private var connObserver: Any?
 
     /// Check if device connection state changed and invalidate cache if needed
     private func checkConnectionStateChange() {
@@ -584,6 +688,7 @@ class FingerprintViewModel: ObservableObject {
         checkConnectionStateChange()
 
         isDeviceConnected = bleManager.deviceState.isConnected
+        refreshSwitchSlotSupport()
 
         guard isDeviceConnected else {
             NSLog("FingerprintView: device not connected")
@@ -610,6 +715,9 @@ class FingerprintViewModel: ObservableObject {
                 self.fingerprintBitmap = bitmap
                 Self.cachedBitmap = bitmap
                 Self.isCacheValid = true
+                // 固件版本与指纹位图来自同一个 GET_STATUS 响应，在这里
+                // 一并刷新，两者才不会错位（版本晚到会让界面停在 5 槽）。
+                self.refreshSwitchSlotSupport()
                 self.isLoading = false
                 self.objectWillChange.send()
                 NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)

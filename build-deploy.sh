@@ -36,6 +36,27 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# ── Xcode 工具链兜底 ────────────────────────────────────────────────────
+# swift build（尤其 release + SwiftUI）需要 Xcode 工具链自带的宏插件
+# (SwiftUIMacros)。本机 xcode-select 若指向 CommandLineTools，它没有宏插件，
+# 构建会报 "External macro implementation type 'SwiftUIMacros.StateMacro'
+# could not be found" → Build failed。这里在脚本内强制切到 Xcode（若已装），
+# 只作用于本次构建的子进程，不改全局 xcode-select、无需 sudo。
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+    _dd="$(xcode-select -p 2>/dev/null || true)"
+    case "$_dd" in
+        *CommandLineTools*|"")
+            if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+                export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+                log_info "Using Xcode toolchain (xcode-select points at CLT): $DEVELOPER_DIR"
+            else
+                log_warn "Xcode.app 未找到；swift build 可能失败（CLT 缺 SwiftUI 宏插件）"
+                log_warn "请安装 Xcode，或 sudo xcode-select -s /path/to/Xcode.app/Contents/Developer"
+            fi
+            ;;
+    esac
+fi
+
 # Find and select a signing identity from Keychain
 select_sign_identity() {
     if [ -n "$SIGN_IDENTITY" ]; then
