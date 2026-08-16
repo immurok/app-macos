@@ -10,6 +10,15 @@ enum FingerprintGateState: Equatable {
     case failed                        // All attempts exhausted or timeout
 }
 
+/// 门失败的原因。「按错手指三次」「30 秒没碰」「设备断了」的处置方式
+/// 完全不同，failed 态必须分开告诉用户，不能共用一句「识别失败或超时」。
+enum GateFailureReason {
+    case attempts      // 尝试次数耗尽
+    case timeout       // 倒计时归零，没有指纹触摸
+    case disconnected  // 设备断连
+    case generic       // 其他（调用方只拿到 success=false）
+}
+
 // MARK: - Gate Controller
 
 @MainActor
@@ -18,6 +27,7 @@ class FingerprintGateController: ObservableObject {
     @Published var state: FingerprintGateState = .waiting
     @Published var countdown: Int = 30
     @Published var title: String = ""
+    @Published var failureReason: GateFailureReason = .generic
     var successMessage: String?  // Custom success text (e.g. "生成成功"), nil = default
 
     static let timeout = 30
@@ -39,6 +49,7 @@ class FingerprintGateController: ObservableObject {
         self.title = title
         self.onCancel = onCancel
         self.state = .waiting
+        self.failureReason = .generic
         self.countdown = Self.timeout
         self.isPresented = true
         hookAttemptCallback()
@@ -49,6 +60,7 @@ class FingerprintGateController: ObservableObject {
     func onGateRequired() {
         guard !isPresented else { return }
         state = .waiting
+        failureReason = .generic
         countdown = Self.timeout
         isPresented = true
         hookAttemptCallback()
@@ -73,9 +85,16 @@ class FingerprintGateController: ObservableObject {
         scheduleAutoDismiss(0.4)
     }
 
-    func reportFailed() {
+    func reportFailed(reason: GateFailureReason = .generic) {
         guard isPresented else { return }
         if case .failed = state { return }
+        // 断连时各调用方只拿到 success=false —— 在失败瞬间看连接状态，
+        // 能把「设备断了」从「识别失败」里区分出来。
+        if reason == .generic && !bleManager.deviceState.isConnected {
+            failureReason = .disconnected
+        } else {
+            failureReason = reason
+        }
         state = .failed
         countdownTask?.cancel()
         // Keep 1.5s for failure — user needs time to read the reason.
@@ -121,9 +140,7 @@ class FingerprintGateController: ObservableObject {
             Task { @MainActor in
                 guard let self = self, self.isPresented else { return }
                 if remaining <= 0 {
-                    self.state = .failed
-                    self.countdownTask?.cancel()
-                    self.scheduleAutoDismiss(1.5)
+                    self.reportFailed(reason: .attempts)
                 } else {
                     self.state = .attemptFailed(remaining: remaining)
                     Task { @MainActor in
@@ -163,6 +180,15 @@ class FingerprintGateController: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard self.isPresented, !Task.isCancelled else { return }
                 self.countdown -= 1
+            }
+            // 归零本地直接判超时。真正的超时源是 BLE 侧 30s 定时器，但两套
+            // 时钟有偏差时，用户会看到红环空转、文字停在「请验证指纹」。
+            guard let self = self, self.isPresented, !Task.isCancelled else { return }
+            switch self.state {
+            case .waiting, .attemptFailed:
+                self.reportFailed(reason: .timeout)
+            case .processing, .success, .failed:
+                break
             }
         }
     }
@@ -227,7 +253,12 @@ struct FingerprintGateSheet: View {
         case .success:
             return controller.successMessage ?? "fingerprint.test.success".localized
         case .failed:
-            return "fingerprint.test.failed".localized
+            switch controller.failureReason {
+            case .attempts: return "gate.failed.attempts".localized
+            case .timeout: return "gate.failed.timeout".localized
+            case .disconnected: return "gate.failed.disconnected".localized
+            case .generic: return "fingerprint.test.failed".localized
+            }
         }
     }
 

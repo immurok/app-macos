@@ -19,6 +19,33 @@ public enum SigningRequirement: Equatable {
     }
 }
 
+extension SigningRequirement: Codable {
+    private enum CodingKeys: String, CodingKey { case kind, teamID }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .kind) {
+        case "applePlatform": self = .applePlatform
+        case "developerID": self = .developerID(teamID: try c.decode(String.self, forKey: .teamID))
+        default: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown kind")
+        }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .applePlatform: try c.encode("applePlatform", forKey: .kind)
+        case .developerID(let t): try c.encode("developerID", forKey: .kind); try c.encode(t, forKey: .teamID)
+        }
+    }
+
+    /// 校验 bundleID（及 developerID 的 teamID）后再生成要求串；不合法返回 nil。
+    /// 用户可配置身份后，这是防 requirement 串注入的硬防线。
+    public func validatedRequirementString(bundleID: String) -> String? {
+        guard IdentityValidation.isValidBundleID(bundleID) else { return nil }
+        if case .developerID(let teamID) = self, !IdentityValidation.isValidTeamID(teamID) { return nil }
+        return securityRequirementString(bundleID: bundleID)
+    }
+}
+
 /// 决定"某 bundle id 的密码框可否被注入、注入哪种密码、用哪种签名要求校验"。
 public enum InjectionPolicy {
     private static let table: [String: (kind: SecretKind, signing: SigningRequirement)] = [

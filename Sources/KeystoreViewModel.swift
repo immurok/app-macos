@@ -128,6 +128,14 @@ class KeystoreViewModel: ObservableObject {
             entries = []
         }
 
+        // 断连时不进入同步：转圈等 BLE 只会走到超时，然后落进「暂无条目」
+        // 空态误导用户。缓存已画（上面 Phase 1），重连由 KeysTabView 的
+        // onChange(isDeviceConnected) 补一次 loadEntries。
+        guard BLEManager.shared.deviceState.isConnected else {
+            isLoading = false
+            return
+        }
+
         // Phase 2: digest verify in the background. KeyNameCache.syncCategory
         // first does a 6-byte KEY_COUNT — if the firmware checksum matches the
         // cached digest, it returns without any KEY_READ. Only on miss does
@@ -138,9 +146,12 @@ class KeystoreViewModel: ObservableObject {
 
         loadingTimeoutTask?.cancel()
         loadingTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000_000)
+            // 20s 已远超一次全量 N×KEY_READ 的正常耗时；120s 的旧值意味着
+            // 半断连时用户要面对两分钟无尽转圈，超时后还没有任何解释。
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
             guard let self = self, self.isLoading else { return }
             self.isLoading = false
+            self.showError("keys.sync.timeout".localized)
         }
 
         KeyNameCache.shared.syncCategory(cat) { [weak self] in
@@ -557,9 +568,11 @@ class KeystoreViewModel: ObservableObject {
 
     /// Read all OTP entries with full 64B data (name + service + secret)
     /// Requires fingerprint verification first (sets device-side gate cooldown for batch reads)
-    func readAllOTPEntries(completion: @escaping ([(name: String, service: String, secret: Data)]) -> Void) {
+    /// completion 带 expected（设备端条目总数）：单条读失败会被跳过，调用方
+    /// 必须比对 entries.count 与 expected——缺条的备份文件比没有备份更危险。
+    func readAllOTPEntries(completion: @escaping (_ entries: [(name: String, service: String, secret: Data)], _ expected: Int) -> Void) {
         guard beginMaintenance() else {
-            completion([])
+            completion([], 0)
             return
         }
         isExporting = true
@@ -574,7 +587,7 @@ class KeystoreViewModel: ObservableObject {
                     self.gateController.reportFailed()
                     self.isExporting = false
                     self.endMaintenance()
-                    completion([])
+                    completion([], 0)
                     return
                 }
                 self.readAllOTPEntriesAfterAuth(ble: ble, completion: completion)
@@ -583,13 +596,13 @@ class KeystoreViewModel: ObservableObject {
     }
 
     private func readAllOTPEntriesAfterAuth(ble: BLEManager,
-                                            completion: @escaping ([(name: String, service: String, secret: Data)]) -> Void) {
+                                            completion: @escaping (_ entries: [(name: String, service: String, secret: Data)], _ expected: Int) -> Void) {
         ble.getKeyCount(cat: .otp) { [weak self] count in
             guard let self = self, count > 0 else {
                 Task { @MainActor in
                     self?.isExporting = false
                     self?.endMaintenance()
-                    completion([])
+                    completion([], 0)
                 }
                 return
             }
@@ -599,7 +612,7 @@ class KeystoreViewModel: ObservableObject {
                     Task { @MainActor in
                         self.isExporting = false
                         self.endMaintenance()
-                        completion(results)
+                        completion(results, Int(count))
                     }
                     return
                 }

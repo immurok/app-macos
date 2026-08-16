@@ -62,6 +62,10 @@ struct PairingGuideSheet: View {
         }
         .padding(24)
         .frame(width: 400)
+        // Esc 只会关掉这层 UI（isPairing 被掰成 false），BLE 配对状态机
+        // 还在后台跑：用户以为取消了，稍后误碰设备按钮流程会「复活」并
+        // 凭空弹结果框。App 侧取消路径见 cancelhint（长按按钮/等 30 秒）。
+        .interactiveDismissDisabled()
         .onAppear {
             // repeatForever 挂在 .animation(_:value:) 上、触发值在下一个
             // runloop 才改 —— 直接在 onAppear 里 withAnimation 会把 sheet

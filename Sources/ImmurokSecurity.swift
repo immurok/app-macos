@@ -263,8 +263,38 @@ class ImmurokSecurity {
         clearAppleIDPassword()
         clearOnePasswordPassword()
         clearBitwardenPassword()
+        for svc in allAutomationSecretServices() { deleteSecret(service: svc) }
         clearPairingData()  // shared key + verified device
         NSLog("ImmurokSecurity: All Keychain data cleared (uninstall)")
+    }
+
+    // MARK: - 通用 per-service 密码存取（Automation 条目用）
+    // 内置条目复用上面各自的固定 service；自定义条目用 com.immurok.automation.<uuid>。
+
+    func saveSecret(_ password: String, service: String) {
+        guard let data = password.data(using: .utf8) else { return }
+        saveToKeychain(service: service, data: data)
+    }
+    func loadSecret(service: String) -> String? {
+        guard let data = loadFromKeychain(service: service) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    func hasSecret(service: String) -> Bool { loadFromKeychain(service: service) != nil }
+    func deleteSecret(service: String) { deleteFromKeychain(service: service) }
+
+    /// 枚举本 App 写入的所有自定义 Automation 条目 service（前缀匹配），供卸载清理。
+    func allAutomationSecretServices() -> [String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: keychainAccount,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let items = result as? [[String: Any]] else { return [] }
+        return items.compactMap { $0[kSecAttrService as String] as? String }
+            .filter { $0.hasPrefix("com.immurok.automation.") }
     }
 
     // MARK: - Keychain Helpers

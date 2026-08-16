@@ -4,79 +4,68 @@ import AuthInjectionKit
 
 enum AuthContext {
     case none
-    case secureField(kind: SecretKind, field: AXUIElement, sheet: AXUIElement, bundleID: String)
-    case appStoreConfirmSheet(sheet: AXUIElement)
+    case secureField(item: AutomationItem, field: AXUIElement, sheet: AXUIElement)
+    case appStoreConfirmSheet(item: AutomationItem, sheet: AXUIElement)
 }
 
 /// 在主动指纹路径被触发时，检索当前焦点上下文并分类。单一职责、无副作用。
+/// 遍历 AutomationStore 里 enabled 的条目，而非硬编码 bundle id。
 struct AuthContextDetector {
 
     func detect() -> AuthContext {
-        // 1) 系统级焦点若是 AXSecureTextField，按其**属主进程**判定白名单（而非 frontmost）。
-        //    Sign in with Apple 的密码框属主是 AKAuthorizationRemoteViewService（远程视图服务），
-        //    前台应用却是 Safari——只有按属主才能命中。App Store 密码页 / Passwords 解锁的焦点框
-        //    属主就是自身进程，同样适用。
-        //    容器可能是 AXSheet（App Store 密码页 / Sign in with Apple）或 AXWindow
-        //    （Passwords 解锁是 AXStandardWindow，实测非 sheet）。两者都要能命中。
+        let items = AutomationStore.shared.enabledItems()
+        let appItems = items.filter { $0.targetKind == .app }
+        let extItems = items.filter { $0.targetKind == .browserExtension }
+
+        // Path 1) 系统级焦点若是 AXSecureTextField，按其**属主进程** bundleID 命中 app 条目
+        //   （而非 frontmost）。Sign in with Apple 的密码框属主是 AKAuthorizationRemoteViewService，
+        //   前台却是 Safari——只有按属主才能命中。
+        //   rightArrow 策略（1Password）**不走这条**：它必须经 Path 2 的"恰好一个 secure field"
+        //   硬化判据，否则改主密码等多字段表单的某个框被聚焦时会从这里绕过 guard 被误注入。
         if let focused = systemWideFocusedSecureField(),
            let ownerPID = ownerPID(of: focused),
            let ownerBundle = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
-           // 1Password **不走这条**：它必须经下面 Path 1.5 的"恰好一个 secure field"硬化判据，
-           // 否则改主密码等多字段表单的某个框被聚焦时会从这里绕过 guard 被误注入。
-           ownerBundle != "com.1password.1password",
-           let kind = InjectionWhitelist.secretKind(forPID: ownerPID, bundleID: ownerBundle),
+           let item = appItems.first(where: { $0.matches(bundleID: ownerBundle) && $0.submitStrategy != .rightArrow }),
+           InjectionWhitelist.passesSigning(for: item, pid: ownerPID, bundleID: ownerBundle),
            let container = enclosingContainer(of: focused) {
-            return .secureField(kind: kind, field: focused, sheet: container, bundleID: ownerBundle)
+            return .secureField(item: item, field: focused, sheet: container)
         }
 
-        // 1.5) 1Password 解锁：浏览器扩展解锁浮层是 layer-101 popover，未必是系统焦点元素，
-        //      systemWideFocused 可能命不中。改用进程定向扫描 com.1password.1password 的 AX 树
-        //      找 secure field（不依赖焦点），统一覆盖"整屏锁定窗 + 扩展浮层"。1P 未锁定时树内
-        //      无 secure field，自然不触发。
-        if let onep = NSRunningApplication.runningApplications(withBundleIdentifier: "com.1password.1password").first,
-           InjectionWhitelist.secretKind(forPID: onep.processIdentifier, bundleID: "com.1password.1password") == .onePasswordPassword {
-            let appEl = AXUIElementCreateApplication(onep.processIdentifier)
-            // 下行扫描直接拿到 (密码框, 所在窗口)——不能用 enclosingContainer 上行爬，
-            // 1P 的 Chromium 树 kAXParent 链断裂，上行会得 nil 导致检测失败。
-            // 仅当树里"恰好一个"secure field 才触发（硬化：排除改主密码等多字段表单）。
-            if let hit = soleSecureFieldWithWindow(under: appEl) {
-                return .secureField(kind: .onePasswordPassword, field: hit.field, sheet: hit.window, bundleID: "com.1password.1password")
+        // Path 2) 定向下行扫描：1Password 桌面锁定窗 / 扩展浮层（rightArrow 策略），以及 Passwords
+        //   焦点不在框时。下行扫描直接拿到 (密码框, 所在窗口)——1P 的 Chromium 树 kAXParent 链断裂，
+        //   上行会得 nil。仅当树里"恰好一个"secure field 才触发（硬化：排除改主密码等多字段表单）。
+        //   generic 策略（Passwords 类）要求前台才扫（后台窗口不注入）。
+        for item in appItems where item.submitStrategy != .appStoreWizard {
+            for bundleID in item.bundleIDs {
+                for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID) {
+                    if item.submitStrategy == .generic && !app.isActive { continue }
+                    guard InjectionWhitelist.passesSigning(for: item, pid: app.processIdentifier, bundleID: bundleID) else { continue }
+                    let appEl = AXUIElementCreateApplication(app.processIdentifier)
+                    if let hit = soleSecureFieldWithWindow(under: appEl) {
+                        return .secureField(item: item, field: hit.field, sheet: hit.window)
+                    }
+                }
             }
         }
 
-        // 1.6) Bitwarden 浏览器扩展解锁：密码框归浏览器进程，靠"浏览器签名 + WebArea URL 属于
-        //      Bitwarden 扩展 + 恰好一个 secure field"识别（见 BitwardenDetector）。扫浏览器 AX 树
-        //      较重，仅在功能开启时才扫。
-        if UserDefaults.standard.bool(forKey: "immurok.bitwardenUnlockEnabled"),
-           let bw = BitwardenDetector().detect() {
-            return .secureField(kind: .bitwardenPassword, field: bw.field, sheet: bw.container, bundleID: bw.browserBundle)
-        }
-
-        // 1.7) Passwords（系统密码 App）：焦点不在密码框时（刚打开、焦点落在列表 /
-        //      搜索框等），Path 1 的 systemWideFocused 命不中，就出现"焦点已经在
-        //      Passwords App 上却注入不了"。改用进程定向下行扫描 com.apple.Passwords
-        //      的 AX 树找 secure field（不依赖焦点），与 1P Path 1.5 同一套路。
-        //      安全边界：仅前台 Passwords 才扫（后台窗口不注入）；白名单 + 代码签名
-        //      校验（applePlatform）防冒充；硬化同 1P —— soleSecureFieldWithWindow
-        //      恰好一个 secure field 才触发，排除改密码等多字段表单。
-        if let pw = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Passwords").first,
-           pw.isActive,
-           let kind = InjectionWhitelist.secretKind(forPID: pw.processIdentifier, bundleID: "com.apple.Passwords") {
-            let appEl = AXUIElementCreateApplication(pw.processIdentifier)
-            if let hit = soleSecureFieldWithWindow(under: appEl) {
-                return .secureField(kind: kind, field: hit.field, sheet: hit.window, bundleID: "com.apple.Passwords")
+        // Path 3) 浏览器扩展条目：密码框归浏览器进程，靠"浏览器签名 + WebArea URL 属于扩展 +
+        //   恰好一个 secure field"识别。扫浏览器 AX 树较重，仅遍历 enabled 的扩展条目。
+        for item in extItems {
+            guard let origin = item.extensionOrigin, let frag = item.urlFragment else { continue }
+            if let hit = BrowserExtensionDetector().detect(origin: origin, urlFragment: frag) {
+                return .secureField(item: item, field: hit.field, sheet: hit.container)
             }
         }
 
-        // 2) App Store 特有：还在 Install/Cancel 确认页（尚无焦点密码框）——按前台应用判定。
+        // Path 4) App Store 特有：还在 Install/Cancel 确认页（尚无焦点密码框）——按前台应用判定。
         guard let frontApp = NSWorkspace.shared.frontmostApplication,
               let bundleID = frontApp.bundleIdentifier,
-              InjectionWhitelist.secretKind(forPID: frontApp.processIdentifier, bundleID: bundleID) != nil
+              let item = appItems.first(where: { $0.submitStrategy == .appStoreWizard && $0.matches(bundleID: bundleID) }),
+              InjectionWhitelist.passesSigning(for: item, pid: frontApp.processIdentifier, bundleID: bundleID)
         else { return .none }
         let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
-        if bundleID == "com.apple.AppStore",
-           let sheet = firstSheetWithButtons(appElement) {
-            return .appStoreConfirmSheet(sheet: sheet)
+        if let sheet = firstSheetWithButtons(appElement) {
+            return .appStoreConfirmSheet(item: item, sheet: sheet)
         }
 
         return .none

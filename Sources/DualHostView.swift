@@ -103,39 +103,49 @@ struct DualHostPanel: View {
                 Label("dualhost.title".localized, systemImage: "laptopcomputer.and.iphone")
                     .font(.headline)
 
-                HStack(alignment: .top, spacing: 12) {
-                    card(slot: 1)
-                    card(slot: 2)
-                }
-
-                Text(viewModel.bothSlotsFull
-                     ? "dualhost.hint.full".localized
-                     : "dualhost.hint".localized)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let err = viewModel.errorMessage {
-                    Text(err).font(.caption).foregroundColor(.red)
-                }
-
-                // 跨槽解绑等指纹门时的提示（#1）——否则用户点了"解绑另一台"
-                // 却不知道要去设备上按指纹。
-                if let prompt = viewModel.gatePrompt {
-                    HStack(spacing: 6) {
-                        ProgressView().scaleEffect(0.6)
-                        Text(prompt).font(.caption).foregroundColor(.blue)
+                // 断连时 refresh() 把 slotBitmap 清零，两张卡会画成「空槽」
+                // 还提示去另一台电脑配对——本机绑定明明还在。断连没有可信
+                // 的槽位信息，只说「未连接」。
+                if !appViewModel.isDeviceConnected {
+                    Text("dualhost.disconnected".localized)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        card(slot: 1)
+                        card(slot: 2)
                     }
-                }
 
-                // 引导框接管了配对期间的提示（见 PairingGuideSheet）；这行
-                // 小字保留，用于框被拖开或在别的显示器上时仍能看到状态。
-                if appViewModel.isPairing {
-                    HStack(spacing: 6) {
-                        ProgressView().scaleEffect(0.6)
-                        Text(appViewModel.pairingPrompt ?? "pairing.in.progress".localized)
-                            .font(.caption)
-                            .foregroundColor(.blue)
+                    Text(viewModel.bothSlotsFull
+                         ? "dualhost.hint.full".localized
+                         : "dualhost.hint".localized)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let err = viewModel.errorMessage {
+                        Text(err).font(.caption).foregroundColor(.red)
+                    }
+
+                    // 跨槽解绑等指纹门时的提示（#1）——否则用户点了"解绑另一台"
+                    // 却不知道要去设备上按指纹。
+                    if let prompt = viewModel.gatePrompt {
+                        HStack(spacing: 6) {
+                            ProgressView().scaleEffect(0.6)
+                            Text(prompt).font(.caption).foregroundColor(.blue)
+                        }
+                    }
+
+                    // 引导框接管了配对期间的提示（见 PairingGuideSheet）；这行
+                    // 小字保留，用于框被拖开或在别的显示器上时仍能看到状态。
+                    if appViewModel.isPairing {
+                        HStack(spacing: 6) {
+                            ProgressView().scaleEffect(0.6)
+                            Text(appViewModel.pairingPrompt ?? "pairing.in.progress".localized)
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        }
                     }
                 }
             }
@@ -244,7 +254,8 @@ struct DualHostPanel: View {
                 Button("pairing.start".localized) { appViewModel.startPairing() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .disabled(!appViewModel.isDeviceConnected || appViewModel.isPairing)
+                    .disabled(!appViewModel.isDeviceConnected || appViewModel.isPairing
+                              || appViewModel.isPreparingPairing)
             }
         } else if paired {
             if viewModel.isClearing {

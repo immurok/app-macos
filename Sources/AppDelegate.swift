@@ -47,6 +47,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("immurok App launched (v1.6 - Menu Bar)")
         Task { @MainActor in LogManager.shared.log("App started") }
 
+        // 接管系统通知（UNUserNotificationCenter delegate + 授权申请）。
+        SystemNotifier.shared.activate()
+
         // Initialize BLE Manager and start connecting
         let bleManager = BLEManager.shared
         bleManager.connect()
@@ -278,13 +281,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("Screen is locked, unlocking...")
             Task { @MainActor in LogManager.shared.log("Unlocking screen") }
             lastAuthFlowAt = Date()
-            // Audible cue: typing the password + window animation can take ~2s
-            // and the screen often goes black mid-flow. Configurable via
-            // Features tab; empty string = silent.
-            let soundName = UserDefaults.standard.string(forKey: "immurok.unlockSound") ?? "Glass"
-            if !soundName.isEmpty {
-                NSSound(named: soundName)?.play()
-            }
             unlockScreen()
             return
         }
@@ -295,52 +291,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // pending-PAM 已在上方早返回（PAM 优先仲裁天然满足），此处只可能是主动路径。
             let injectionContext = AuthContextDetector().detect()
             switch injectionContext {
-            case .secureField(let kind, let field, let sheet, let bundleID):
-                // 每种密码框各有独立门控开关与密码来源。1Password 用它自己的解锁密码
-                //（可与系统密码不同），并走专用提交路径。
-                let flagKey: String
-                let secret: String?
-                switch kind {
-                case .loginPassword:
-                    flagKey = "immurok.passwordsFillEnabled"
-                    secret = ImmurokSecurity.shared.loadPassword()
-                case .appleIDPassword:
-                    flagKey = "immurok.appStoreFillEnabled"
-                    secret = ImmurokSecurity.shared.loadAppleIDPassword()
-                case .onePasswordPassword:
-                    flagKey = "immurok.onePasswordUnlockEnabled"
-                    secret = ImmurokSecurity.shared.loadOnePasswordPassword()
-                case .bitwardenPassword:
-                    flagKey = "immurok.bitwardenUnlockEnabled"
-                    secret = ImmurokSecurity.shared.loadBitwardenPassword()
-                }
-                let enabled = UserDefaults.standard.bool(forKey: flagKey)
-                if enabled, let pw = secret {
-                    LogManager.shared.log("[inject] secure field (\(bundleID)) kind=\(kind)")
+            case .secureField(let item, let field, let sheet):
+                // 密码来源与提交策略都来自条目自身（enabled 已在 detect() 过滤）。
+                if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
+                    LogManager.shared.log("[inject] secure field (\(item.name)) strategy=\(item.submitStrategy)")
                     lastAuthFlowAt = Date()
                     let injector = AuthInjector()
                     injector.focus(field)
                     injector.inject(pw, into: field)
-                    // 1Password / Bitwarden 是 Chromium 网页表单：需专用提交（鼠标点击解锁按钮，SEI 拦回车、
-                    // AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
-                    let isWebManager = (kind == .onePasswordPassword || kind == .bitwardenPassword)
-                    let delay = isWebManager ? 0.3 : 0.15
+                    // rightArrow(1Password) / belowButton(Bitwarden) 是 Chromium 网页表单：需专用提交
+                    //（鼠标点击解锁按钮，SEI 拦回车、AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
+                    let isWeb = (item.submitStrategy == .rightArrow || item.submitStrategy == .belowButton)
+                    let delay = isWeb ? 0.3 : 0.15
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        switch kind {
-                        case .onePasswordPassword:
-                            injector.submitOnePassword(field: field, container: sheet)
-                        case .bitwardenPassword:
-                            injector.submitBitwarden(field: field, container: sheet)
-                        default:
-                            injector.submit(container: sheet, field: field)
+                        switch item.submitStrategy {
+                        case .rightArrow:  injector.submitOnePassword(field: field, container: sheet)
+                        case .belowButton: injector.submitBitwarden(field: field, container: sheet)
+                        default:           injector.submit(container: sheet, field: field)
                         }
                     }
                     return   // 已处理，不再走原 authorization 逻辑
                 }
-                LogManager.shared.log("[inject/detect] secureField kind=\(kind) bundle=\(bundleID) enabled=\(enabled) not injected (flag off / no stored password), fall through")
-            case .appStoreConfirmSheet(let sheet):
-                if UserDefaults.standard.bool(forKey: "immurok.appStoreFillEnabled"),
-                   let pw = ImmurokSecurity.shared.loadAppleIDPassword() {
+                LogManager.shared.log("[inject/detect] secureField item=\(item.name) no stored password, fall through")
+            case .appStoreConfirmSheet(let item, let sheet):
+                if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
                     LogManager.shared.log("[inject] driving App Store wizard")
                     lastAuthFlowAt = Date()
                     AuthInjector().driveAppStore(confirmSheet: sheet, secret: pw) { ok in
@@ -348,7 +322,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     return
                 }
-                LogManager.shared.log("[inject/detect] App Store confirm page (phase 1: log only)")
+                LogManager.shared.log("[inject/detect] App Store confirm page, no stored password")
             case .none:
                 // 诊断：注入未触发时记录前台 App + 焦点元素子角色，便于 on-device 定位
                 //（未命中白名单/签名、焦点非 AXSecureTextField、或找不到容器都会落到这里）。
@@ -442,6 +416,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in LogManager.shared.log("Unlock skipped: feature disabled") }
             return
         }
+        // 连续两轮密码都没解开 → 大概率是存储的密码过期了。继续盲打只会
+        // 喂给 loginwindow 更多错误尝试（递增延迟惩罚），先停手等用户换密码。
+        if UserDefaults.standard.bool(forKey: "immurok.autoUnlockSuspended") {
+            Task { @MainActor in LogManager.shared.log("Unlock suspended (repeated failures), ignoring fingerprint") }
+            return
+        }
         guard AXIsProcessTrusted() else {
             NSLog("No accessibility permission, cannot unlock")
             sendPermissionNotification()
@@ -451,6 +431,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let password = ImmurokSecurity.shared.loadPassword() else {
             NSLog("No password in Keychain")
             return
+        }
+
+        // Audible cue: typing the password + window animation can take ~2s
+        // and the screen often goes black mid-flow. Configurable via
+        // Features tab; empty string = silent. 放在所有 guard 之后——
+        // 功能关闭/没密码/已暂停时响「成功音」只会误导用户。
+        let soundName = UserDefaults.standard.string(forKey: "immurok.unlockSound") ?? "Glass"
+        if !soundName.isEmpty {
+            NSSound(named: soundName)?.play()
         }
 
         Task { @MainActor in LogManager.shared.log("Unlock start +0ms") }
@@ -527,12 +516,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 Task { @MainActor in LogManager.shared.log("Still locked, retrying") }
                 self.fakeKeyStrokes(password)
+                // 重试后再验一次。两次都没开 = 这一轮解锁失败——只写日志
+                // 用户永远不会知道是「存储的密码不对」，必须计数并出声。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self = self else { return }
+                    if self.isScreensaverWindowVisible() {
+                        self.recordUnlockFailure()
+                    } else {
+                        self.consecutiveUnlockFailures = 0
+                        let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                        Task { @MainActor in LogManager.shared.log("Unlock done (retry) +\(ms)ms") }
+                    }
+                }
             } else {
+                self.consecutiveUnlockFailures = 0
                 let ms3 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 Task { @MainActor in LogManager.shared.log("Unlock done +\(ms3)ms") }
             }
             // Password stays in Keychain (no BLE-based pendingPassword to clear)
         }
+    }
+
+    /// 一轮解锁（两次输入）都失败。连续两轮即暂停自动解锁并通知——
+    /// 通知在锁屏时看不到，但会留在通知中心，解锁后可见。
+    private var consecutiveUnlockFailures = 0
+    private func recordUnlockFailure() {
+        consecutiveUnlockFailures += 1
+        Task { @MainActor in LogManager.shared.log("Unlock round failed (consecutive=\(consecutiveUnlockFailures))") }
+        guard consecutiveUnlockFailures >= 2 else { return }
+        UserDefaults.standard.set(true, forKey: "immurok.autoUnlockSuspended")
+        consecutiveUnlockFailures = 0
+        Task { @MainActor in LogManager.shared.log("Auto unlock suspended after repeated failures") }
+        SystemNotifier.post(subtitle: "notify.unlock.suspended.subtitle".localized,
+                            body: "notify.unlock.suspended.body".localized,
+                            identifier: "immurok.unlock.suspended",
+                            action: .openStatusTab)
     }
 
     /// Confirm the lock-screen process owns the keyboard focus right now.
@@ -916,88 +934,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !didNotifyAuthorizationRepair else { return }
         didNotifyAuthorizationRepair = true
 
-        let title = "notify.authrepair.title".localized
-        let body = "notify.authrepair.body".localized
-        let script = "display notification \"\(body)\" with title \"immurok\" subtitle \"\(title)\""
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        try? task.run()
+        SystemNotifier.post(subtitle: "notify.authrepair.title".localized,
+                            body: "notify.authrepair.body".localized,
+                            identifier: "immurok.authrepair",
+                            action: .openStatusTab)
     }
 
     // MARK: - Accessibility Permission
 
     private func sendPermissionNotification() {
-        // Send notification about missing permission. The strings are
-        // localized, so escape them for the AppleScript literal — a
-        // translation containing a quote would otherwise break the script.
-        func escapeForAppleScript(_ s: String) -> String {
-            s.replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-        }
-        let body = escapeForAppleScript("notify.accessibility.body".localized)
-        let subtitle = escapeForAppleScript("notify.accessibility.subtitle".localized)
-        let script = "display notification \"\(body)\" "
-            + "with title \"immurok\" subtitle \"\(subtitle)\""
-
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        try? task.run()
+        SystemNotifier.post(subtitle: "notify.accessibility.subtitle".localized,
+                            body: "notify.accessibility.body".localized,
+                            identifier: "immurok.accessibility",
+                            action: .openPermissionsTab)
     }
 
     /// 固件新版本系统通知（明确升级提示）。点通知不能直接回调 App，
     /// 引导用户从菜单栏「固件升级」打开窗口。
     private func sendFirmwareUpdateNotification(version: String) {
-        let body = String(format: "firmware.notify.body".localized, version)
-        let sub = "firmware.notify.subtitle".localized
-        // version 来自网络 manifest（半可信）：先转义反斜杠再转义引号，并去掉换行，
-        // 防止通过版本字符串注入/破坏 AppleScript。
-        func esc(_ s: String) -> String {
-            s.replacingOccurrences(of: "\\", with: "\\\\")
-             .replacingOccurrences(of: "\"", with: "\\\"")
-             .replacingOccurrences(of: "\n", with: " ")
-             .replacingOccurrences(of: "\r", with: " ")
-        }
-        let script = "display notification \"\(esc(body))\" with title \"immurok\" subtitle \"\(esc(sub))\""
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        try? task.run()
+        SystemNotifier.post(subtitle: "firmware.notify.subtitle".localized,
+                            body: String(format: "firmware.notify.body".localized, version),
+                            identifier: "immurok.fw.update",
+                            action: .openUpdateWindow)
     }
 
     /// App 新版本系统通知。点通知不能直接回调 App，引导用户从设置「关于」页安装。
     private func sendAppUpdateNotification(version: String) {
-        let body = String(format: "appupdate.notify.body".localized, version)
-        let sub = "appupdate.notify.subtitle".localized
-        // version 来自 GitHub API（半可信），同固件通知一样转义防 AppleScript 注入
-        func esc(_ s: String) -> String {
-            s.replacingOccurrences(of: "\\", with: "\\\\")
-             .replacingOccurrences(of: "\"", with: "\\\"")
-             .replacingOccurrences(of: "\n", with: " ")
-             .replacingOccurrences(of: "\r", with: " ")
-        }
-        let script = "display notification \"\(esc(body))\" with title \"immurok\" subtitle \"\(esc(sub))\""
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        try? task.run()
+        SystemNotifier.post(subtitle: "appupdate.notify.subtitle".localized,
+                            body: String(format: "appupdate.notify.body".localized, version),
+                            identifier: "immurok.app.update",
+                            action: .openUpdateWindow)
     }
 
     /// 固件升级完成系统通知。
     private func sendFirmwareDoneNotification(version: String) {
-        let body = String(format: "firmware.done.body".localized, version)
-        func esc(_ s: String) -> String {
-            s.replacingOccurrences(of: "\\", with: "\\\\")
-             .replacingOccurrences(of: "\"", with: "\\\"")
-             .replacingOccurrences(of: "\n", with: " ")
-             .replacingOccurrences(of: "\r", with: " ")
-        }
-        let script = "display notification \"\(esc(body))\" with title \"immurok\" subtitle \"\(esc("firmware.done.subtitle".localized))\""
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        try? task.run()
+        SystemNotifier.post(subtitle: "firmware.done.subtitle".localized,
+                            body: String(format: "firmware.done.body".localized, version),
+                            identifier: "immurok.fw.done")
     }
 
     // MARK: - Login Item Registration

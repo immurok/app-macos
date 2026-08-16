@@ -7,13 +7,15 @@ import AuthInjectionKit
 /// 白名单表与签名要求见 AuthInjectionKit.InjectionPolicy（可单测）；
 /// 此处只负责用系统 API 做实际的 SecCodeCheckValidity 校验（有副作用、需活进程）。
 enum InjectionWhitelist {
-    static func secretKind(forPID pid: pid_t, bundleID: String?) -> SecretKind? {
-        guard let bundleID, let entry = InjectionPolicy.entry(forBundleID: bundleID) else { return nil }
-        guard satisfiesSigning(pid: pid, bundleID: bundleID, requirement: entry.signing) else {
+    /// 用户可配置条目的签名校验：bundleID 必须是条目声明的、且字符合法（防 requirement 串注入），
+    /// 再用条目自带的 signing 要求做 SecCodeCheckValidity。通过返回 true。
+    static func passesSigning(for item: AutomationItem, pid: pid_t, bundleID: String) -> Bool {
+        guard item.matches(bundleID: bundleID), IdentityValidation.isValidBundleID(bundleID) else { return false }
+        guard satisfiesSigning(pid: pid, bundleID: bundleID, requirement: item.signing) else {
             NSLog("InjectionWhitelist: reject %@ pid=%d — code signature check failed", bundleID, pid)
-            return nil
+            return false
         }
-        return entry.kind
+        return true
     }
 
     /// 通用签名校验（供 Bitwarden 浏览器宿主校验用）：目标进程是否满足给定签名要求。
@@ -23,21 +25,46 @@ enum InjectionWhitelist {
         satisfiesSigning(pid: pid, bundleID: bundleID, requirement: signing)
     }
 
-    /// SecCodeCheckValidity：用 InjectionPolicy 给出的要求串校验目标进程签名。
-    /// - `.applePlatform` → anchor apple + identifier
-    /// - `.developerID`   → anchor apple generic + identifier + Team ID(OU)
-    /// bundleID 只应传入白名单命中的键（固定字面量），不接受任意外部输入。
+    /// 校验目标进程签名。
+    /// - `.applePlatform` → `anchor apple and identifier`（SecCodeCheckValidity）
+    /// - `.developerID`   → `anchor apple generic and identifier`（确认 Apple 签名链 + bundle id）
+    ///   再单独读进程实际 Team Identifier 比对。**不再用 `certificate leaf[subject.OU]`**——
+    ///   那对 Mac App Store 分发的 app（叶证书是 Apple Mac OS Application Signing，OU 非 Team ID）
+    ///   不成立，会误拒（如从 App Store 装的 Bitwarden）。读 TeamIdentifier 对 App Store 与
+    ///   Developer ID 两种分发都成立，且仍钉住 Team ID 防 bundle id 冒充。
+    /// bundleID/teamID 已在上游做字符白名单校验；此处再校一次防御。
     private static func satisfiesSigning(pid: pid_t, bundleID: String, requirement: SigningRequirement) -> Bool {
+        guard IdentityValidation.isValidBundleID(bundleID) else { return false }
         var codeRef: SecCode?
         let attrs = [kSecGuestAttributePid: pid] as CFDictionary
         guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &codeRef) == errSecSuccess,
               let code = codeRef else { return false }
 
-        let reqString = requirement.securityRequirementString(bundleID: bundleID)
-        var req: SecRequirement?
-        guard SecRequirementCreateWithString(reqString as CFString, [], &req) == errSecSuccess,
-              let requirement = req else { return false }
+        switch requirement {
+        case .applePlatform:
+            guard let reqString = requirement.validatedRequirementString(bundleID: bundleID) else { return false }
+            var req: SecRequirement?
+            guard SecRequirementCreateWithString(reqString as CFString, [], &req) == errSecSuccess,
+                  let r = req else { return false }
+            return SecCodeCheckValidity(code, [], r) == errSecSuccess
 
-        return SecCodeCheckValidity(code, [], requirement) == errSecSuccess
+        case .developerID(let teamID):
+            guard IdentityValidation.isValidTeamID(teamID) else { return false }
+            let reqString = "anchor apple generic and identifier \"\(bundleID)\""
+            var req: SecRequirement?
+            guard SecRequirementCreateWithString(reqString as CFString, [], &req) == errSecSuccess,
+                  let r = req, SecCodeCheckValidity(code, [], r) == errSecSuccess else { return false }
+            return teamIdentifier(of: code) == teamID
+        }
+    }
+
+    /// 读运行进程的 Team Identifier（kSecCodeInfoTeamIdentifier）。
+    private static func teamIdentifier(of code: SecCode) -> String? {
+        var stat: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &stat) == errSecSuccess, let stat else { return nil }
+        var infoRef: CFDictionary?
+        guard SecCodeCopySigningInformation(stat, SecCSFlags(rawValue: kSecCSSigningInformation), &infoRef) == errSecSuccess,
+              let info = infoRef as? [String: Any] else { return nil }
+        return info[kSecCodeInfoTeamIdentifier as String] as? String
     }
 }

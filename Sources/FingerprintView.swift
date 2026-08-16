@@ -158,7 +158,9 @@ struct FingerprintIconView: View {
     let index: Int
     let name: String
     let onDelete: () -> Void
-    let onRename: (String) -> Void
+    /// nil = 名字不可编辑（主机切换指纹用固定名，改名会抹掉它的特殊身份，
+    /// 用户会忘记这根手指不能解锁）。
+    let onRename: ((String) -> Void)?
     @State private var isHovering = false
     @State private var isEditing = false
     @State private var editText = ""
@@ -192,7 +194,7 @@ struct FingerprintIconView: View {
                 isHovering = hovering
             }
 
-            if isEditing {
+            if isEditing, let onRename = onRename {
                 TextField("", text: $editText, onCommit: {
                     let trimmed = editText.trimmingCharacters(in: .whitespaces)
                     onRename(trimmed)
@@ -207,6 +209,7 @@ struct FingerprintIconView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .onTapGesture {
+                        guard onRename != nil else { return }
                         editText = name
                         isEditing = true
                     }
@@ -524,12 +527,13 @@ class FingerprintViewModel: ObservableObject {
     @Published var fingerprintNames: [Int: String] = [:]
 
     func fingerprintName(for slot: Int) -> String {
-        if let custom = fingerprintNames[slot] { return custom }
-        // 第 6 槽是双主机切换指纹，不参与认证 —— 默认名要说清楚，
-        // 否则用户会以为它是第 6 根普通指纹，按下去却不解锁。
+        // 第 6 槽是双主机切换指纹，不参与认证 —— 名字固定且不吃自定义名
+        //（含历史遗留的自定义名）：改成「右手食指」之类后，界面上再没有
+        // 任何东西标记这根手指只切换主机、不能解锁。
         if slot == Self.switchSlotIndex && supportsSwitchSlot {
             return "fingerprint.switch.name".localized
         }
+        if let custom = fingerprintNames[slot] { return custom }
         return "fingerprint.finger".localized(slot + 1)
     }
 
@@ -681,7 +685,10 @@ class FingerprintViewModel: ObservableObject {
         }
     }
 
-    func refresh(forceRefresh: Bool = false) {
+    /// completion 在位图就绪后回调（断连/缓存命中时同步调用）——调用方
+    /// 想「刷新后立刻取 nextAvailableSlot」必须等它，否则 fetch 未回来时
+    /// isLoading 还是 true，enrollFingerprint 的 guard 会静默吞掉点击。
+    func refresh(forceRefresh: Bool = false, completion: (() -> Void)? = nil) {
         NSLog("FingerprintView: refresh called, force=%d", forceRefresh ? 1 : 0)
 
         // Check if connection state changed (invalidates cache if reconnected)
@@ -694,6 +701,16 @@ class FingerprintViewModel: ObservableObject {
             NSLog("FingerprintView: device not connected")
             fingerprintBitmap = 0
             isLoading = false
+            // 录入进行中断连：enroll 事件不会再来（BLE 断开只冲
+            // responseCallback/gateCompletion），不在这里收尾的话
+            // 录入 sheet 会永远停在「请将手指放在传感器上」。
+            if isEnrolling {
+                isEnrolling = false
+                currentEnrollSlot = nil
+                showAlert(title: "enroll.failed".localized,
+                          message: "enroll.disconnected.message".localized)
+            }
+            completion?()
             return
         }
 
@@ -702,6 +719,7 @@ class FingerprintViewModel: ObservableObject {
             NSLog("FingerprintView: using cached bitmap 0x%02X", Self.cachedBitmap)
             fingerprintBitmap = Self.cachedBitmap
             isLoading = false
+            completion?()
             return
         }
 
@@ -721,6 +739,7 @@ class FingerprintViewModel: ObservableObject {
                 self.isLoading = false
                 self.objectWillChange.send()
                 NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
+                completion?()
             }
         }
     }
@@ -791,8 +810,23 @@ class FingerprintViewModel: ObservableObject {
     }
 
     func deleteFingerprint(slot: Int) {
+        // 指纹门的「触摸传感器」是每天几十次的反射动作，替代不了删除确认；
+        // 误点垃圾桶 + 顺手一摸 = 无挽回误删。先用文字讲清删哪根、什么后果。
+        let name = fingerprintName(for: slot)
+        let confirm = NSAlert()
+        confirm.messageText = "fingerprint.delete.confirm.title".localized(name)
+        confirm.informativeText = (slot == Self.switchSlotIndex
+            ? "fingerprint.delete.confirm.switch.message"
+            : "fingerprint.delete.confirm.message").localized
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "alert.delete".localized)
+        confirm.addButton(withTitle: "alert.cancel".localized)
+        confirm.buttons.first?.hasDestructiveAction = true
+        guard confirm.runModalOverSettings() == .alertFirstButtonReturn else { return }
+
         isLoading = true
-        gateController.present(title: "fingerprint.delete".localized, onCancel: { [weak self] in
+        gateController.present(title: "fingerprint.delete.gate.title".localized(name),
+                               onCancel: { [weak self] in
             self?.isLoading = false
         })
 

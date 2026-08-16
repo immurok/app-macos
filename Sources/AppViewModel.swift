@@ -1,5 +1,7 @@
 import SwiftUI
 import Combine
+import OpenDirectory
+import AuthInjectionKit
 
 extension Notification.Name {
     static let sshKeyCacheSynced = Notification.Name("sshKeyCacheSynced")
@@ -18,6 +20,9 @@ extension Notification.Name {
     static let appUpdateAvailable = Notification.Name("appUpdateAvailable")
     /// 请求打开首次运行引导窗口
     static let openSetupWizard = Notification.Name("openSetupWizard")
+    /// 请求打开设置窗口（object 可携带要跳转的 SettingsTab）。
+    /// 由 MenuBarStatusLabel 消费——它持有 openWindow 环境值。
+    static let openSettingsWindow = Notification.Name("openSettingsWindow")
 }
 
 @MainActor
@@ -30,7 +35,19 @@ class AppViewModel: ObservableObject {
     @Published var isPasswordConfigured = false  // Keychain has password
     @Published var hasLocalPairing = false  // Local Keychain has shared key or password
     var gateController = FingerprintGateController()
+    /// 菜单栏/其他入口请求设置窗口切到的 tab。写入后由 ContentView
+    /// 消费并置回 nil。用共享状态而非 NotificationCenter：窗口尚未
+    /// 创建时通知会丢（订阅还不存在），@Published 对新订阅者重放
+    /// 当前值，冷启动场景才接得住。
+    @Published var pendingSettingsTab: SettingsTab?
+    /// Automation 编辑器当前编辑的条目（nil = 未打开）。放在常驻 viewModel 而非视图局部 @State，
+    /// 这样设置窗口内容被重建（重新激活/点图标重开）时编辑器不会丢失。
+    @Published var editingAutomationItem: AutomationItem?
+
     @Published var isPairing = false  // ECDH pairing in progress
+    /// startPairing 的槽位/位图预检期间为 true（最长 ~10s，旧固件两次 5s
+    /// 超时）。没有它，「点了没反应」会诱发重复点击 → 并发两条配对链。
+    @Published var isPreparingPairing = false
     @Published var pairingPrompt: String? = nil  // UI prompt during pair (e.g. "press device button")
 
     /* 配对引导框的状态。两步操作（按指纹 → 按设备按钮）光靠一行小字提示，
@@ -48,7 +65,25 @@ class AppViewModel: ObservableObject {
     @Published var firmwareVersion: String?
 
     // Battery level (0-100%, nil = unknown)
-    @Published var batteryLevel: Int?
+    @Published var batteryLevel: Int? {
+        didSet { checkLowBattery() }
+    }
+
+    /// 低电量只提醒一次；回到 ≥30%（充过电）后复位，下次掉下去可再提醒。
+    /// 电池设备没电 = 解锁/sudo/SSH 全部静默失效，不能一声不吭地耗到关机。
+    private var lowBatteryNotified = false
+    private func checkLowBattery() {
+        guard let level = batteryLevel else { return }
+        if level <= 15 {
+            guard !lowBatteryNotified, isDeviceConnected else { return }
+            lowBatteryNotified = true
+            SystemNotifier.post(subtitle: "notify.battery.low.subtitle".localized,
+                                body: "notify.battery.low.body".localized(level),
+                                identifier: "immurok.battery.low")
+        } else if level >= 30 {
+            lowBatteryNotified = false
+        }
+    }
 
     // Raw battery voltage in mV for calibration display (firmware ≥ 1.3.4)
     @Published var batteryVoltageMv: Int?
@@ -368,7 +403,7 @@ class AppViewModel: ObservableObject {
     }
 
     /// 单字段密码输入弹窗（无二次确认）。取消或留空返回 nil。
-    private func promptSinglePassword(title: String, message: String) -> String? {
+    func promptSinglePassword(title: String, message: String) -> String? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -386,6 +421,52 @@ class AppViewModel: ObservableObject {
         return pw.isEmpty ? nil : pw
     }
 
+    /// 为某注入条目索取密码（单字段，无二次确认）。取消或留空返回 nil。
+    func promptAutomationPassword(name: String) -> String? {
+        promptSinglePassword(title: "automation.password.title".localized,
+                             message: String(format: "automation.password.message".localized, name))
+    }
+
+    /// 导出前索取加密口令，要求两次输入一致（不一致重弹，取消返回 nil）。
+    func promptExportPassword() -> String? {
+        while true {
+            guard let pw = promptSinglePassword(title: "automation.export.password.title".localized,
+                                                message: "automation.export.password.message".localized) else { return nil }
+            guard let confirm = promptSinglePassword(title: "automation.export.password.title".localized,
+                                                     message: "automation.export.password.confirm".localized) else { return nil }
+            if pw == confirm { return pw }
+            showAlert(title: "automation.export.password.title".localized,
+                      message: "automation.export.password.mismatch".localized)
+        }
+    }
+
+    /// 用 OpenDirectory 校验输入是否为当前 macOS 登录密码。
+    /// 密码存错的后果是 App 在锁屏反复盲打错密码（还会触发系统的
+    /// 递增延迟惩罚），而用户只能看到「解锁没反应」——必须在存之前拦住。
+    private func verifyLoginPassword(_ password: String) -> Bool {
+        do {
+            let node = try ODNode(session: ODSession.default(),
+                                  type: ODNodeType(kODNodeTypeAuthentication))
+            let record = try node.record(withRecordType: kODRecordTypeUsers,
+                                         name: NSUserName(), attributes: nil)
+            try record.verifyPassword(password)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// 询问登录密码并本地校验，校验不过重新弹（取消返回 nil）。
+    private func promptVerifiedLoginPassword() -> String? {
+        while true {
+            guard let pw = promptSinglePassword(title: "password.title".localized,
+                                                message: "password.message".localized) else { return nil }
+            if verifyLoginPassword(pw) { return pw }
+            showAlert(title: "password.verify.failed.title".localized,
+                      message: "password.verify.failed.message".localized)
+        }
+    }
+
     /// 主动配置登录密码（单字段，无二次确认）。供配对后 / 状态页调用。
     func configurePassword() {
         // 未配对时不允许设置密码
@@ -393,12 +474,13 @@ class AppViewModel: ObservableObject {
             showAlert(title: "alert.error".localized, message: "password.need.pair.first".localized)
             return
         }
-        guard let password = promptSinglePassword(title: "password.title".localized,
-                                                  message: "password.message".localized) else { return }
+        guard let password = promptVerifiedLoginPassword() else { return }
         // Save password to Keychain (local only, not sent via BLE)
         ImmurokSecurity.shared.savePassword(password)
         isPasswordConfigured = true
         hasLocalPairing = true
+        // 密码换新后解除「连续解锁失败」暂停（见 AppDelegate.unlockScreen）。
+        UserDefaults.standard.removeObject(forKey: "immurok.autoUnlockSuspended")
     }
 
     /// 开启解锁 / Passwords 自动填充前，按需索取系统登录密码。
@@ -410,11 +492,11 @@ class AppViewModel: ObservableObject {
             showAlert(title: "alert.error".localized, message: "password.need.pair.first".localized)
             return false
         }
-        guard let password = promptSinglePassword(title: "password.title".localized,
-                                                  message: "password.message".localized) else { return false }
+        guard let password = promptVerifiedLoginPassword() else { return false }
         ImmurokSecurity.shared.savePassword(password)
         isPasswordConfigured = true
         hasLocalPairing = true
+        UserDefaults.standard.removeObject(forKey: "immurok.autoUnlockSuspended")
         return true
     }
 
@@ -472,6 +554,7 @@ class AppViewModel: ObservableObject {
     // MARK: - ECDH Pairing
 
     func startPairing() {
+        guard !isPairing, !isPreparingPairing else { return }
         guard isDeviceConnected else {
             showAlert(title: "alert.error".localized, message: "test.connect.first".localized)
             return
@@ -508,6 +591,7 @@ class AppViewModel: ObservableObject {
          *
          * 顺序不能反：槽位应答回来之前不能发 PAIR_INIT，否则后面的按键提示
          * 也会用错分支。 */
+        isPreparingPairing = true
         bleManager.getSlotStatus { [weak self] slotBitmap, activeSlot in
             let mine = UInt8(1) << max(Int(activeSlot) - 1, 0)
             let asSecondHost = slotBitmap != 0 && (slotBitmap & mine) == 0
@@ -518,6 +602,7 @@ class AppViewModel: ObservableObject {
             self?.bleManager.getDeviceStatus { [weak self] bitmap, _, _, _ in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
+                    self.isPreparingPairing = false
                     if bitmap != 0 && !asSecondHost {
                         self.showAlert(title: "alert.error".localized,
                                        message: "pairing.needs.reset".localized)
@@ -587,7 +672,11 @@ class AppViewModel: ObservableObject {
                 let message: String
                 switch failure! {
                 case .needsReset:       message = "pairing.needs.reset".localized
-                case .buttonTimeout:    message = "pairing.timeout".localized
+                case .buttonTimeout:
+                    // 第二主机分支超时的常见原因是用户不知道要先按指纹
+                    //（或根本没有已录指纹——二手设备），提示必须带出路。
+                    message = (self.pairingNeedsFingerprint
+                        ? "pairing.timeout.secondhost" : "pairing.timeout").localized
                 case .buttonCancelled:  message = "pairing.cancelled".localized
                 case .linkParams:       message = "pairing.link.params".localized
                 case .generic:          message = "pairing.failed".localized
@@ -597,7 +686,7 @@ class AppViewModel: ObservableObject {
         }
     }
 
-    private func showAlert(title: String, message: String) {
+    func showAlert(title: String, message: String) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message

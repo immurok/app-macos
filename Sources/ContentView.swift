@@ -6,6 +6,7 @@ enum SettingsTab: String, CaseIterable {
     case device
     case keys
     case permissions
+    case automation
     case status
     case about
 
@@ -14,6 +15,7 @@ enum SettingsTab: String, CaseIterable {
         case .device: return "antenna.radiowaves.left.and.right"
         case .keys: return "key.fill"
         case .permissions: return "slider.horizontal.3"
+        case .automation: return "wand.and.stars"
         case .status: return "list.bullet.rectangle"
         case .about: return "info.circle"
         }
@@ -24,6 +26,7 @@ enum SettingsTab: String, CaseIterable {
         case .device: return "tab.device".localized
         case .keys: return "tab.keys".localized
         case .permissions: return "tab.permissions".localized
+        case .automation: return "tab.automation".localized
         case .status: return "tab.status".localized
         case .about: return "tab.about".localized
         }
@@ -56,16 +59,22 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, minHeight: minContentHeight,
                        maxHeight: .infinity, alignment: .top)
         }
-        .frame(minWidth: 500)
+        .frame(minWidth: 560)
         .background(Color(NSColor.windowBackgroundColor))
         .id(localization.currentLanguage)  // Force view rebuild on language change
         .onAppear {
             setupManager.refreshStatus()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsTab)) { notification in
-            if let tab = notification.object as? SettingsTab {
-                selectedTab = tab
+            // 正在编辑 Automation 条目时打开/重建窗口，停在 Automation tab 直接显示编辑器，
+            // 不切到默认页（编辑状态存在常驻 viewModel，窗口重建也在）。
+            if viewModel.editingAutomationItem != nil {
+                selectedTab = .automation
             }
+        }
+        .onReceive(viewModel.$pendingSettingsTab) { tab in
+            guard let tab = tab else { return }
+            // 编辑 Automation 期间，任何打开设置窗口的入口都停在 Automation，不切走。
+            selectedTab = (viewModel.editingAutomationItem != nil) ? .automation : tab
+            viewModel.pendingSettingsTab = nil
         }
     }
 
@@ -98,6 +107,8 @@ struct ContentView: View {
             KeysTabView(viewModel: viewModel)
         case .permissions:
             PermissionsTabView(viewModel: viewModel, setupManager: setupManager)
+        case .automation:
+            AutomationTabView(viewModel: viewModel)
         case .status:
             StatusTabView(viewModel: viewModel, setupManager: setupManager)
         case .about:

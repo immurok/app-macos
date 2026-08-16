@@ -150,41 +150,50 @@ struct DeviceTabView: View {
                             .disabled(!fpViewModel.isDeviceConnected)
                         }
 
-                        Text("fingerprint.count".localized(fpViewModel.authCount,
-                                                            FingerprintViewModel.authSlotMax))
-                            .font(.callout)
-                            .foregroundColor(.secondary)
+                        // 断连时 bitmap 被清零，如果照常渲染会显示「已录入
+                        // 0 个指纹」——用户会读成「我的指纹被清空了」。
+                        if !fpViewModel.isDeviceConnected {
+                            Text("fingerprint.disconnected".localized)
+                                .font(.callout)
+                                .foregroundColor(.secondary)
+                                .padding(.vertical, 8)
+                        } else {
+                            Text("fingerprint.count".localized(fpViewModel.authCount,
+                                                                FingerprintViewModel.authSlotMax))
+                                .font(.callout)
+                                .foregroundColor(.secondary)
 
-                        // 认证指纹（顺序录入）在左，主机切换指纹独立在右。
-                        // 分开是因为它们语义不同：切换指纹不参与认证，且
-                        // 不该要求用户先把 5 根认证指纹录满才能用切换功能。
-                        HStack(alignment: .top, spacing: 24) {
-                            ForEach(fpViewModel.authSlots, id: \.self) { slotIndex in
-                                FingerprintIconView(
-                                    index: slotIndex,
-                                    name: fpViewModel.fingerprintName(for: slotIndex),
-                                    onDelete: {
-                                        fpViewModel.deleteFingerprint(slot: slotIndex)
-                                    },
-                                    onRename: { newName in
-                                        fpViewModel.setFingerprintName(newName, for: slotIndex)
-                                    }
-                                )
-                            }
+                            // 认证指纹（顺序录入）在左，主机切换指纹独立在右。
+                            // 分开是因为它们语义不同：切换指纹不参与认证，且
+                            // 不该要求用户先把 5 根认证指纹录满才能用切换功能。
+                            HStack(alignment: .top, spacing: 24) {
+                                ForEach(fpViewModel.authSlots, id: \.self) { slotIndex in
+                                    FingerprintIconView(
+                                        index: slotIndex,
+                                        name: fpViewModel.fingerprintName(for: slotIndex),
+                                        onDelete: {
+                                            fpViewModel.deleteFingerprint(slot: slotIndex)
+                                        },
+                                        onRename: { newName in
+                                            fpViewModel.setFingerprintName(newName, for: slotIndex)
+                                        }
+                                    )
+                                }
 
-                            if fpViewModel.nextAvailableAuthSlot != nil {
-                                addFingerprintButton
-                            }
+                                if fpViewModel.nextAvailableAuthSlot != nil {
+                                    addFingerprintButton
+                                }
 
-                            if fpViewModel.supportsSwitchSlot {
-                                Divider().frame(height: 72)
-                                switchFingerSlot
+                                if fpViewModel.supportsSwitchSlot {
+                                    Divider().frame(height: 72)
+                                    switchFingerSlot
+                                }
                             }
+                            .padding(.vertical, 4)
+                            // 上限随固件变化时位图往往没变，必须把它纳入 id
+                            // 才会重建，否则切换槽那一块出不来。
+                            .id("\(fpViewModel.fingerprintBitmap)-\(fpViewModel.maxSlots)")
                         }
-                        .padding(.vertical, 4)
-                        // 上限随固件变化时位图往往没变，必须把它纳入 id
-                        // 才会重建，否则切换槽那一块出不来。
-                        .id("\(fpViewModel.fingerprintBitmap)-\(fpViewModel.maxSlots)")
 
                         Divider()
 
@@ -260,10 +269,9 @@ struct DeviceTabView: View {
                 onDelete: {
                     fpViewModel.deleteFingerprint(slot: FingerprintViewModel.switchSlotIndex)
                 },
-                onRename: { newName in
-                    fpViewModel.setFingerprintName(newName,
-                                                   for: FingerprintViewModel.switchSlotIndex)
-                }
+                // 固定名「主机切换」不可改：改成「右手食指」之类后，界面上
+                // 再没有任何东西标记这根手指只切换主机、不能解锁。
+                onRename: nil
             )
         } else {
             VStack(spacing: 8) {
@@ -645,6 +653,13 @@ struct KeysTabView: View {
             // Digest-cached, so re-appearing is a 6-byte round-trip at most.
             keystoreVM.loadEntries(cat: selectedCategory.keystoreCat)
         }
+        // 断连期间进入本页 loadEntries 会被守卫拦下（只画缓存），
+        // 设备连上后要补一次同步，否则列表一直停在缓存/空态。
+        .onChange(of: viewModel.isDeviceConnected) { connected in
+            if connected {
+                keystoreVM.loadEntries(cat: selectedCategory.keystoreCat)
+            }
+        }
     }
 
     // MARK: - Keystore List Content
@@ -673,7 +688,10 @@ struct KeysTabView: View {
             } else if !keystoreVM.isLoading && keystoreVM.entries.isEmpty {
                 VStack {
                     Spacer()
-                    Text("keys.empty".localized)
+                    // 断连时列表空不代表设备上没条目——写「暂无条目」会
+                    // 让用户以为密钥丢了。
+                    Text((viewModel.isDeviceConnected
+                          ? "keys.empty" : "keys.empty.disconnected").localized)
                         .font(.callout)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -771,6 +789,19 @@ struct KeysTabView: View {
 
     private func deleteSelected() {
         let cat = selectedCategory.keystoreCat
+        // 指纹门只有「删除」两个字的标题，讲不清删几条、能不能恢复；
+        // SSH 私钥只存在设备上，删了就没了，必须先文字确认。
+        let confirm = NSAlert()
+        confirm.messageText = "keys.delete.confirm.title".localized(selectedEntries.count)
+        confirm.informativeText = cat == .ssh
+            ? "keys.delete.confirm.ssh".localized
+            : "keys.delete.confirm.message".localized
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "alert.delete".localized)
+        confirm.addButton(withTitle: "alert.cancel".localized)
+        confirm.buttons.first?.hasDestructiveAction = true
+        guard confirm.runModalOverSettings() == .alertFirstButtonReturn else { return }
+
         let indices = selectedEntries.map { UInt8($0) }
         keystoreVM.deleteEntries(cat: cat, indices: indices) {
             Task { @MainActor in
@@ -899,9 +930,22 @@ struct KeysTabView: View {
     // MARK: - OTP Import/Export
 
     private func exportOTP() {
-        keystoreVM.readAllOTPEntries { entries in
+        keystoreVM.readAllOTPEntries { entries, expected in
             DispatchQueue.main.async {
                 guard !entries.isEmpty else { return }
+
+                // 缺条的备份比没有备份更危险——用户会拿着不完整的文件以为
+                // 是全量。读少了必须当场警告，让用户自己决定要不要继续。
+                if entries.count < expected {
+                    let warn = NSAlert()
+                    warn.alertStyle = .warning
+                    warn.messageText = "keys.export.partial.title".localized
+                    warn.informativeText = "keys.export.partial.message".localized(expected, entries.count)
+                    warn.addButton(withTitle: "alert.cancel".localized)
+                    warn.addButton(withTitle: "keys.export.anyway".localized)
+                    guard warn.runModalOverSettings() == .alertSecondButtonReturn else { return }
+                }
+
                 let panel = NSSavePanel()
                 panel.allowedContentTypes = [UTType.commaSeparatedText]
                 panel.nameFieldStringValue = "otp_export.csv"
@@ -914,7 +958,15 @@ struct KeysTabView: View {
                     let uri = "otpauth://totp/\(urlEncode(service)):\(urlEncode(e.name))?secret=\(b32)&issuer=\(urlEncode(service))"
                     csv += "\(csvEscape(e.name)),\(csvEscape(uri))\n"
                 }
-                try? csv.write(to: url, atomically: true, encoding: .utf8)
+                do {
+                    try csv.write(to: url, atomically: true, encoding: .utf8)
+                } catch {
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "alert.error".localized
+                    alert.informativeText = "keys.export.write.failed".localized
+                    alert.runModalOverSettings()
+                }
             }
         }
     }
@@ -1718,10 +1770,6 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
     @AppStorage("immurok.cliEnabled") private var cliEnabled = true
     @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
-    @AppStorage("immurok.appStoreFillEnabled") private var appStoreFillEnabled = false
-    @AppStorage("immurok.passwordsFillEnabled") private var passwordsFillEnabled = true
-    @AppStorage("immurok.onePasswordUnlockEnabled") private var onePasswordUnlockEnabled = false
-    @AppStorage("immurok.bitwardenUnlockEnabled") private var bitwardenUnlockEnabled = false
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
     @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
     // 长按锁屏确认音。Empty string = silent. Read by AppDelegate.handleLockRequest.
@@ -1759,6 +1807,29 @@ struct PermissionsTabView: View {
                 )
             }
 
+            // 屏幕解锁
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    permissionRow(
+                        icon: "lock.open",
+                        titleKey: "permission.screen.unlock",
+                        trailing: {
+                            if screenUnlockEnabled {
+                                soundPicker(selection: $unlockSound,
+                                            tipKey: "permission.screen.unlock.sound.tip")
+                            }
+                        },
+                        isOn: Binding(
+                            get: { screenUnlockEnabled },
+                            set: { tryEnableScreenUnlock($0) }
+                        )
+                    )
+                    if screenUnlockEnabled && !viewModel.isPasswordConfigured {
+                        loginPasswordMissingRow
+                    }
+                }
+            }
+
             // 界面认证授权（系统设置等）
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1787,64 +1858,8 @@ struct PermissionsTabView: View {
                 }
             }
 
-            // ===== 密码自动填充 =====
-            sectionLabel("permission.section.autofill")
-
-            // 屏幕解锁
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    permissionRow(
-                        icon: "lock.open",
-                        titleKey: "permission.screen.unlock",
-                        trailing: {
-                            if screenUnlockEnabled {
-                                soundPicker(selection: $unlockSound,
-                                            tipKey: "permission.screen.unlock.sound.tip")
-                            }
-                        },
-                        isOn: Binding(
-                            get: { screenUnlockEnabled },
-                            set: { tryEnableScreenUnlock($0) }
-                        )
-                    )
-                    if screenUnlockEnabled && !viewModel.isPasswordConfigured {
-                        loginPasswordMissingRow
-                    }
-                }
-            }
-
-            // App Store（新）
-            GroupBox {
-                appStoreRow
-            }
-
-            // Passwords（新）
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    permissionRow(
-                        icon: "key.horizontal",
-                        titleKey: "permission.passwords",
-                        hintKey: "permission.passwords.hint",
-                        isOn: Binding(
-                            get: { passwordsFillEnabled },
-                            set: { tryEnablePasswords($0) }
-                        )
-                    )
-                    if passwordsFillEnabled && !viewModel.isPasswordConfigured {
-                        loginPasswordMissingRow
-                    }
-                }
-            }
-
-            // 1Password 解锁（新）——用 1Password 自己的解锁密码，开启时按需索取。
-            GroupBox {
-                onePasswordRow
-            }
-
-            // Bitwarden 解锁（新）——浏览器扩展，用 Bitwarden 自己的解锁密码。
-            GroupBox {
-                bitwardenRow
-            }
+            // App Store / Passwords / 1Password / Bitwarden 的注入项已迁到 Automation tab
+            // 统一管理（含用户自定义条目）。
 
             // ===== 开发者工具 =====
             sectionLabel("permission.section.devtools")
@@ -1947,44 +1962,6 @@ struct PermissionsTabView: View {
     }
 
     // MARK: - App Store Row
-    private var appStoreRow: some View {
-        permissionRow(
-            icon: "bag",
-            titleKey: "permission.appstore",
-            hintKey: "permission.appstore.hint",
-            isOn: Binding(
-                get: { appStoreFillEnabled },
-                set: { tryEnableAppStore($0) }
-            )
-        )
-    }
-
-    // MARK: - 1Password Row
-    private var onePasswordRow: some View {
-        permissionRow(
-            icon: "lock.shield",
-            titleKey: "permission.onepassword",
-            hintKey: "permission.onepassword.hint",
-            isOn: Binding(
-                get: { onePasswordUnlockEnabled },
-                set: { tryEnableOnePassword($0) }
-            )
-        )
-    }
-
-    // MARK: - Bitwarden Row
-    private var bitwardenRow: some View {
-        permissionRow(
-            icon: "lock.shield",
-            titleKey: "permission.bitwarden",
-            hintKey: "permission.bitwarden.hint",
-            isOn: Binding(
-                get: { bitwardenUnlockEnabled },
-                set: { tryEnableBitwarden($0) }
-            )
-        )
-    }
-
     // MARK: - Sound Picker
 
     /// Inline sound picker shown next to a feature toggle. A speaker icon
@@ -2124,63 +2101,14 @@ struct PermissionsTabView: View {
             }
         } else {
             screenUnlockEnabled = false
-            // 解锁与 Passwords 都关了 → 清除登录密码（1Password 用独立密码，不参与）。
-            if !passwordsFillEnabled {
+            // 登录密码由"屏幕解锁"与 Automation 的 Passwords 内置条目共享。两者都不用时才清除，
+            // 避免误删 Automation 仍在使用的登录密码。
+            let passwordsItemEnabled = AutomationStore.shared.items.contains {
+                $0.builtinKey == "passwords" && $0.enabled
+            }
+            if !passwordsItemEnabled {
                 viewModel.clearLoginPassword()
             }
-        }
-    }
-
-    private func tryEnablePasswords(_ enable: Bool) {
-        if enable {
-            // 开启前按需索取系统登录密码；取消则不开启。
-            if viewModel.setupLoginPasswordIfNeeded() {
-                passwordsFillEnabled = true
-            }
-        } else {
-            passwordsFillEnabled = false
-            // 解锁与 Passwords 都关了 → 清除登录密码（1Password 用独立密码，不参与）。
-            if !screenUnlockEnabled {
-                viewModel.clearLoginPassword()
-            }
-        }
-    }
-
-    private func tryEnableOnePassword(_ enable: Bool) {
-        if enable {
-            // 开启前按需索取 1Password 的解锁密码（可与系统密码不同）；取消则不开启。
-            if viewModel.setupOnePasswordPasswordIfNeeded() {
-                onePasswordUnlockEnabled = true
-            }
-        } else {
-            onePasswordUnlockEnabled = false
-            // 1Password 用独立密码，关闭即清除，不影响登录密码。
-            viewModel.clearOnePasswordPassword()
-        }
-    }
-
-    private func tryEnableBitwarden(_ enable: Bool) {
-        if enable {
-            // 开启前按需索取 Bitwarden 的解锁密码（独立密码）；取消则不开启。
-            if viewModel.setupBitwardenPasswordIfNeeded() {
-                bitwardenUnlockEnabled = true
-            }
-        } else {
-            bitwardenUnlockEnabled = false
-            // Bitwarden 用独立密码，关闭即清除。
-            viewModel.clearBitwardenPassword()
-        }
-    }
-
-    private func tryEnableAppStore(_ enable: Bool) {
-        if enable {
-            // 开启前按需索取 Apple ID 密码；取消则不开启。
-            if viewModel.setupAppleIDPasswordIfNeeded() {
-                appStoreFillEnabled = true
-            }
-        } else {
-            appStoreFillEnabled = false
-            viewModel.clearAppleIDPassword()
         }
     }
 
@@ -2345,7 +2273,7 @@ struct StatusTabView: View {
                             isOK: viewModel.fingerprintCount > 0,
                             actionTitle: viewModel.fingerprintCount == 0 ? "fingerprint.add".localized : nil
                         ) {
-                            NotificationCenter.default.post(name: .openSettingsTab, object: SettingsTab.device)
+                            viewModel.pendingSettingsTab = .device
                         }
                         Divider()
 

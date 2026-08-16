@@ -93,6 +93,12 @@ struct SetupWizardView: View {
         .sheet(isPresented: $fpViewModel.gateController.isPresented) {
             FingerprintGateSheet(controller: fpViewModel.gateController)
         }
+        // 配对分步引导：设置页早就用上了（PairingGuideView 注释里描述的
+        // 「一行小字读不出两步」正是本向导原来的样子），新用户唯一入口
+        // 必须享受同等待遇。
+        .sheet(isPresented: $viewModel.isPairing) {
+            PairingGuideSheet(viewModel: viewModel)
+        }
     }
 
     // MARK: - 步骤构建 / 前进逻辑
@@ -355,7 +361,7 @@ struct SetupWizardView: View {
 
             if viewModel.isDevicePaired {
                 statusLabel(ok: true, text: "wizard.pair.done".localized)
-            } else if viewModel.isPairing {
+            } else if viewModel.isPairing || viewModel.isPreparingPairing {
                 VStack(spacing: 12) {
                     ProgressView()
                     // 配对过程实时提示（如「请按一下设备按键确认」）
@@ -414,9 +420,16 @@ struct SetupWizardView: View {
                 statusLabel(ok: true, text: "wizard.fp.done".localized(viewModel.fingerprintCount))
             } else {
                 Button("wizard.fp.start".localized) {
-                    fpViewModel.refresh()
-                    if let slot = fpViewModel.nextAvailableSlot {
-                        fpViewModel.enrollFingerprint(slot: slot)
+                    // 等 refresh 回调后再取槽位：缓存未命中时 isLoading 会挡住
+                    // enrollFingerprint，原来的同步写法点第一下永远没反应。
+                    // 只取认证槽（nextAvailableSlot 会把第 6 号切换槽也算进来）。
+                    fpViewModel.refresh { [weak fpViewModel] in
+                        guard let fpViewModel = fpViewModel else { return }
+                        if let slot = fpViewModel.nextAvailableAuthSlot {
+                            fpViewModel.enrollFingerprint(slot: slot)
+                        } else {
+                            NSLog("SetupWizard: no available auth slot after refresh")
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)

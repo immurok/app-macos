@@ -47,6 +47,11 @@ final class AuthRequestOverlay {
         timeout: TimeInterval = 30.0,
         onReject: (() -> Void)? = nil
     ) {
+        // 连发场景（imk run --agent 每条命令一次请求）：上一条的成功/失败
+        // 终态还在 0.6s/1.2s 延迟隐藏中，新请求的 show() 已把面板拉回。
+        // 不取消旧定时器的话，它到点会把新请求的等待面板悄悄 hide 掉。
+        dismissTimer?.invalidate()
+        dismissTimer = nil
         state.user = user
         state.service = service
         state.command = command
