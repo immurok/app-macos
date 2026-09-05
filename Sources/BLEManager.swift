@@ -42,6 +42,9 @@ let OTA_CHAR_UUID = CBUUID(string: "c75f4c30-9a2d-4445-92e0-0e034c53d092")
 enum ImmurokCommand: UInt8 {
     case getStatus = 0x01
     case getBattRaw = 0x02
+    // 实际连接参数（链路层当前生效值，非 PPCP 愿望值），固件 1.7.2+
+    // -> [0x03][OK][interval:2 BE][latency:2 BE][timeout:2 BE]
+    case getConnParams = 0x03
     case enrollStart = 0x10
     case enrollCancel = 0x11
     case deleteFP = 0x12
@@ -998,6 +1001,36 @@ class BLEManager: NSObject {
             let pct = Int(response[3])
             let adc = Int(response[4]) | (Int(response[5]) << 8)
             completion((mv: mv, pct: pct, adc: adc))
+        }
+    }
+
+    /// 链路层当前实际生效的连接参数（GET_CONN_PARAMS, 固件 1.7.2+）。
+    /// 单位为 BLE 原生单位：interval ×1.25ms、latency 连接事件数、timeout ×10ms。
+    struct ConnectionParams {
+        let interval: UInt16
+        let latency: UInt16
+        let timeout: UInt16
+        var intervalMs: Double { Double(interval) * 1.25 }
+        var timeoutMs: Int { Int(timeout) * 10 }
+        /// 空闲时的有效事件间隔（latency 允许外设连续跳过的极限）
+        var effectiveIdleMs: Double { intervalMs * Double(latency + 1) }
+    }
+
+    /// 读取实际连接参数。响应 `[0x03][OK][interval:2 BE][latency:2 BE][timeout:2 BE]`。
+    /// 旧固件（< 1.7.2）回 `[UNKNOWN_CMD]`，走 nil 分支。
+    func getConnParams(completion: @escaping (ConnectionParams?) -> Void) {
+        guard deviceState.isConnected else { completion(nil); return }
+        sendCommand(.getConnParams, timeout: 3.0) { response in
+            guard let r = response, r.count >= 8,
+                  r[0] == ImmurokCommand.getConnParams.rawValue,
+                  r[1] == ImmurokStatus.ok.rawValue else {
+                completion(nil)
+                return
+            }
+            completion(ConnectionParams(
+                interval: (UInt16(r[2]) << 8) | UInt16(r[3]),
+                latency: (UInt16(r[4]) << 8) | UInt16(r[5]),
+                timeout: (UInt16(r[6]) << 8) | UInt16(r[7])))
         }
     }
 

@@ -30,6 +30,8 @@ func main() -> Int32 {
         return cmdGet(Array(args.dropFirst()))
     case "run":
         return cmdRun(Array(args.dropFirst()))
+    case "pam-key":
+        return cmdPamKey(Array(args.dropFirst()))
     case "version", "--version", "-v":
         print("imk \(version)")
         return 0
@@ -455,6 +457,15 @@ func printUsage() {
                                              --agent NAME   (label run as
                                                              AI agent for
                                                              auth overlay)
+      pam-key install|remove|status    Copy the app's PAM channel key to
+                                       /etc/immurok/pam (install/remove
+                                       need sudo). install verifies the
+                                       cli.sock peer is the signed
+                                       immurok.app; --allow-unsigned-app
+                                       skips that (development only).
+                                       status exit codes: 0=matches,
+                                       2=not installed, 3=mismatch (incl.
+                                       app has no key), 4=app unreachable
       version                          Print version
 
     Examples:

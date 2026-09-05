@@ -29,7 +29,8 @@ struct BrowserExtensionDetector {
             for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundle) {
                 guard InjectionWhitelist.processSatisfies(pid: app.processIdentifier, bundleID: bundle,
                                                           signing: .developerID(teamID: teamID)) else { continue }
-                let appEl = AXUIElementCreateApplication(app.processIdentifier)
+                // 浏览器弹出系统授权框时 UI 线程同步阻塞、AX 不回话，先探测再遍历（见 AXAppProbe）。
+                guard let appEl = AXAppProbe.responsiveApplication(pid: app.processIdentifier, tag: "ext-scan \(bundle)") else { continue }
                 if let hit = soleSecureFieldInWebArea(appEl, origin: origin, urlFragment: urlFragment) {
                     return (hit.field, hit.web, bundle)
                 }

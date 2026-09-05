@@ -13,7 +13,13 @@
  *                      otp/api: <name>
  *                      ssh:     <name>\t<algo> <base64-pubkey>
  *   GET:cat:name   → OK:value
+ *   PAM_KEY        → OK:key_hex64          （仅 root 对端；imk pam-key install 用）
+ *   PAM_KEY_ID     → OK:key_id16           （本用户或 root）
  *   ERROR:reason
+ *
+ * root 对端（euid 0）只放行 PING / PAM_KEY / PAM_KEY_ID，LIST/GET 一律拒绝。
+ * server 无条件启动；「imk CLI」开关（immurok.cliEnabled）关闭时 LIST/GET 回
+ * ERROR:CLI_DISABLED，PING / PAM_KEY / PAM_KEY_ID 不受影响。
  */
 
 import Foundation
@@ -128,10 +134,12 @@ class CLISocketServer {
             return
         }
         let myUid = getuid()
-        guard euid == myUid else {
-            NSLog("CLISocketServer: Rejected UID %d (expected %d)", euid, myUid)
+        // root 只允许拿 pam_key（imk pam-key install 以 sudo 运行）；其余命令仍只认本用户。
+        guard euid == myUid || euid == 0 else {
+            NSLog("CLISocketServer: Rejected UID %d (expected %d or 0)", euid, myUid)
             return
         }
+        let isRoot = euid == 0 && myUid != 0
 
         // 10s receive timeout
         var tv = timeval(tv_sec: 10, tv_usec: 0)
@@ -155,7 +163,28 @@ class CLISocketServer {
         case "PING":
             sendLine(clientSocket, "OK:immurok")
 
+        case "PAM_KEY":
+            guard isRoot else {
+                sendLine(clientSocket, "ERROR:ROOT_REQUIRED")
+                return
+            }
+            guard let key = ImmurokSecurity.shared.loadOrCreatePamKey() else {
+                sendLine(clientSocket, "ERROR:KEYCHAIN")
+                return
+            }
+            NSLog("CLISocketServer: pam_key handed to root peer (imk pam-key install)")
+            sendLine(clientSocket, "OK:" + key.map { String(format: "%02x", $0) }.joined())
+
+        case "PAM_KEY_ID":
+            guard let id = ImmurokSecurity.shared.pamKeyId() else {
+                sendLine(clientSocket, "ERROR:NO_KEY")
+                return
+            }
+            sendLine(clientSocket, "OK:" + id)
+
         case "LIST":
+            if isRoot { sendLine(clientSocket, "ERROR:UNKNOWN_COMMAND"); return }
+            guard cliEnabled else { sendLine(clientSocket, "ERROR:CLI_DISABLED"); return }
             guard parts.count >= 2, let cat = parseCategory(String(parts[1])) else {
                 sendLine(clientSocket, "ERROR:INVALID_CATEGORY")
                 return
@@ -163,6 +192,8 @@ class CLISocketServer {
             handleList(clientSocket, cat: cat)
 
         case "GET":
+            if isRoot { sendLine(clientSocket, "ERROR:UNKNOWN_COMMAND"); return }
+            guard cliEnabled else { sendLine(clientSocket, "ERROR:CLI_DISABLED"); return }
             // GET:category:name → parts = ["GET", "category", "name"]
             guard parts.count >= 3,
                   let cat = parseCategory(String(parts[1])) else {
@@ -175,6 +206,12 @@ class CLISocketServer {
         default:
             sendLine(clientSocket, "ERROR:UNKNOWN_COMMAND")
         }
+    }
+
+    /// 「imk CLI」开关只关掉 LIST/GET；PING / PAM_KEY / PAM_KEY_ID 始终可用，
+    /// 否则关了开关就装不上 PAM 强认证密钥。
+    private var cliEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "immurok.cliEnabled")
     }
 
     // MARK: - Category Parsing

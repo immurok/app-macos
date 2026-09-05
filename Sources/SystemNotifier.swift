@@ -85,7 +85,8 @@ final class SystemNotifier: NSObject, UNUserNotificationCenterDelegate {
             case .openUpdateWindow:
                 NotificationCenter.default.post(name: .openFirmwareUpdateWindow, object: nil)
             case .openStatusTab:
-                NotificationCenter.default.post(name: .openSettingsWindow, object: SettingsTab.status)
+                // Status tab 已并入 About（默认显示状态列表）
+                NotificationCenter.default.post(name: .openSettingsWindow, object: SettingsTab.about)
             case .openPermissionsTab:
                 NotificationCenter.default.post(name: .openSettingsWindow, object: SettingsTab.permissions)
             case nil:

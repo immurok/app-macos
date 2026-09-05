@@ -155,6 +155,21 @@ final class LocalizationFallbackTests: XCTestCase {
         }
     }
 
+    /// 内置英文表不得含汉字；繁体表不得含简体独有字。2026-09-03 曾把繁体文案写进英文表、
+    /// 简体文案写进繁体表（英文界面显示繁体），JSON 包的检查覆盖不到内置表。
+    func testBuiltInEnglishHasNoHanAndTraditionalHasNoSimplified() {
+        let han = CharacterSet(charactersIn: "\u{4E00}"..."\u{9FFF}")
+        for (key, value) in LocalizationManager.enStrings {
+            XCTAssertNil(value.rangeOfCharacter(from: han),
+                         "enStrings[\(key)] contains Han characters: \(value)")
+        }
+        for (key, value) in LocalizationManager.zhHantStrings {
+            let hits = value.filter { Self.simplifiedOnly.contains($0) }
+            XCTAssertTrue(hits.isEmpty,
+                          "zhHantStrings[\(key)] contains simplified-only characters \(Array(hits)): \(value)")
+        }
+    }
+
     func testNoSimplifiedChineseInJapanesePack() throws {
         // Japanese shares kanji with Chinese, so only simplified-only forms
         // are decisive evidence of contamination.

@@ -66,23 +66,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             startSSHAgentServer()
         }
 
-        // Start CLI socket server (if enabled)
-        if UserDefaults.standard.bool(forKey: "immurok.cliEnabled") {
-            startCLIServer(bleManager)
-        }
-
-        // Listen for CLI toggle changes
-        NotificationCenter.default.addObserver(
-            forName: .cliToggleChanged, object: nil, queue: .main
-        ) { [weak self] notification in
-            guard let enable = notification.object as? Bool else { return }
-            if enable {
-                self?.startCLIServer(BLEManager.shared)
-            } else {
-                self?.cliSocketServer?.stop()
-                self?.cliSocketServer = nil
-            }
-        }
+        // CLI socket server 无条件启动：PAM 强认证的启用入口（PAM_KEY / PAM_KEY_ID）
+        // 走的是同一个 socket，不能挂在「imk CLI」这个无关开关上——开关关掉会让
+        // `sudo imk pam-key install` 连不上，用户还以为是 App 坏了。开关只管
+        // LIST/GET，见 CLISocketServer.handleClient 里的 CLI_DISABLED 分支。
+        startCLIServer(bleManager)
 
         // Quick Fill (Ctrl+\)
         if UserDefaults.standard.bool(forKey: "immurok.quickFillEnabled") {
@@ -289,7 +277,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             // ===== 密码注入检测（阶段 2：Passwords 登录密码真注入，其余仍只 log）=====
             // pending-PAM 已在上方早返回（PAM 优先仲裁天然满足），此处只可能是主动路径。
+            let detectT0 = CFAbsoluteTimeGetCurrent()
             let injectionContext = AuthContextDetector().detect()
+            let detectMs = Int((CFAbsoluteTimeGetCurrent() - detectT0) * 1000)
             switch injectionContext {
             case .secureField(let item, let field, let sheet):
                 // 密码来源与提交策略都来自条目自身（enabled 已在 detect() 过滤）。
@@ -336,7 +326,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     AXUIElementCopyAttributeValue(f as! AXUIElement, kAXSubroleAttribute as CFString, &sr)
                     focusedSubrole = (sr as? String) ?? "nil"
                 }
-                LogManager.shared.log("[inject/detect] no match front=\(frontBundle) focusedSubrole=\(focusedSubrole)")
+                LogManager.shared.log("[inject/detect] no match front=\(frontBundle) focusedSubrole=\(focusedSubrole) +\(detectMs)ms")
             }
 
             let isAuthorizationEnabled = SetupManager.shared.isAuthorizationEnabled
@@ -416,11 +406,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in LogManager.shared.log("Unlock skipped: feature disabled") }
             return
         }
-        // 连续两轮密码都没解开 → 大概率是存储的密码过期了。继续盲打只会
-        // 喂给 loginwindow 更多错误尝试（递增延迟惩罚），先停手等用户换密码。
+        // 连续两轮密码都没解开且本地验密失败 → 存储的密码过期了。继续盲打
+        // 只会喂给 loginwindow 更多错误尝试（递增延迟惩罚），停手等用户换密码。
+        // 自愈：挂起期间限频重验存储密码（覆盖 OD 瞬时故障误挂起、用户把系统
+        // 密码改回旧值两种情况），验证通过即解除挂起继续本次解锁。
         if UserDefaults.standard.bool(forKey: "immurok.autoUnlockSuspended") {
-            Task { @MainActor in LogManager.shared.log("Unlock suspended (repeated failures), ignoring fingerprint") }
-            return
+            let now = CFAbsoluteTimeGetCurrent()
+            guard now - lastSuspendedReverifyTime >= 600 else {
+                Task { @MainActor in LogManager.shared.log("Unlock suspended (stored password invalid), ignoring fingerprint") }
+                return
+            }
+            lastSuspendedReverifyTime = now
+            guard let stored = ImmurokSecurity.shared.loadPassword(),
+                  ImmurokSecurity.shared.verifyLoginPassword(stored) else {
+                Task { @MainActor in LogManager.shared.log("Unlock suspended: stored password re-verify failed, staying suspended") }
+                return
+            }
+            UserDefaults.standard.removeObject(forKey: "immurok.autoUnlockSuspended")
+            Task { @MainActor in LogManager.shared.log("Stored password re-verified OK → auto unlock resumed") }
         }
         guard AXIsProcessTrusted() else {
             NSLog("No accessibility permission, cannot unlock")
@@ -497,6 +500,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // 物理按住的修饰键（如截图的 ⌘⇧）会合并进合成键击把密码打错——
+        // 等释放再输；超过 deadline 仍按着就放弃本轮（不输、不计失败）。
+        if hasPhysicalModifiersDown() {
+            guard CFAbsoluteTimeGetCurrent() < deadline else {
+                Task { @MainActor in LogManager.shared.log("Aborting unlock: modifier keys held past deadline") }
+                return
+            }
+            Task { @MainActor in LogManager.shared.log("Modifier keys held (screenshot?) — holding password entry") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.typePasswordAvoidingWatch(password, t0: t0, deadline: deadline)
+            }
+            return
+        }
         fakeKeyStrokes(password)
         let ms2 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
         Task { @MainActor in LogManager.shared.log("Password entered +\(ms2)ms") }
@@ -512,6 +528,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 if self.isAppleWatchAuthInProgress() {
                     Task { @MainActor in LogManager.shared.log("Retry skipped: Apple Watch auth active") }
+                    return
+                }
+                if self.hasPhysicalModifiersDown() {
+                    Task { @MainActor in LogManager.shared.log("Retry skipped: modifier keys held") }
                     return
                 }
                 Task { @MainActor in LogManager.shared.log("Still locked, retrying") }
@@ -537,20 +557,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 一轮解锁（两次输入）都失败。连续两轮即暂停自动解锁并通知——
-    /// 通知在锁屏时看不到，但会留在通知中心，解锁后可见。
+    /// 一轮解锁（两次输入）都失败。连续两轮先本地验密实证：密码仍正确
+    /// 说明是瞬态干扰（修饰键、焦点竞态），重置计数不挂起；密码确实错了
+    /// 才暂停自动解锁并通知——通知在锁屏时看不到，但会留在通知中心。
     private var consecutiveUnlockFailures = 0
+    /// 挂起态下重验存储密码的限频时间戳（见 unlockScreen 自愈分支）。
+    private var lastSuspendedReverifyTime: CFAbsoluteTime = 0
     private func recordUnlockFailure() {
         consecutiveUnlockFailures += 1
-        Task { @MainActor in LogManager.shared.log("Unlock round failed (consecutive=\(consecutiveUnlockFailures))") }
-        guard consecutiveUnlockFailures >= 2 else { return }
-        UserDefaults.standard.set(true, forKey: "immurok.autoUnlockSuspended")
+        let count = consecutiveUnlockFailures
+        Task { @MainActor in LogManager.shared.log("Unlock round failed (consecutive=\(count))") }
+        guard count >= 2 else { return }
         consecutiveUnlockFailures = 0
-        Task { @MainActor in LogManager.shared.log("Auto unlock suspended after repeated failures") }
+        if let stored = ImmurokSecurity.shared.loadPassword(),
+           ImmurokSecurity.shared.verifyLoginPassword(stored) {
+            Task { @MainActor in LogManager.shared.log("Stored password verified OK — transient failure, not suspending") }
+            return
+        }
+        UserDefaults.standard.set(true, forKey: "immurok.autoUnlockSuspended")
+        Task { @MainActor in LogManager.shared.log("Auto unlock suspended (stored password failed verification)") }
         SystemNotifier.post(subtitle: "notify.unlock.suspended.subtitle".localized,
                             body: "notify.unlock.suspended.body".localized,
                             identifier: "immurok.unlock.suspended",
                             action: .openStatusTab)
+    }
+
+    /// 是否有物理按住的修饰键（⌘⇧⌥）。合成键击会合并这些修饰导致密码
+    /// 打错。有意不含 ⌃——设备的 HID 唤醒键就是 CTRL，卡键场景由
+    /// fakeKeyStrokes 开头的空 flagsChanged 清理，纳入会误伤解锁。
+    private func hasPhysicalModifiersDown() -> Bool {
+        let flags = CGEventSource.flagsState(.hidSystemState)
+        return !flags.intersection([.maskCommand, .maskShift, .maskAlternate]).isEmpty
     }
 
     /// Confirm the lock-screen process owns the keyboard focus right now.
@@ -698,7 +735,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func findUsePasswordButton() -> (button: AXUIElement, appName: String, sheetTexts: [String])? {
         guard let frontApp = NSWorkspace.shared.frontmostApplication else { return nil }
         let appName = frontApp.localizedName ?? "pid=\(frontApp.processIdentifier)"
-        let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+        guard let appElement = AXAppProbe.responsiveApplication(pid: frontApp.processIdentifier, tag: "front-sheet-scan") else { return nil }
 
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,

@@ -7,7 +7,6 @@ enum SettingsTab: String, CaseIterable {
     case keys
     case permissions
     case automation
-    case status
     case about
 
     var icon: String {
@@ -16,7 +15,6 @@ enum SettingsTab: String, CaseIterable {
         case .keys: return "key.fill"
         case .permissions: return "slider.horizontal.3"
         case .automation: return "wand.and.stars"
-        case .status: return "list.bullet.rectangle"
         case .about: return "info.circle"
         }
     }
@@ -27,7 +25,6 @@ enum SettingsTab: String, CaseIterable {
         case .keys: return "tab.keys".localized
         case .permissions: return "tab.permissions".localized
         case .automation: return "tab.automation".localized
-        case .status: return "tab.status".localized
         case .about: return "tab.about".localized
         }
     }
@@ -109,8 +106,6 @@ struct ContentView: View {
             PermissionsTabView(viewModel: viewModel, setupManager: setupManager)
         case .automation:
             AutomationTabView(viewModel: viewModel)
-        case .status:
-            StatusTabView(viewModel: viewModel, setupManager: setupManager)
         case .about:
             AboutTabView(viewModel: viewModel, setupManager: setupManager)
         }

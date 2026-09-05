@@ -1,11 +1,10 @@
 import SwiftUI
 import Combine
-import OpenDirectory
 import AuthInjectionKit
+import FirmwareUpdateKit
 
 extension Notification.Name {
     static let sshKeyCacheSynced = Notification.Name("sshKeyCacheSynced")
-    static let cliToggleChanged = Notification.Name("cliToggleChanged")
     static let quickFillToggleChanged = Notification.Name("quickFillToggleChanged")
     static let quickFillHotkeyChanged = Notification.Name("quickFillHotkeyChanged")
     /// 辅助功能权限从无→有翻转时发出（用于在授权后重注册全局热键）
@@ -244,6 +243,30 @@ class AppViewModel: ObservableObject {
         }
     }
 
+    /// 设备固件是否支持 GET_CONN_PARAMS（0x03，1.7.2 起）。
+    /// firmwareVersion 可能带 build 段（"1.7.2.<hash>"），归一化到三段再比较；
+    /// 版本未知时按不支持处理——宁可禁用也不给旧固件发它不认识的命令。
+    var supportsConnParams: Bool {
+        guard let raw = firmwareVersion,
+              let dev = FirmwareVersion(FirmwareUpdateService.normalizeSemver(raw)),
+              let floor = FirmwareVersion("1.7.2") else { return false }
+        return !(dev < floor)
+    }
+
+    /// 读取链路层当前实际生效的连接参数（GET_CONN_PARAMS 0x03，固件 1.7.2+）。
+    /// completion 在主线程回调；nil = 未连接 / 旧固件不支持 / 超时。
+    func readConnParams(completion: @escaping (BLEManager.ConnectionParams?) -> Void) {
+        guard isDeviceConnected, supportsConnParams else {
+            completion(nil)
+            return
+        }
+        bleManager.getConnParams { params in
+            Task { @MainActor in
+                completion(params)
+            }
+        }
+    }
+
     // MARK: - BLE Callbacks
 
     private func setupBLECallbacks() {
@@ -440,20 +463,10 @@ class AppViewModel: ObservableObject {
         }
     }
 
-    /// 用 OpenDirectory 校验输入是否为当前 macOS 登录密码。
     /// 密码存错的后果是 App 在锁屏反复盲打错密码（还会触发系统的
     /// 递增延迟惩罚），而用户只能看到「解锁没反应」——必须在存之前拦住。
     private func verifyLoginPassword(_ password: String) -> Bool {
-        do {
-            let node = try ODNode(session: ODSession.default(),
-                                  type: ODNodeType(kODNodeTypeAuthentication))
-            let record = try node.record(withRecordType: kODRecordTypeUsers,
-                                         name: NSUserName(), attributes: nil)
-            try record.verifyPassword(password)
-            return true
-        } catch {
-            return false
-        }
+        ImmurokSecurity.shared.verifyLoginPassword(password)
     }
 
     /// 询问登录密码并本地校验，校验不过重新弹（取消返回 nil）。

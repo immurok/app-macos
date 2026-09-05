@@ -2,8 +2,9 @@
  * PAMSocketServer.swift - Unix socket server for PAM module communication
  *
  * Listens on ~/.immurok/pam.sock for authentication requests from pam_immurok
- * Protocol: "AUTH:username:service" -> "OK" / "DENY" / "SKIP" (feature
- * disabled — PAM module stays silent and falls through to password)
+ * Protocol: "AUTH:username:service[:nonce_hex32]" -> "OK[:mac_hex32]" / "DENY" / "SKIP"
+ * (feature disabled — PAM module stays silent and falls through to password).
+ * 有 nonce 时 OK 带对该 nonce 的 HMAC，见 spec 2026-09-03-pam-channel-mac-design.md。
  */
 
 import Foundation
@@ -346,6 +347,7 @@ class PAMSocketServer {
 
         let user = String(parts[1])
         let service = parts.count >= 3 ? String(parts[2]) : "unknown"
+        let nonce = parseNonce(parts.count >= 4 ? parts[3] : nil)
 
         NSLog("PAMSocketServer: Auth request for user=%@, service=%@", user, service)
 
@@ -358,7 +360,7 @@ class PAMSocketServer {
         if consumePreAuthorization(service: service) {
             NSLog("PAMSocketServer: Auth approved via pre-authorization for %@", user)
             onAuthSuccess?()
-            sendResponse(clientSocket, response: "OK")
+            sendResponse(clientSocket, response: okResponse(nonce: nonce, user: user, service: service))
             return
         }
 
@@ -520,7 +522,7 @@ class PAMSocketServer {
 
         let response: String
         if authResult {
-            response = "OK"
+            response = okResponse(nonce: nonce, user: user, service: service)
             onAuthSuccess?()
         } else if intent.value == .cancel {
             // Client hit Ctrl+C — the socket is already closed, so this is
@@ -543,7 +545,7 @@ class PAMSocketServer {
             DispatchQueue.main.async {
                 let status: AuthRequestState.Status
                 switch response {
-                case "OK":              status = .approved
+                case let r where r.hasPrefix("OK"): status = .approved
                 case "TIMEOUT":         status = .timedOut
                 default:                status = .denied
                 }
@@ -551,8 +553,32 @@ class PAMSocketServer {
             }
         }
 
-        NSLog("PAMSocketServer: Auth result for %@: %@", user, response)
+        NSLog("PAMSocketServer: Auth result for %@: %@", user, response.hasPrefix("OK") ? "OK(mac=\(response.count > 2))" : response)
         sendResponse(clientSocket, response: response)
+    }
+
+    /// 有 nonce 且本机有 pam_key 时回 `OK:<mac>`，否则回裸 `OK`（兼容旧 PAM 模块）。
+    /// PAM 侧是否要求 MAC 由 root 目录里的密钥文件决定，这里只负责能给就给。
+    private func okResponse(nonce: Data?, user: String, service: String) -> String {
+        guard let nonce = nonce else { return "OK" }
+        guard let key = ImmurokSecurity.shared.loadPamKey() else {
+            NSLog("PAMSocketServer: nonce present but no pam_key in Keychain — replying bare OK")
+            return "OK"
+        }
+        return "OK:" + ImmurokSecurity.pamMac(key: key, nonce: nonce, user: user, service: service)
+    }
+
+    /// 解析 32 位十六进制 nonce；格式不对视为没有 nonce。
+    private func parseNonce(_ s: Substring?) -> Data? {
+        guard let s = s, s.count == 32 else { return nil }
+        var d = Data(capacity: 16)
+        var i = s.startIndex
+        while i < s.endIndex {
+            let j = s.index(i, offsetBy: 2)
+            guard let b = UInt8(s[i..<j], radix: 16) else { return nil }
+            d.append(b); i = j
+        }
+        return d
     }
 
     private func sendResponse(_ socket: Int32, response: String) {

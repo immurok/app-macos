@@ -210,9 +210,9 @@ struct MenuBarView: View {
                 .padding(.vertical, 8)
             }
 
-            // 整体状态 - 点击进入状态页面
+            // 整体状态 - 点击进入 About（默认显示状态列表）
             Button(action: {
-                openSettings(tab: .status)
+                openSettings(tab: .about)
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: isAllStatusOK ? "checkmark.circle" : "exclamationmark.circle")

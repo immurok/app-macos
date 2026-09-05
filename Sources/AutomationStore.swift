@@ -21,7 +21,10 @@ final class AutomationStore: ObservableObject {
         if let data = try? Data(contentsOf: fileURL),
            let decoded = try? JSONDecoder().decode([AutomationItem].self, from: data),
            !decoded.isEmpty {
-            items = decoded
+            // 内置项身份只读：每次加载用 builtinDefaults 刷新（bundleIDs 等随版本更新），
+            // 只保留用户态（id/enabled）。有变化才回写。
+            items = AutomationItem.refreshingBuiltinIdentity(decoded)
+            if items != decoded { persist() }
             return
         }
         items = migrateFromLegacyDefaults()

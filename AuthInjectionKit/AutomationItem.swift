@@ -53,6 +53,26 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
         return bundleIDs.allSatisfy { signing.validatedRequirementString(bundleID: $0) != nil }
     }
 
+    /// 用 builtinDefaults 刷新存盘条目里内置项的身份字段（bundleIDs/signing/策略等），
+    /// 保留用户态（id、enabled）；自定义项原样保留；存盘缺失的内置项补上（enabled=false）。
+    /// 内置项身份本就只读，这保证升级后新覆盖面（如 Passwords 加 Safari）对老安装生效。
+    public static func refreshingBuiltinIdentity(_ stored: [AutomationItem]) -> [AutomationItem] {
+        let defaults = Dictionary(uniqueKeysWithValues: builtinDefaults().map { ($0.builtinKey!, $0) })
+        var seen = Set<String>()
+        var result: [AutomationItem] = stored.map { item in
+            guard let key = item.builtinKey, let fresh = defaults[key] else { return item }
+            seen.insert(key)
+            var m = fresh
+            m.id = item.id
+            m.enabled = item.enabled
+            return m
+        }
+        for item in builtinDefaults() where !seen.contains(item.builtinKey!) {
+            result.append(item)
+        }
+        return result
+    }
+
     /// 空白自定义条目（供"添加"入口预填）。
     public static func newCustom() -> AutomationItem {
         AutomationItem(id: UUID(), name: "", enabled: true, builtinKey: nil,
@@ -67,9 +87,13 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
                 targetKind: .app, bundleIDs: ["com.apple.AppStore"],
                 signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
                 fieldAXIdentifier: nil, submitStrategy: .appStoreWizard),
+            // com.apple.Safari：Safari 内的 Passwords 解锁 sheet（设置 → 密码等）密码框属主是
+            // Safari 进程本身。网页密码框同属 Safari，靠 AuthContextDetector 的
+            // "原生 sheet 且不在 AXWebArea 内"硬化判据区分，绝不注入网页字段。
             AutomationItem(id: UUID(), name: "Passwords", enabled: false, builtinKey: "passwords",
                 targetKind: .app,
-                bundleIDs: ["com.apple.Passwords", "com.apple.AuthKitUI.AKAuthorizationRemoteViewService"],
+                bundleIDs: ["com.apple.Passwords", "com.apple.AuthKitUI.AKAuthorizationRemoteViewService",
+                            "com.apple.Safari"],
                 signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
                 fieldAXIdentifier: nil, submitStrategy: .generic),
             AutomationItem(id: UUID(), name: "1Password", enabled: false, builtinKey: "1password",

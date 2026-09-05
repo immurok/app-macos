@@ -3,6 +3,25 @@
  *
  * This module communicates with immurok-daemon via Unix socket
  * to provide fingerprint authentication.
+ *
+ * Fail-closed policy for the strong-auth key file
+ * (/etc/immurok/pam/<uid>.key, see pam_load_key()):
+ *   - File absent (ENOENT)            → compat mode. Strong auth was never
+ *                                        opted into; a bare "OK" from the
+ *                                        App is accepted like before.
+ *   - File present and well-formed    → strong mode. "OK" must carry a
+ *                                        correct HMAC over this request's
+ *                                        nonce or it's treated as DENY.
+ *   - File present but unusable       → ALSO strong mode, with key_valid=0,
+ *     (wrong owner/mode/size, symlink)  so the MAC check can never pass.
+ *                                        Any "OK" is unconditionally denied.
+ * The last case used to silently fall back to compat mode (fail-open): an
+ * attacker who could corrupt or replace the key file (e.g. race a reinstall,
+ * or an admin-privileged bug elsewhere) got to downgrade strong auth back to
+ * "any OK on pam.sock is accepted" without leaving strong-mode enabled. A
+ * key file that exists but can't be trusted is a signal something is wrong,
+ * not a signal to relax — so we fail closed and drop to the password prompt
+ * instead.
  */
 
 #include <stdio.h>
@@ -29,6 +48,8 @@
 
 #include <security/pam_modules.h>
 #include <security/pam_appl.h>
+#include "pam_auth_verify.h"
+#include "hmac_sha256.h"
 
 #define TIMEOUT_SEC 40
 #define BUFFER_SIZE 256
@@ -50,11 +71,43 @@ static int authenticate_via_socket(const char *user, const char *service) {
     char buf[128];
     ssize_t n;
     int frame = 0;
+    uint8_t key[32];
+    uint8_t nonce[PAM_NONCE_LEN];
+    char nonce_hex[PAM_NONCE_LEN * 2 + 1];
+    int strong = 0;
+    int key_valid = 0;
 
     /* Build socket path from target user's home directory */
     struct passwd *pw = getpwnam(user);
     if (pw == NULL || pw->pw_dir == NULL)
         return PAM_AUTH_ERR;
+
+    /* 强认证模式：root 目录里有本用户的 pam_key 时，App 的 OK 必须带对本次
+     * nonce 的 HMAC。文件不存在则维持旧行为（兼容模式）。 */
+    {
+        int rc = pam_load_key(PAM_KEY_DIR_DEFAULT, pw->pw_uid, key);
+        if (rc == 1) {
+            strong = 1;
+            key_valid = 1;
+        } else if (rc < 0) {
+            /* 密钥文件存在但读不出来（属主/权限/大小不对，或是个符号链接）：
+             * 这不是"从没配置过强认证"，是配置被破坏或被篡改的信号，必须
+             * fail closed——照样进入强认证模式，但 key_valid=0 让下面 OK
+             * 分支的 MAC 检查永远通不过，退回密码，而不是悄悄退回兼容模式
+             * 接受一个没有 MAC 保护的裸 OK。 */
+            strong = 1;
+            key_valid = 0;
+            memset(key, 0, sizeof key);
+            syslog(LOG_AUTH | LOG_WARNING,
+                   "pam_immurok: %s/%u.key exists but is unusable (owner/mode/size) — "
+                   "falling back to password (fail closed)",
+                   PAM_KEY_DIR_DEFAULT, (unsigned)pw->pw_uid);
+            pam_audit_log(user, service, "KEY_FILE_UNUSABLE");
+        }
+    }
+    pam_gen_nonce(nonce);
+    pam_hex(nonce, PAM_NONCE_LEN, nonce_hex);
+
     snprintf(socket_path, sizeof(socket_path), "%s/.immurok/pam.sock", pw->pw_dir);
 
     sock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -70,7 +123,7 @@ static int authenticate_via_socket(const char *user, const char *service) {
         return PAM_AUTH_ERR;
     }
 
-    snprintf(request, sizeof(request), "AUTH:%s:%s", user, service);
+    snprintf(request, sizeof(request), "AUTH:%s:%s:%s", user, service, nonce_hex);
     if (send(sock, request, strlen(request), 0) < 0) {
         close(sock);
         return PAM_AUTH_ERR;
@@ -149,6 +202,25 @@ static int authenticate_via_socket(const char *user, const char *service) {
             memset(response, 0, sizeof(response));
             n = recv(sock, response, sizeof(response) - 1, 0);
             if (n > 0 && strncmp(response, "OK", 2) == 0) {
+                if (strong && (!key_valid || !pam_verify_response(key, nonce, user, service, response))) {
+                    /* 强认证模式下 OK 必须带正确 MAC。key_valid=0（密钥文件不可用，
+                     * 已在上面 fail closed）或 MAC 本身算出来不对，都是伪造/配置
+                     * 损坏的信号：一律按 DENY 处理，退回密码，并留下审计记录。 */
+                    const char *reason = key_valid ? "MAC_MISMATCH" : "KEY_FILE_UNUSABLE";
+                    syslog(LOG_AUTH | LOG_WARNING,
+                           "pam_immurok: %s (user=%s service=%s) — possible pam.sock spoofing",
+                           reason, user, service);
+                    pam_audit_log(user, service, reason);
+                    if (tty_fd >= 0) {
+                        snprintf(buf, sizeof(buf),
+                                 "\r\033[K\033[31m\xe2\x9c\x97 Denied\033[0m");
+                        write(tty_fd, buf, strlen(buf));
+                        usleep(500000);
+                        write(tty_fd, "\r\033[K", 4);
+                    }
+                    result = PAM_AUTH_ERR;
+                    break;
+                }
                 if (tty_fd >= 0) {
                     snprintf(buf, sizeof(buf),
                              "\r\033[K\033[32m\xe2\x9c\x93 Approved!\033[0m");
@@ -254,6 +326,7 @@ static int authenticate_via_socket(const char *user, const char *service) {
     if (tty_fd >= 0)
         close(tty_fd);
     close(sock);
+    secure_zero(key, sizeof key);
     return result;
 }
 

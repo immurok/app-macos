@@ -36,6 +36,11 @@ let package = Package(
             name: "LocalizationTests",
             dependencies: ["immurokApp"],
             path: "Tests/LocalizationTests"
+        ),
+        .testTarget(
+            name: "PamMacTests",
+            dependencies: ["immurokApp"],
+            path: "Tests/PamMacTests"
         )
     ]
 )

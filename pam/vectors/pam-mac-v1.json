@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "prefix": "immurok-pam-v1",
+  "vectors": [
+    {
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+      "user": "alice",
+      "service": "sudo",
+      "key_id": "630dcd2966c43366",
+      "mac": "f69f1a9e50e440d5b2c9a4d55d6d2ade"
+    },
+    {
+      "key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "nonce": "00000000000000000000000000000000",
+      "user": "bob",
+      "service": "authorization",
+      "key_id": "af9613760f72635f",
+      "mac": "7960a35a6ce7ec99ec82534a6c7a63a7"
+    },
+    {
+      "key": "f4aa18a1baa99ea6db4f6cf79be86353b1e26e9854064733d6af6b22821dc8ea",
+      "nonce": "df24f705a507876aa847f6027ee46a70",
+      "user": "carol",
+      "service": "auth-gui",
+      "key_id": "a209d19acd526cdb",
+      "mac": "186999b14638ed7a68a9fa971716118c"
+    }
+  ]
+}

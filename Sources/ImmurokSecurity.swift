@@ -4,6 +4,7 @@
 
 import CryptoKit
 import Foundation
+import OpenDirectory
 import Security
 
 class ImmurokSecurity {
@@ -17,6 +18,7 @@ class ImmurokSecurity {
     private let keychainServiceOnePasswordPassword = "com.immurok.onepassword-password"
     private let keychainServiceBitwardenPassword = "com.immurok.bitwarden-password"
     private let keychainServiceVerifiedDevice = "com.immurok.verified-device"
+    private let keychainServicePamKey = "com.immurok.pam-key"
     private let keychainAccount = "immurok"
 
     private static let hkdfSalt = "immurok-pairing-salt".data(using: .utf8)!
@@ -131,6 +133,53 @@ class ImmurokSecurity {
         return response.elementsEqual(expectedPrefix)
     }
 
+    // MARK: - PAM 信道 MAC（spec 2026-09-03-pam-channel-mac-design.md）
+    //
+    // pam_key 与设备无关，每台电脑一把随机密钥。PAM 模块用 root 目录里的副本验证
+    // 我们对其 nonce 的 HMAC；副本由 `imk pam-key install` 以 root 身份从
+    // CLISocketServer 取走。换设备、重配对都不影响这把密钥。
+
+    static let pamMacPrefix = "immurok-pam-v1"
+
+    static func pamKeyId(key: Data) -> String {
+        SHA256.hash(data: key).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func pamMac(key: Data, nonce: Data, user: String, service: String) -> String {
+        var msg = Data(pamMacPrefix.utf8)
+        msg.append(nonce)
+        msg.append(Data(user.utf8)); msg.append(0)
+        msg.append(Data(service.utf8)); msg.append(0)
+        let full = HMAC<SHA256>.authenticationCode(for: msg, using: SymmetricKey(data: key))
+        return full.prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func loadPamKey() -> Data? {
+        guard let d = loadFromKeychain(service: keychainServicePamKey), d.count == 32 else { return nil }
+        return d
+    }
+
+    func loadOrCreatePamKey() -> Data? {
+        if let k = loadPamKey() { return k }
+        var k = Data(count: 32)
+        let rc = k.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        guard rc == errSecSuccess else {
+            NSLog("ImmurokSecurity: SecRandomCopyBytes failed: %d", rc)
+            return nil
+        }
+        saveToKeychain(service: keychainServicePamKey, data: k)
+        NSLog("ImmurokSecurity: pam_key generated")
+        return loadPamKey()
+    }
+
+    func pamKeyId() -> String? {
+        loadPamKey().map { Self.pamKeyId(key: $0) }
+    }
+
+    func deletePamKey() {
+        deleteFromKeychain(service: keychainServicePamKey)
+    }
+
     // MARK: - Verified Device Cache
 
     /// Save device UUID after successful challenge verification
@@ -187,6 +236,23 @@ class ImmurokSecurity {
 
     func clearPassword() {
         deleteFromKeychain(service: keychainServicePassword)
+    }
+
+    /// 用 OpenDirectory 校验给定字符串是否为当前 macOS 登录密码。
+    /// 存密码前的拦截（AppViewModel）和解锁失败挂起前的实证
+    /// （AppDelegate.recordUnlockFailure）共用。失败会计入系统的
+    /// failed-auth 计数，调用方必须限频，不能按指纹次数裸调。
+    func verifyLoginPassword(_ password: String) -> Bool {
+        do {
+            let node = try ODNode(session: ODSession.default(),
+                                  type: ODNodeType(kODNodeTypeAuthentication))
+            let record = try node.record(withRecordType: kODRecordTypeUsers,
+                                         name: NSUserName(), attributes: nil)
+            try record.verifyPassword(password)
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Apple ID Password (Keychain)
@@ -265,6 +331,7 @@ class ImmurokSecurity {
         clearBitwardenPassword()
         for svc in allAutomationSecretServices() { deleteSecret(service: svc) }
         clearPairingData()  // shared key + verified device
+        deleteFromKeychain(service: keychainServicePamKey)
         NSLog("ImmurokSecurity: All Keychain data cleared (uninstall)")
     }
 

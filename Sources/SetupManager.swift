@@ -53,6 +53,7 @@ class SetupManager: ObservableObject {
         isLegacySudoConfigured = Self.isLegacyOS
             ? Self.authorizationLineConfigured(at: legacySudoPath)
             : true
+        refreshPamKeyStatus()
     }
 
     /// 文件真相:/etc/pam.d/authorization 是否含生效的 pam_immurok 行。
@@ -88,6 +89,66 @@ class SetupManager: ObservableObject {
     /// Check if setup wizard should be shown
     var needsSetup: Bool {
         return !isPAMModuleInstalled || !hasAccessibilityPermission
+    }
+
+    // MARK: - PAM 信道强认证密钥（spec 2026-09-03-pam-channel-mac-design.md）
+
+    enum PamKeyStatus { case notInstalled, installed, mismatch }
+    @Published private(set) var pamKeyStatus: PamKeyStatus = .notInstalled
+
+    /// 读 /etc/immurok/pam/<uid>.keyid 与钥匙串里 pam_key 的 key_id 比较。不需要 root。
+    func refreshPamKeyStatus() {
+        let path = "/etc/immurok/pam/\(getuid()).keyid"
+        guard let installed = try? String(contentsOfFile: path, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines), !installed.isEmpty else {
+            pamKeyStatus = .notInstalled
+            return
+        }
+        guard let mine = ImmurokSecurity.shared.pamKeyId() else {
+            // root 有、钥匙串没有：条目丢了，PAM 会拒绝我们的裸 OK
+            pamKeyStatus = .mismatch
+            return
+        }
+        pamKeyStatus = (mine == installed) ? .installed : .mismatch
+    }
+
+    /// 通过 osascript 管理员授权跑 `imk pam-key install --user <uid>`。
+    /// 注意：osascript 拿到的 root 写 /etc/pam.d 曾被 TCC 拒绝；/etc/immurok 是否放行
+    /// 以实测为准，失败时 completion 带上让用户在终端手动执行的提示。
+    func installPamKey(completion: @escaping (Bool, String?) -> Void) {
+        let uid = getuid()
+        let script = "do shell script \"/usr/local/bin/imk pam-key install --user \(uid)\" with administrator privileges"
+        DispatchQueue.global().async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", script]
+            let err = Pipe()
+            p.standardError = err
+            p.standardOutput = Pipe()
+            do { try p.run() } catch {
+                DispatchQueue.main.async { completion(false, error.localizedDescription) }
+                return
+            }
+            p.waitUntilExit()
+            let errText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let trimmedErr = errText.trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.refreshPamKeyStatus()
+                let ok = p.terminationStatus == 0 && self.pamKeyStatus == .installed
+                if ok {
+                    completion(true, nil)
+                    return
+                }
+                // 用户在管理员授权弹窗里点了取消：osascript 以非 0 退出，
+                // stderr 是 "User canceled." (对应 AppleScript 错误 -128)。
+                // 这不是失败，是用户主动放弃——不要弹「启用失败」，静默刷新状态就行。
+                if p.terminationStatus != 0 && trimmedErr.contains("User canceled") {
+                    completion(false, nil)
+                    return
+                }
+                completion(false, trimmedErr)
+            }
+        }
     }
 
     // MARK: - PAM Feature Toggles

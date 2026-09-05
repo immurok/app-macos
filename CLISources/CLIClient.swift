@@ -14,11 +14,32 @@ struct CLIClient {
 
     /// Send a command and return the raw response string
     static func send(_ command: String) throws -> String {
+        try send(command, socketPath: socketPath)
+    }
+
+    /// `imk pam-key install` 以 root 运行时，要连的是目标用户家目录下的 socket，不是 root 自己的。
+    static func send(_ command: String, socketPath: String) throws -> String {
+        let fd = try connectSocket(socketPath)
+        defer { close(fd) }
+        return try exchange(fd: fd, command: command)
+    }
+
+    /// 连上之后、发送之前先校验对端代码签名。`PAM_KEY` 这种把秘密交出去的命令必须走这条路：
+    /// socket 文件归用户所有，能被同用户进程顶替（见 PeerCodeSignature.swift）。
+    /// 校验不过就直接 throw，命令一个字节都不会发出去。
+    static func sendVerified(_ command: String, socketPath: String, requirement: String) throws -> String {
+        let fd = try connectSocket(socketPath)
+        defer { close(fd) }
+        try verifyPeer(fd: fd, requirement: requirement)
+        return try exchange(fd: fd, command: command)
+    }
+
+    /// 连上 socketPath，返回已连接的 fd（调用方负责 close）。
+    static func connectSocket(_ socketPath: String) throws -> Int32 {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw CLIError.connectionFailed("Cannot create socket")
         }
-        defer { close(fd) }
 
         // Connect
         var addr = sockaddr_un()
@@ -36,11 +57,16 @@ struct CLIClient {
         }
 
         guard connectResult >= 0 else {
+            close(fd)
             throw CLIError.connectionFailed(
                 "Cannot connect to \(socketPath). Is immurok.app running?"
             )
         }
+        return fd
+    }
 
+    /// 在已连接（并按需校验过）的 fd 上发一条命令并读回完整回复。
+    private static func exchange(fd: Int32, command: String) throws -> String {
         // Set recv timeout. Must exceed the App's own wait budget for a
         // fingerprint-gated GET (30 s device gate + 5 s margin = 35 s),
         // otherwise `imk get imk://api/...` gave up at 15 s with "Empty

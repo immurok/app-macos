@@ -202,6 +202,8 @@ final class TargetPicker {
     }
 
     /// chrome-extension://<id>/popup/index.html#/lock → (origin: "chrome-extension://<id>/", fragment: "#/lock")
+    /// 无 hash 路由的扩展（如 LastPass 的 …/webclient-extension-toolbar.html）退回用页面路径做判据；
+    /// 以前兜底填 "#/"，而检测端是 `url.contains(fragment)`，URL 里根本没有 "#/" 就永远匹配不上。
     private func parseExtensionURL(_ urlStr: String) -> (String, String)? {
         let extSchemes = ["chrome-extension://", "safari-web-extension://", "moz-extension://"]
         guard let scheme = extSchemes.first(where: { urlStr.hasPrefix($0) }) else { return nil }
@@ -215,7 +217,12 @@ final class TargetPicker {
             let frag = String(urlStr[hashIdx...])
             fragment = frag.prefix { $0 != "?" }.description
         }
-        return (origin, fragment.isEmpty ? "#/" : fragment)
+        if fragment.isEmpty {
+            // 路径部分：origin 之后到 "?" 为止，如 "/webclient-extension-toolbar.html"
+            let path = "/" + urlStr.dropFirst(origin.count).prefix { $0 != "?" && $0 != "#" }
+            fragment = path == "/" ? "/" : path
+        }
+        return (origin, fragment)
     }
 
     // MARK: - AX helpers

@@ -74,6 +74,10 @@ struct DeviceTabView: View {
     @StateObject private var fpViewModel = FingerprintViewModel()
     @StateObject private var dualHostVM = DualHostViewModel()
     @State private var isRefreshingBattery = false
+    // 连接参数弹窗（点击「已连接」行触发）
+    @State private var isReadingConnParams = false
+    @State private var showingConnParams = false
+    @State private var connParamsMessage = ""
 
     var body: some View {
         ScrollView {
@@ -94,8 +98,48 @@ struct DeviceTabView: View {
                                 .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
                                 .frame(width: 10, height: 10)
 
-                            Text(viewModel.deviceStatusTextWithFirmware)
-                                .foregroundColor(.secondary)
+                            // 点击「已连接：xxx」读取链路层实际连接参数并弹窗
+                            // （GET_CONN_PARAMS 0x03，固件 1.7.2+；旧固件超时走失败文案）
+                            Button {
+                                guard viewModel.isDeviceConnected, !isReadingConnParams else { return }
+                                // 固件 < 1.7.2 没有 0x03 命令：不发读取（避免白等
+                                // 3 秒超时），直接弹「需要 1.7.2+」提示。
+                                guard viewModel.supportsConnParams else {
+                                    connParamsMessage = "device.connparams.failed".localized
+                                    showingConnParams = true
+                                    return
+                                }
+                                isReadingConnParams = true
+                                viewModel.readConnParams { params in
+                                    isReadingConnParams = false
+                                    if let p = params {
+                                        connParamsMessage = "device.connparams.message".localized(
+                                            String(format: "%.2f", p.intervalMs),
+                                            "\(p.interval)",
+                                            "\(p.latency)",
+                                            "\(p.timeoutMs)",
+                                            String(format: "%.0f", p.effectiveIdleMs))
+                                    } else {
+                                        connParamsMessage = "device.connparams.failed".localized
+                                    }
+                                    showingConnParams = true
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(viewModel.deviceStatusTextWithFirmware)
+                                        .foregroundColor(.secondary)
+                                    if isReadingConnParams {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .scaleEffect(0.6)
+                                            .frame(width: 14, height: 14)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("device.connparams.help".localized)
+                            .disabled(!viewModel.isDeviceConnected)
 
                             Spacer()
 
@@ -129,6 +173,11 @@ struct DeviceTabView: View {
                         }
                     }
                     .padding(4)
+                }
+                .alert("device.connparams.title".localized, isPresented: $showingConnParams) {
+                    Button("common.ok".localized, role: .cancel) {}
+                } message: {
+                    Text(connParamsMessage)
                 }
 
                 // Fingerprint Management
@@ -1770,6 +1819,8 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
     @AppStorage("immurok.cliEnabled") private var cliEnabled = true
     @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
+    // 强认证已启用后用户把顶部横幅收起（缩成右上角盾牌）
+    @AppStorage("immurok.pamBannerDismissed") private var pamBannerDismissed = false
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
     @AppStorage("immurok.unlockSound") private var unlockSound = "Glass"
     // 长按锁屏确认音。Empty string = silent. Read by AppDelegate.handleLockRequest.
@@ -1788,6 +1839,12 @@ struct PermissionsTabView: View {
     var body: some View {
         ScrollView {
         VStack(spacing: 16) {
+            // ===== 认证安全横幅 =====
+            // PAM 信道强认证：root 目录里有没有本机 pam_key 副本。保护所有经 pam_immurok
+            // 的认证——系统权限授权（authorization）和终端 sudo。未启用/失配时横幅不可关闭；
+            // 已启用后可关闭，缩成右上角的盾牌图标，点击盾牌再展开。
+            pamSecurityBanner
+
             // ===== 系统 =====
             sectionLabel("permission.section.system")
 
@@ -1945,6 +2002,7 @@ struct PermissionsTabView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 20)
+        .overlay(alignment: .topTrailing) { pamCollapsedShield }
         }
     }
 
@@ -2112,6 +2170,92 @@ struct PermissionsTabView: View {
         }
     }
 
+    private var pamKeyInstalled: Bool { setupManager.pamKeyStatus == .installed }
+
+    @ViewBuilder
+    private var pamSecurityBanner: some View {
+        if pamKeyInstalled && pamBannerDismissed {
+            // 已收起：横幅不占位（EmptyView 不产生 VStack 间距），盾牌由 pamCollapsedShield
+            // 以 overlay 钉在页面右上角，与「系统」标题同一行。
+            EmptyView()
+        } else {
+            let tint: Color = pamKeyInstalled ? .green : .orange
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: pamKeyInstalled ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(tint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("permission.pam.strong.title".localized)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(pamKeyHintKey.localized)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if pamKeyInstalled {
+                    Button {
+                        withAnimation { pamBannerDismissed = true }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    // 未启用 / 失配：不可关闭，只能去启用
+                    Button((setupManager.pamKeyStatus == .mismatch
+                            ? "permission.pam.strong.reauth"
+                            : "permission.pam.strong.enable").localized) {
+                        installPamKeyAction()
+                    }
+                }
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(tint.opacity(0.35), lineWidth: 1))
+        }
+    }
+
+    /// 强认证已启用且横幅收起时，页面右上角的绿盾牌；点击重新展开横幅。
+    @ViewBuilder
+    private var pamCollapsedShield: some View {
+        if pamKeyInstalled && pamBannerDismissed {
+            Button {
+                withAnimation { pamBannerDismissed = false }
+            } label: {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(.green)
+            }
+            .buttonStyle(.plain)
+            .help("permission.pam.strong.hint.on".localized)
+            .padding(.top, 10)
+            .padding(.trailing, 24)
+        }
+    }
+
+    private var pamKeyHintKey: String {
+        switch setupManager.pamKeyStatus {
+        case .installed:    return "permission.pam.strong.hint.on"
+        case .mismatch:     return "permission.pam.strong.hint.mismatch"
+        case .notInstalled: return "permission.pam.strong.hint.off"
+        }
+    }
+
+    private func installPamKeyAction() {
+        setupManager.installPamKey { success, error in
+            if success { return }
+            // error == nil 且失败：用户在管理员授权弹窗里点了取消（osascript
+            // -128），不是真失败——不弹「启用失败」，状态已经在 installPamKey
+            // 里刷新过了，界面自然会显示回未启用。
+            guard let error else { return }
+            let alert = NSAlert()
+            alert.messageText = "alert.pamkey.failed.title".localized
+            alert.informativeText = "alert.pamkey.failed.manual".localized + "\n\n\(error)"
+            alert.runModal()
+        }
+    }
+
     private func tryEnableSudoAuth(_ enable: Bool) {
         if enable && !setupManager.isPAMModuleInstalled {
             showAlert(title: "alert.need.pam".localized, message: "alert.need.pam.reinstall".localized)
@@ -2151,8 +2295,10 @@ struct PermissionsTabView: View {
     }
 
     private func toggleCLI(_ enable: Bool) {
+        // CLISocketServer 无条件启动，每次请求实时读 UserDefaults（见
+        // CLISocketServer.cliEnabled），这里只需要写值，不用再广播通知去
+        // 启停 server 了。
         cliEnabled = enable
-        NotificationCenter.default.post(name: .cliToggleChanged, object: enable)
     }
 
     private func toggleQuickFill(_ enable: Bool) {
@@ -2244,9 +2390,9 @@ struct HotkeyRecorderButton: View {
     }
 }
 
-// MARK: - Status Tab
+// MARK: - Status Section (About tab 内，与诊断日志切换显示)
 
-struct StatusTabView: View {
+struct StatusSectionView: View {
     @ObservedObject var viewModel: AppViewModel
     @ObservedObject var setupManager: SetupManager
     @State private var isAutoStartEnabled = false
@@ -2489,19 +2635,11 @@ struct AboutTabView: View {
             Divider()
                 .padding(.horizontal, 16)
 
-            // Log view (selectable + copyable) — 正式版默认隐藏
+            // 中部区域：状态列表（默认）/ 诊断日志，右下角文档图标切换
             if showLogs {
                 LogTextView(entries: logManager.entries)
             } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 28))
-                        .foregroundColor(.secondary.opacity(0.4))
-                    Text("about.logs.hidden".localized)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                StatusSectionView(viewModel: viewModel, setupManager: setupManager)
             }
 
             Divider()
@@ -2562,18 +2700,7 @@ struct AboutTabView: View {
 
                 Spacer()
 
-                // Right side: Show/hide logs + Clear log + Uninstall
-                Button {
-                    showLogs.toggle()
-                } label: {
-                    Image(systemName: showLogs ? "doc.text.fill" : "doc.text")
-                        .font(.system(size: 16))
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary)
-                .help("about.logs.toggle".localized)
-
+                // Right side: Clear log（仅日志视图）+ Status/Log 切换 + Uninstall
                 if showLogs {
                     Button {
                         logManager.clear()
@@ -2586,6 +2713,17 @@ struct AboutTabView: View {
                     .foregroundColor(.secondary)
                     .help("about.logs.clear".localized)
                 }
+
+                Button {
+                    showLogs.toggle()
+                } label: {
+                    Image(systemName: showLogs ? "list.bullet.rectangle" : "doc.text")
+                        .font(.system(size: 16))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .help("about.logs.toggle".localized)
 
                 Button(role: .destructive) {
                     showingUninstallConfirm = true

@@ -40,9 +40,12 @@ if [ -f /etc/pam.d/authorization ]; then
     fi
 fi
 
-# Step 4: Remove PAM module + imk CLI
+# Step 4: Remove PAM module + imk CLI + PAM 信道密钥 + 审计日志
 rm -f /usr/local/lib/pam/pam_immurok.so
 rm -f /usr/local/bin/imk
+rm -rf /etc/immurok/pam
+rmdir /etc/immurok 2>/dev/null || true
+rm -f /var/log/immurok-pam.log
 
 # Step 5: Remove App
 rm -rf /Applications/immurok.app

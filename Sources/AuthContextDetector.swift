@@ -12,6 +12,15 @@ enum AuthContext {
 /// 遍历 AutomationStore 里 enabled 的条目，而非硬编码 bundle id。
 struct AuthContextDetector {
 
+    /// 承载任意网页内容的浏览器进程。它们的 AXSecureTextField 可能来自网页（属主 pid 同样是
+    /// 浏览器），app 类条目命中这些进程时必须加结构硬化：只认"原生 AXSheet 且上行不穿过
+    /// AXWebArea"的密码框（如 Safari 内 Passwords 解锁 sheet），网页登录框一律拒绝。
+    private static let webBrowserBundles: Set<String> = [
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview",
+        "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac",
+        "company.thebrowser.Browser", "org.mozilla.firefox",
+    ]
+
     func detect() -> AuthContext {
         let items = AutomationStore.shared.enabledItems()
         let appItems = items.filter { $0.targetKind == .app }
@@ -22,25 +31,36 @@ struct AuthContextDetector {
         //   前台却是 Safari——只有按属主才能命中。
         //   rightArrow 策略（1Password）**不走这条**：它必须经 Path 2 的"恰好一个 secure field"
         //   硬化判据，否则改主密码等多字段表单的某个框被聚焦时会从这里绕过 guard 被误注入。
-        if let focused = systemWideFocusedSecureField(),
+        path1: if let focused = systemWideFocusedSecureField(),
            let ownerPID = ownerPID(of: focused),
            let ownerBundle = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
            let item = appItems.first(where: { $0.matches(bundleID: ownerBundle) && $0.submitStrategy != .rightArrow }),
            InjectionWhitelist.passesSigning(for: item, pid: ownerPID, bundleID: ownerBundle),
-           let container = enclosingContainer(of: focused) {
-            return .secureField(item: item, field: focused, sheet: container)
+           let hit = enclosingContainer(of: focused) {
+            // 属主是浏览器（如 Safari 内 Passwords 解锁）：只认原生 sheet，且上行链不得穿过
+            // AXWebArea——网页登录框满足不了这两条，防止把登录密码注入任意网站。
+            // 拒绝时不终止检测，放行到 Path 2-4（如另一浏览器里的 Bitwarden 浮层）。
+            if Self.webBrowserBundles.contains(ownerBundle),
+               hit.crossedWebArea || role(of: hit.container) != "AXSheet" {
+                NSLog("AuthContextDetector: reject browser-owned secure field (%@) — webArea=%d containerRole=%@",
+                      ownerBundle, hit.crossedWebArea ? 1 : 0, role(of: hit.container) ?? "nil")
+                break path1
+            }
+            return .secureField(item: item, field: focused, sheet: hit.container)
         }
 
         // Path 2) 定向下行扫描：1Password 桌面锁定窗 / 扩展浮层（rightArrow 策略），以及 Passwords
         //   焦点不在框时。下行扫描直接拿到 (密码框, 所在窗口)——1P 的 Chromium 树 kAXParent 链断裂，
         //   上行会得 nil。仅当树里"恰好一个"secure field 才触发（硬化：排除改主密码等多字段表单）。
         //   generic 策略（Passwords 类）要求前台才扫（后台窗口不注入）。
+        // 浏览器进程不做下行全树扫描：树巨大且网页里随处可能恰好有一个密码框（会被误注入）。
+        // 浏览器内的原生解锁 sheet（Safari Passwords）出现时密码框自动聚焦，Path 1 已覆盖。
         for item in appItems where item.submitStrategy != .appStoreWizard {
-            for bundleID in item.bundleIDs {
+            for bundleID in item.bundleIDs where !Self.webBrowserBundles.contains(bundleID) {
                 for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID) {
                     if item.submitStrategy == .generic && !app.isActive { continue }
                     guard InjectionWhitelist.passesSigning(for: item, pid: app.processIdentifier, bundleID: bundleID) else { continue }
-                    let appEl = AXUIElementCreateApplication(app.processIdentifier)
+                    guard let appEl = AXAppProbe.responsiveApplication(pid: app.processIdentifier, tag: "app-scan \(bundleID)") else { continue }
                     if let hit = soleSecureFieldWithWindow(under: appEl) {
                         return .secureField(item: item, field: hit.field, sheet: hit.window)
                     }
@@ -63,7 +83,7 @@ struct AuthContextDetector {
               let item = appItems.first(where: { $0.submitStrategy == .appStoreWizard && $0.matches(bundleID: bundleID) }),
               InjectionWhitelist.passesSigning(for: item, pid: frontApp.processIdentifier, bundleID: bundleID)
         else { return .none }
-        let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+        guard let appElement = AXAppProbe.responsiveApplication(pid: frontApp.processIdentifier, tag: "appstore-scan") else { return .none }
         if let sheet = firstSheetWithButtons(appElement) {
             return .appStoreConfirmSheet(item: item, sheet: sheet)
         }
@@ -122,12 +142,15 @@ struct AuthContextDetector {
     /// 从焦点元素向上找最近的"提交容器"祖先（有界深度）：AXSheet 或 AXWindow。
     /// App Store 密码页是嵌套 AXSheet；Passwords 解锁是 AXStandardWindow（role=AXWindow）。
     /// 返回的容器随后交给 AuthInjector.submit 在其子树里几何选主按钮（Sign In / Unlock）。
-    private func enclosingContainer(of el: AXUIElement) -> AXUIElement? {
+    /// 同时报告上行途中是否穿过 AXWebArea——浏览器属主的硬化判据（网页字段必在 WebArea 内）。
+    private func enclosingContainer(of el: AXUIElement) -> (container: AXUIElement, crossedWebArea: Bool)? {
         var current: AXUIElement? = el
         var depth = 0
+        var crossedWebArea = false
         while let node = current, depth < 12 {
             let r = role(of: node)
-            if r == "AXSheet" || r == "AXWindow" { return node }
+            if r == "AXWebArea" { crossedWebArea = true }
+            if r == "AXSheet" || r == "AXWindow" { return (node, crossedWebArea) }
             var parentRef: CFTypeRef?
             AXUIElementCopyAttributeValue(node, kAXParentAttribute as CFString, &parentRef)
             current = toAXUIElement(parentRef)
