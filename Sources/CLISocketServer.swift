@@ -153,6 +153,17 @@ class CLISocketServer {
         let request = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
         NSLog("CLISocketServer: Received: %@", request)
 
+        // 真机自动化测试控制面，只在 -DTEST_HOOKS 构建里存在；root 不放行。
+        if request.hasPrefix("TEST:") {
+            #if TEST_HOOKS
+            if isRoot { sendLine(clientSocket, "ERROR:UNKNOWN_COMMAND"); return }
+            TestHooks.shared.handle(socket: clientSocket, request: request)
+            #else
+            sendLine(clientSocket, "ERROR:UNKNOWN_COMMAND")
+            #endif
+            return
+        }
+
         let parts = request.split(separator: ":", maxSplits: 2)
         guard let command = parts.first else {
             sendLine(clientSocket, "ERROR:EMPTY_REQUEST")

@@ -2,6 +2,8 @@ import AppKit
 import CoreBluetooth
 import ApplicationServices
 import CoreGraphics
+import IOKit.pwr_mgt
+import IOKit.ps
 import ServiceManagement
 import SwiftUI
 import AuthInjectionKit
@@ -36,6 +38,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 记录最近一次解锁时刻，供解锁校验区分「没解开」与「解开后又被锁上」。
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.lastScreenUnlockedAt = CFAbsoluteTimeGetCurrent()
+        }
         // Ignore SIGPIPE process-wide. Without this, send() on a Unix socket
         // whose peer has just closed (e.g. ota-update.py interrupted with
         // Ctrl+C mid-session) delivers SIGPIPE and terminates the app — and
@@ -436,18 +445,89 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 设备的 HID CTRL 唤醒键通常已点亮屏幕，但不保证（合盖外接屏 + 供电
+        // 在 AC/电池间翻转时，电池相位里任何 HID 事件都唤不醒）。屏幕黑着时
+        // loginwindow 不收密码，盲打只会响「成功音」并记一轮失败——先确认
+        // 屏幕已亮，没亮就主动声明用户活动并等待，超时放弃且不计失败。
+        ensureDisplayAwake(timeout: 8.0, t0: t0) { [weak self] awake in
+            guard awake, let self = self else { return }
+            self.typeUnlockPassword(password, t0: t0)
+        }
+    }
+
+    /// 显示器是否处于睡眠（全部在线显示器都睡着才算）。
+    private func isDisplayAsleep() -> Bool {
+        var count: UInt32 = 0
+        var ids = [CGDirectDisplayID](repeating: 0, count: 8)
+        guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &count) == .success, count > 0 else {
+            return CGDisplayIsAsleep(CGMainDisplayID()) != 0
+        }
+        return ids.prefix(Int(count)).allSatisfy { CGDisplayIsAsleep($0) != 0 }
+    }
+
+    /// 当前供电来源（仅用于诊断日志）。
+    private func powerSourceLabel() -> String {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String? else {
+            return "?"
+        }
+        return type == kIOPMACPowerKey ? "AC" : "Batt"
+    }
+
+    /// 确认屏幕已亮；没亮则每 300ms 声明一次用户活动（等同 `caffeinate -u`）
+    /// 直到亮起或超时。一次声明不够：断言挂着时供电翻回 AC 屏幕也不会自己亮，
+    /// 必须在可唤醒的时刻重新声明。
+    private func ensureDisplayAwake(timeout: TimeInterval, t0: CFAbsoluteTime,
+                                    completion: @escaping (Bool) -> Void) {
+        guard isDisplayAsleep() else {
+            completion(true)
+            return
+        }
+        let src = powerSourceLabel()
+        Task { @MainActor in LogManager.shared.log("Display asleep at unlock (power=\(src)) — declaring user activity") }
+        var attempts = 0
+
+        func poll() {
+            if !isDisplayAsleep() {
+                let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                let n = attempts, src = powerSourceLabel()
+                Task { @MainActor in LogManager.shared.log("Display woke +\(ms)ms after \(n) declare(s) (power=\(src))") }
+                completion(true)
+                return
+            }
+            if CFAbsoluteTimeGetCurrent() - t0 >= timeout {
+                let n = attempts, src = powerSourceLabel()
+                Task { @MainActor in LogManager.shared.log("Unlock aborted: display still asleep after \(n) declare(s) (power=\(src))") }
+                completion(false)
+                return
+            }
+            var assertionID: IOPMAssertionID = 0
+            let ret = IOPMAssertionDeclareUserActivity("immurok fingerprint unlock" as CFString,
+                                                       kIOPMUserActiveLocal, &assertionID)
+            attempts += 1
+            if ret != kIOReturnSuccess {
+                Task { @MainActor in LogManager.shared.log("DeclareUserActivity failed: \(ret)") }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { poll() }
+        }
+
+        poll()
+    }
+
+    /// 屏幕已亮后的解锁主流程：提示音 → 等锁屏窗口 → 输入密码。
+    private func typeUnlockPassword(_ password: String, t0: CFAbsoluteTime) {
         // Audible cue: typing the password + window animation can take ~2s
         // and the screen often goes black mid-flow. Configurable via
-        // Features tab; empty string = silent. 放在所有 guard 之后——
-        // 功能关闭/没密码/已暂停时响「成功音」只会误导用户。
+        // Features tab; empty string = silent. 放在所有 guard 与亮屏确认之后——
+        // 功能关闭/没密码/已暂停/屏幕没亮时响「成功音」只会误导用户。
         let soundName = UserDefaults.standard.string(forKey: "immurok.unlockSound") ?? "Glass"
         if !soundName.isEmpty {
             NSSound(named: soundName)?.play()
         }
 
-        Task { @MainActor in LogManager.shared.log("Unlock start +0ms") }
+        let startMs = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        Task { @MainActor in LogManager.shared.log("Unlock start +\(startMs)ms") }
 
-        // Device's HID CTRL key already wakes the screen and dismisses screensaver.
         // Just wait for the lock screen to appear, then type password.
         // Do NOT send Enter keys before password - they submit empty passwords
         // on an already-awake lock screen, causing failed login attempts.
@@ -513,6 +593,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        let typedAt = CFAbsoluteTimeGetCurrent()
         fakeKeyStrokes(password)
         let ms2 = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
         Task { @MainActor in LogManager.shared.log("Password entered +\(ms2)ms") }
@@ -522,6 +603,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self = self else { return }
             if self.isScreensaverWindowVisible() {
+                // 锁屏窗口还在，但输入后已收到过解锁通知 = 解开后用户又锁上了。
+                // 这时重试会把用户刚锁的屏幕解开，还会误记一轮失败。
+                if self.lastScreenUnlockedAt >= typedAt {
+                    self.consecutiveUnlockFailures = 0
+                    Task { @MainActor in LogManager.shared.log("Unlock done (re-locked since) — no retry") }
+                    return
+                }
                 guard self.isLoginWindowFrontmost() else {
                     Task { @MainActor in LogManager.shared.log("Aborting retry: loginwindow not frontmost") }
                     return
@@ -541,6 +629,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                     guard let self = self else { return }
                     if self.isScreensaverWindowVisible() {
+                        if self.lastScreenUnlockedAt >= typedAt {
+                            self.consecutiveUnlockFailures = 0
+                            Task { @MainActor in LogManager.shared.log("Unlock done (retry, re-locked since)") }
+                            return
+                        }
                         self.recordUnlockFailure()
                     } else {
                         self.consecutiveUnlockFailures = 0
@@ -561,6 +654,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 说明是瞬态干扰（修饰键、焦点竞态），重置计数不挂起；密码确实错了
     /// 才暂停自动解锁并通知——通知在锁屏时看不到，但会留在通知中心。
     private var consecutiveUnlockFailures = 0
+    /// 最近一次收到 com.apple.screenIsUnlocked 的时刻。
+    private var lastScreenUnlockedAt: CFAbsoluteTime = 0
     /// 挂起态下重验存储密码的限频时间戳（见 unlockScreen 自愈分支）。
     private var lastSuspendedReverifyTime: CFAbsoluteTime = 0
     private func recordUnlockFailure() {

@@ -26,32 +26,69 @@ if [ ! -f "$SO_FILE" ]; then
     exit 1
 fi
 
+# ---- 备份 / 检查写入 / 失败恢复 ----
+# macOS 27 起 /etc/pam.d 受 TCC 保护，用户在「"Installer" would like to administer
+# your computer」点 Don't Allow 时写入返回 Operation not permitted。任一步失败：
+# 恢复已改动的文件、删掉本次新建的文件，exit 1 让 Installer 如实报失败。
+PAMD="${R}/etc/pam.d"
+BACKUP="$(mktemp -d)"
+CREATED=""
+
+backup_file() {   # $1=目标；不存在则记为新建
+    if [ -f "$1" ]; then
+        cp -p "$1" "$BACKUP/$(basename "$1")"
+    else
+        CREATED="$CREATED $1"
+    fi
+}
+write_file() {    # $1=临时文件 $2=目标；任一步失败返回非 0
+    cp "$1" "$2" && chmod 444 "$2"
+}
+# 恢复备份。被拒时 unlink 同样会被 TCC 拒，所以：内容未变的文件不碰；
+# 先原地覆盖（root 对 444 文件可直接写），失败才退回 rm+cp；每一步都不能让
+# set -e 半路退出，否则到不了约定的退出码与日志行。
+restore_all() {
+    local f dest
+    for f in "$BACKUP"/*; do
+        [ -e "$f" ] || continue
+        dest="$PAMD/$(basename "$f")"
+        if ! cmp -s "$f" "$dest"; then
+            cp -p "$f" "$dest" 2>/dev/null \
+                || { rm -f "$dest" 2>/dev/null && cp -p "$f" "$dest" 2>/dev/null; } \
+                || echo "immurok: failed to restore $dest" >&2
+        fi
+    done
+    for f in $CREATED; do rm -f "$f" 2>/dev/null || true; done
+}
+abort_denied() {  # $1=临时文件（可空）
+    [ -n "${1:-}" ] && rm -f "$1"
+    restore_all
+    rm -rf "$BACKUP"
+    echo "immurok: /etc/pam.d write denied (TCC), repair aborted" >&2
+    exit 1
+}
+
 # authorization: prepend the line if absent. Anchored match so a commented-out
 # reference doesn't count as present. Temp file in /tmp, then overwrite the
 # existing file (system_installd is permitted to write /etc/pam.d).
 if ! grep -qE '^[^#]*pam_immurok' "$AUTH" 2>/dev/null; then
+    backup_file "$AUTH"
     TMP=$(mktemp)
     echo "$CONFIG_LINE" > "$TMP"
     [ -f "$AUTH" ] && cat "$AUTH" >> "$TMP"
-    cp "$TMP" "$AUTH"
+    write_file "$TMP" "$AUTH" || abort_denied "$TMP"
     rm -f "$TMP"
-    chmod 444 "$AUTH"
 fi
 
 # sudo_local: idempotent top-up. It survives upgrades, but repairing it too is
 # cheap insurance against partial resets.
-if [ -f "$SUDO_LOCAL" ]; then
-    if ! grep -qE '^[^#]*pam_immurok' "$SUDO_LOCAL"; then
-        TMP=$(mktemp)
-        echo "$CONFIG_LINE" > "$TMP"
-        cat "$SUDO_LOCAL" >> "$TMP"
-        cp "$TMP" "$SUDO_LOCAL"
-        rm -f "$TMP"
-        chmod 444 "$SUDO_LOCAL"
-    fi
-else
-    echo "$CONFIG_LINE" > "$SUDO_LOCAL"
-    chmod 444 "$SUDO_LOCAL"
+if ! grep -qE '^[^#]*pam_immurok' "$SUDO_LOCAL" 2>/dev/null; then
+    backup_file "$SUDO_LOCAL"
+    TMP=$(mktemp)
+    echo "$CONFIG_LINE" > "$TMP"
+    [ -f "$SUDO_LOCAL" ] && cat "$SUDO_LOCAL" >> "$TMP"
+    write_file "$TMP" "$SUDO_LOCAL" || abort_denied "$TMP"
+    rm -f "$TMP"
 fi
 
 # macOS 13 Ventura and earlier: sudo doesn't include sudo_local, the line must
@@ -61,16 +98,17 @@ fi
 if [ "$OS_MAJOR" -lt 14 ] 2>/dev/null; then
     if [ -f "$SUDO_FILE" ]; then
         if ! grep -qE '^[^#]*pam_immurok' "$SUDO_FILE"; then
+            backup_file "$SUDO_FILE"
             TMP=$(mktemp)
             echo "$CONFIG_LINE" > "$TMP"
             cat "$SUDO_FILE" >> "$TMP"
-            cp "$TMP" "$SUDO_FILE"
+            write_file "$TMP" "$SUDO_FILE" || abort_denied "$TMP"
             rm -f "$TMP"
-            chmod 444 "$SUDO_FILE"
         fi
     else
         echo "WARN: $SUDO_FILE missing — skipped (would break sudo if created bare)" >&2
     fi
 fi
 
+rm -rf "$BACKUP"
 exit 0

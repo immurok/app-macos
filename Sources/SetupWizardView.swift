@@ -50,9 +50,15 @@ struct SetupWizardView: View {
             }
         }
 
-        /// 未完成也允许「跳过此步」的非关键步骤
-        var isSkippable: Bool {
-            self == .password || self == .fingerprint
+    }
+
+    /// 未完成也允许「跳过此步」的非关键步骤；PAM 步只在模块已装、仅 pam.d 配置缺时可跳过
+    /// （先走完连接/配对/指纹引导，修复入口由设置页横幅与菜单/通知兜底），模块缺失时不可跳过。
+    private func isSkippable(_ step: WizardStep) -> Bool {
+        switch step {
+        case .password, .fingerprint: return true
+        case .pam: return setupManager.isPAMModuleInstalled
+        default: return false
         }
     }
 
@@ -75,6 +81,9 @@ struct SetupWizardView: View {
             }
         }
         .frame(width: 680, height: 500)
+        // 始终置顶：向导会把用户支到「系统设置 → 蓝牙」「隐私与安全性 → 辅助功能」
+        // 去操作，这些窗口一弹出来向导就被盖住，用户回不来、也看不到「已连接」的反馈。
+        .background(WindowLevelSetter(level: .floating))
         .onAppear {
             setupManager.refreshStatus()
             buildSteps()
@@ -105,8 +114,9 @@ struct SetupWizardView: View {
 
     private func buildSteps() {
         var s: [WizardStep] = [.welcome]
-        // pkg 安装的用户 PAM 必然已装；缺失（如手动拷贝 App）才插入安装检查步
-        if !setupManager.isPAMModuleInstalled { s.append(.pam) }
+        // pkg 安装的用户 PAM 必然已装；模块缺失（如手动拷贝 App）或 pam.d 缺行
+        // （macOS 27 安装时 TCC 被拒 / 系统升级重置）才插入安装检查步
+        if !setupManager.isPAMModuleInstalled || setupManager.needsPAMRepair { s.append(.pam) }
         s.append(contentsOf: [.connect, .pair, .password, .fingerprint, .accessibility, .finish])
         steps = s
     }
@@ -114,7 +124,7 @@ struct SetupWizardView: View {
     private func isSatisfied(_ step: WizardStep) -> Bool {
         switch step {
         case .welcome, .finish: return true
-        case .pam:           return setupManager.isPAMModuleInstalled
+        case .pam:           return setupManager.isPAMModuleInstalled && !setupManager.needsPAMRepair
         case .connect:       return viewModel.isDeviceConnected
         case .pair:          return viewModel.isDevicePaired
         case .password:      return viewModel.isPasswordConfigured
@@ -163,9 +173,7 @@ struct SetupWizardView: View {
     private var sidebarView: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Image(systemName: "touchid")
-                    .font(.system(size: 20))
-                    .foregroundColor(.accentColor)
+                AppLogoView(size: 24)
                 Text("immurok")
                     .font(.headline)
             }
@@ -232,7 +240,7 @@ struct SetupWizardView: View {
                 Button("wizard.next".localized) { goNext() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-            } else if currentStep.isSkippable {
+            } else if isSkippable(currentStep) {
                 Button("wizard.skip.step".localized) { goNext() }
                     .buttonStyle(.bordered)
             }
@@ -279,30 +287,48 @@ struct SetupWizardView: View {
     }
 
     private var pamStep: some View {
-        VStack(spacing: 20) {
-            stepHeader(icon: setupManager.isPAMModuleInstalled ? "checkmark.circle.fill" : "exclamationmark.triangle",
+        let pamOK = setupManager.isPAMModuleInstalled && !setupManager.needsPAMRepair
+        return VStack(spacing: 20) {
+            stepHeader(icon: pamOK ? "checkmark.circle.fill" : "exclamationmark.triangle",
                        title: "wizard.pam.title".localized,
-                       iconColor: setupManager.isPAMModuleInstalled ? .green : .orange)
+                       iconColor: pamOK ? .green : .orange)
 
-            if setupManager.isPAMModuleInstalled {
-                statusLabel(ok: true, text: "wizard.pam.installed".localized)
-            } else {
+            if !setupManager.isPAMModuleInstalled {
                 Text("wizard.pam.needpkg".localized)
                     .foregroundColor(.orange)
                     .multilineTextAlignment(.center)
                 infoCard("wizard.pam.needpkg.hint".localized)
+            } else if setupManager.needsPAMRepair {
+                // 模块在、pam.d 缺行：安装时 TCC 被拒（或系统升级重置），一键打开修复包
+                Text("wizard.pam.denied".localized)
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
+                infoCard("wizard.pam.denied.hint".localized)
+                Button("wizard.pam.repair".localized) {
+                    setupManager.repairAuthorization { _, error in
+                        guard let error = error else { return }   // 取消/拒绝：静默，提示条仍在
+                        let alert = NSAlert()
+                        alert.messageText = "notify.authrepair.title".localized
+                        alert.informativeText = error
+                        alert.runModal()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                statusLabel(ok: true, text: "wizard.pam.installed".localized)
             }
         }
     }
 
     private var connectStep: some View {
         VStack(spacing: 20) {
-            stepHeader(icon: "antenna.radiowaves.left.and.right", title: "wizard.connect.title".localized)
+            stepHeader(iconView: BluetoothGlyph()
+                            .stroke(Color.accentColor,
+                                    style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                            .frame(width: 30, height: 48),
+                       title: "wizard.connect.title".localized)
 
-            Text("wizard.connect.body".localized)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-
+            // 这一页只放图、按钮和等待指示，不放解释性小字——字一多就没人看了。
             switch viewModel.bluetoothStatus {
             case .denied:
                 statusLabel(ok: false, text: "wizard.connect.bt.denied".localized)
@@ -322,18 +348,9 @@ struct SetupWizardView: View {
                                 text: "wizard.connect.connected".localized(viewModel.deviceName ?? "immurok IK-1"))
                 } else {
                     // 设备是 BLE HID 键盘：必须先在系统蓝牙设置里手动连接一次
-                    //（建立系统级配对），App 之后才能发现并通信
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("wizard.connect.step1".localized)
-                        Text("wizard.connect.step2".localized)
-                        Text("wizard.connect.step3".localized)
-                    }
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(8)
+                    //（建立系统级配对），App 之后才能发现并通信。图示：系统设置
+                    // 里点「连接」，设备蓝灯慢闪。
+                    DeviceIllustration(scene: .bluetoothConnect)
 
                     Button("wizard.connect.bt.open".localized) {
                         viewModel.openBluetoothPreferences()
@@ -371,6 +388,9 @@ struct SetupWizardView: View {
                 }
                 .padding(.vertical, 8)
             } else {
+                // 这里**不**画「按按钮」的示意图：点「开始绑定」之前就把图亮出来，
+                // 用户会先去按设备按钮，而设备此时根本没在等按键。图示只在点击
+                // 之后的 PairingGuideSheet 里、设备真正等待动作时出现。
                 Button("wizard.pair.start".localized) {
                     viewModel.startPairing()
                 }
@@ -434,7 +454,9 @@ struct SetupWizardView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(!viewModel.isDeviceConnected || fpViewModel.isEnrolling)
+                // isLoading 也要挡：refresh 命中缓存会把 isLoading 复位，第二下点击
+                // 就能再发一次 ENROLL_START，固件回 0xFD 反而把第一次录入判成失败。
+                .disabled(!viewModel.isDeviceConnected || fpViewModel.isEnrolling || fpViewModel.isLoading)
 
                 infoCard("wizard.fp.hint".localized)
             }
@@ -521,10 +543,17 @@ struct SetupWizardView: View {
     // MARK: - Helper Views
 
     private func stepHeader(icon: String, title: String, iconColor: Color = .accentColor) -> some View {
+        stepHeader(iconView: Image(systemName: icon)
+                                .font(.system(size: 44))
+                                .foregroundColor(iconColor),
+                   title: title)
+    }
+
+    /// 自定义图标的步骤头（SF Symbols 没有的图形，如蓝牙标志）。
+    private func stepHeader<Icon: View>(iconView: Icon, title: String) -> some View {
         VStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 44))
-                .foregroundColor(iconColor)
+            iconView
+                .frame(height: 52)
             Text(title)
                 .font(.title2)
                 .fontWeight(.bold)

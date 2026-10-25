@@ -619,6 +619,12 @@ class FingerprintViewModel: ObservableObject {
     }
 
     private var gateObserver: Any?
+    private var enrollObserver: Any?
+
+    deinit {
+        [gateObserver, enrollObserver, connObserver].compactMap { $0 }
+            .forEach(NotificationCenter.default.removeObserver)
+    }
 
     private func setupEnrollmentCallback() {
         // When device requires FP verification before executing a command
@@ -634,7 +640,13 @@ class FingerprintViewModel: ObservableObject {
             }
         }
 
-        bleManager.onEnrollStatus = { [weak self] event, current, total in
+        // 监听广播而不是赋值 bleManager.onEnrollStatus：那是单槽闭包，向导页 /
+        // 设置页 / 指纹页的多个 ViewModel 会互相覆盖（见 BLEManager.enrollStatusNotification）。
+        enrollObserver = NotificationCenter.default.addObserver(
+            forName: BLEManager.enrollStatusNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let payload = EnrollStatusPayload(note) else { return }
+            let (event, current, total) = (payload.event, payload.current, payload.total)
             Task { @MainActor in
                 guard let self = self, self.isEnrolling else { return }
 

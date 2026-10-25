@@ -133,6 +133,31 @@ enum EnrollEvent: UInt8 {
     case failed = 0xFF
 }
 
+/// `BLEManager.enrollStatusNotification` 的 userInfo 编解码。
+struct EnrollStatusPayload: Equatable {
+    let event: EnrollEvent
+    let current: Int
+    let total: Int
+
+    init(event: EnrollEvent, current: Int, total: Int) {
+        self.event = event; self.current = current; self.total = total
+    }
+
+    init?(_ note: Notification) {
+        guard let info = note.userInfo,
+              let raw = info[Self.eventKey] as? UInt8, let event = EnrollEvent(rawValue: raw),
+              let current = info[Self.currentKey] as? Int,
+              let total = info[Self.totalKey] as? Int else { return nil }
+        self.init(event: event, current: current, total: total)
+    }
+
+    var userInfo: [String: Any] {
+        [Self.eventKey: event.rawValue, Self.currentKey: current, Self.totalKey: total]
+    }
+
+    private static let eventKey = "event", currentKey = "current", totalKey = "total"
+}
+
 // MARK: - Bluetooth Authorization Status
 
 enum BluetoothAuthStatus: Equatable {
@@ -202,6 +227,47 @@ class BLEManager: NSObject {
     /// Posted when a command enters FP gate (WAIT_FP). UI should prompt "请验证指纹".
     static let fingerprintGateRequiredNotification = Notification.Name("BLEManagerFingerprintGateRequired")
 
+    /// 录入状态帧（0x11）广播。payload 用 `EnrollStatusPayload` 解。
+    ///
+    /// 为什么不只用 `onEnrollStatus` 闭包：那是单槽属性，谁后赋值谁赢。向导页、
+    /// 设置页「设备」标签、指纹页各持一个 FingerprintViewModel，三者同时存在时
+    /// 只有最后创建的那个能收到捕获帧，其余的录入 sheet 永远停在「请放手指」
+    ///（2026-10-23 真机踩到：设置窗口开着时向导录入看似没反应，设备其实在录）。
+    /// UI 一律监听本通知；闭包保留给 AppDelegate 的 PAM 转发和 TestHooks 链式钩子。
+    static let enrollStatusNotification = Notification.Name("BLEManagerEnrollStatus")
+
+    /// 在主线程同时触发闭包与广播。static 便于单测，不需要 BLEManager 实例。
+    static func broadcastEnrollStatus(_ event: EnrollEvent, current: Int, total: Int) {
+        NotificationCenter.default.post(name: enrollStatusNotification, object: nil,
+                                        userInfo: EnrollStatusPayload(event: event, current: current, total: total).userInfo)
+    }
+
+    /// 真机测试事件 tap（TestHooks 用）。无条件存在但只有 TEST_HOOKS 构建会设值。
+    enum TestLinkEvent {
+        case rx(Data)
+        case connected(String)
+        case disconnected(String)
+    }
+    var testEventTap: ((TestLinkEvent) -> Void)?
+
+#if TEST_HOOKS
+    // MARK: - Test hooks（只在 -DTEST_HOOKS 构建存在；见 TestHooks.swift）
+
+    /// 字节原样写到 cmd 特征，绕过命令队列。用于打畸形包。
+    func testRawWrite(_ data: Data) -> Bool {
+        guard let c = cmdCharacteristic, let p = peripheral else { return false }
+        queue.async { p.writeValue(data, for: c, type: .withResponse) }
+        return true
+    }
+    func testSendCommand(_ command: ImmurokCommand, payload: [UInt8],
+                         timeout: TimeInterval, completion: @escaping (Data?) -> Void) {
+        sendCommand(command, payload: payload, timeout: timeout, completion: completion)
+    }
+    var testCommandInFlight: Bool { commandInFlight }
+    var testIsConnected: Bool { deviceState.isConnected }
+    var testFirmwareVersion: String? { firmwareVersion }
+#endif
+
     // MARK: - Private Properties
 
     private var centralManager: CBCentralManager!
@@ -225,7 +291,7 @@ class BLEManager: NSObject {
     private var pendingPairButtonGeneration: UInt = 0
     private var fpFailureCount = 0  // FP_NOT_MATCH counter, max 2 then deny
     private var otaReadCallback: ((Data?) -> Void)?
-    private var otaWriteReadyCallback: (() -> Void)?
+    private var otaWriteReadyCallback: ((Bool) -> Void)?
     private var reconnectTimer: DispatchSourceTimer?
     private var sleepActivity: NSObjectProtocol?
     private var displaySleeping = false
@@ -1806,7 +1872,7 @@ class BLEManager: NSObject {
         if peripheral.canSendWriteWithoutResponse {
             completion(true)
         } else {
-            otaWriteReadyCallback = { completion(true) }
+            otaWriteReadyCallback = completion
         }
     }
 
@@ -1913,6 +1979,7 @@ extension BLEManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         let reason = error?.localizedDescription ?? "clean"
+        testEventTap?(.disconnected(reason))
         NSLog("BLEManager: Disconnected (displaySleeping=%d, reason=%@)", displaySleeping, reason)
         Task { @MainActor in LogManager.shared.log("BLE disconnected: \(reason)") }
 
@@ -1922,6 +1989,14 @@ extension BLEManager: CBCentralManagerDelegate {
         currentCommand = nil
         otaReadCallback?(nil)
         otaReadCallback = nil
+        // OTA PROM 分块写走 write-without-response 背压：otaWriteOnly 在缓冲区满时把
+        // completion 存进 otaWriteReadyCallback，只等 peripheralIsReady(toSend...)
+        // 回调。断链后这个回调永远不会再来——必须在这里主动以 false 唤醒，否则
+        // BLEManager+OTATransport.writeNoResponse 的 continuation 永久挂起，
+        // OTAEngine.push 卡死，调用方（TestHooks handleOta）的 600s 阻塞等待
+        // 也跟着永久占用 DeviceActivityCoordinator 的 .auth 令牌。
+        otaWriteReadyCallback?(false)
+        otaWriteReadyCallback = nil
         otaCharacteristic = nil
         firmwareVersion = nil
         isDeviceVerified = false
@@ -1994,6 +2069,7 @@ extension BLEManager: CBPeripheralDelegate {
             // Not paired yet — skip challenge, mark unverified
             NSLog("BLEManager: No pairing key, skipping challenge")
             isDeviceVerified = false
+            testEventTap?(.connected(name))
             onDeviceConnected?(name)
             return
         }
@@ -2006,6 +2082,7 @@ extension BLEManager: CBPeripheralDelegate {
             NSLog("BLEManager: Device %@ cached as verified, skipping challenge", uuid)
             isDeviceVerified = true
             Task { @MainActor in LogManager.shared.log("Device verified (cached)") }
+            testEventTap?(.connected(name))
             onDeviceConnected?(name)
             return
         }
@@ -2041,6 +2118,7 @@ extension BLEManager: CBPeripheralDelegate {
                 Task { @MainActor in LogManager.shared.log("Verify failed: timeout") }
             }
 
+            self.testEventTap?(.connected(name))
             self.onDeviceConnected?(name)
         }
     }
@@ -2118,7 +2196,7 @@ extension BLEManager: CBPeripheralDelegate {
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
         let cb = otaWriteReadyCallback
         otaWriteReadyCallback = nil
-        cb?()
+        cb?(true)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -2128,8 +2206,10 @@ extension BLEManager: CBPeripheralDelegate {
                 otaWriteReadyCallback = nil
                 if let error = error {
                     NSLog("BLEManager: OTA write error: %@", error.localizedDescription)
+                    cb(false)
+                } else {
+                    cb(true)
                 }
-                cb()
                 return
             }
 
@@ -2197,6 +2277,7 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
+        testEventTap?(.rx(characteristic.value ?? Data()))
         guard let data = characteristic.value, data.count >= 1 else {
             NSLog("BLEManager: didUpdateValueFor - empty data")
             if let cb = responseCallback {
@@ -2492,6 +2573,7 @@ extension BLEManager: CBPeripheralDelegate {
 
             DispatchQueue.main.async { [weak self] in
                 self?.onEnrollStatus?(event, current, total)
+                BLEManager.broadcastEnrollStatus(event, current: current, total: total)
             }
             return
         }

@@ -1,71 +1,131 @@
 #!/bin/bash
 set -e
 
-# postinstall runs as root — write directly, no authopen needed
-# Self-contained copy of the legacy scripts/pam-pkg/uninstall-postinstall.
+# uninstall-postinstall — 以 root 经 system_installd 运行（immurok_uninstall.pkg）。
+# 自包含于 app-macos/ 下（旧版见 scripts/pam-pkg/uninstall-postinstall）。
+#
+# 顺序刻意把 /etc/pam.d 的改动放在最前面：macOS 27 起 /etc/pam.d 受 TCC 保护，
+# 第一次写入会弹「"Installer" would like to administer your computer」，用户点
+# Don't Allow 则返回 Operation not permitted。此时恢复已改动的文件并 exit 1，
+# 后面删 App / 模块 / 密钥的步骤一步都不跑，系统保持原样。
+#
+# IMMUROK_ROOT 前缀所有路径（bash 测试用，生产为空）；非空时跳过 killall /
+# pkgutil / defaults / security 等系统命令。
 
-# Get the real user (not root) who is running the installer
-REAL_USER=$(/usr/bin/stat -f '%Su' /dev/console)
-REAL_HOME=$(dscl . -read /Users/"$REAL_USER" NFSHomeDirectory | awk '{print $2}')
+R="${IMMUROK_ROOT:-}"
+PAMD="$R/etc/pam.d"
+AUTH="$PAMD/authorization"
+SUDO_LOCAL="$PAMD/sudo_local"
+SUDO_FILE="$PAMD/sudo"
 
-# Step 1: Kill the app (may not be running)
-killall immurok 2>/dev/null || true
+if [ -z "$R" ]; then
+    # Get the real user (not root) who is running the installer
+    REAL_USER=$(/usr/bin/stat -f '%Su' /dev/console)
+    REAL_HOME=$(dscl . -read /Users/"$REAL_USER" NFSHomeDirectory | awk '{print $2}')
+else
+    REAL_USER=""
+    REAL_HOME="$R/home"
+fi
+
+# Step 1: Do NOT kill the app here. The App launched this pkg and is polling
+# for /usr/local/lib/pam/pam_immurok.so to disappear; on detection it clears
+# its user Keychain entries (unreachable from this root context) and quits
+# itself. Killing it up front would skip that cleanup. See Step 10.
+
+# ---- 备份 / 检查写入 / 失败恢复 ----
+BACKUP="$(mktemp -d)"
+
+backup_file() { cp -p "$1" "$BACKUP/$(basename "$1")"; }
+write_file()  { cp "$1" "$2" && chmod 444 "$2"; }     # 任一步失败返回非 0
+# 恢复备份。被拒时 unlink 同样会被 TCC 拒，所以：内容未变的文件不碰；
+# 先原地覆盖（root 对 444 文件可直接写），失败才退回 rm+cp；每一步都不能让
+# set -e 半路退出，否则到不了约定的退出码与日志行。
+restore_all() {
+    local f dest
+    for f in "$BACKUP"/*; do
+        [ -e "$f" ] || continue
+        dest="$PAMD/$(basename "$f")"
+        if ! cmp -s "$f" "$dest"; then
+            cp -p "$f" "$dest" 2>/dev/null \
+                || { rm -f "$dest" 2>/dev/null && cp -p "$f" "$dest" 2>/dev/null; } \
+                || echo "immurok: failed to restore $dest" >&2
+        fi
+    done
+}
+abort_denied() {  # $1=临时文件（可空）
+    [ -n "${1:-}" ] && rm -f "$1"
+    restore_all
+    rm -rf "$BACKUP"
+    echo "immurok: /etc/pam.d write denied (TCC), uninstall aborted, nothing removed" >&2
+    exit 1
+}
+# 从 $1 删除 pam_immurok 行。sudo_local 删空后写 '# sudo_local' 占位；
+# sudo / authorization 删空则不写（裸文件会弄坏 sudo，和原逻辑一致）。
+strip_line() {
+    [ -f "$1" ] || return 0
+    grep -q pam_immurok "$1" || return 0
+    backup_file "$1"
+    local tmp; tmp=$(mktemp)
+    grep -v pam_immurok "$1" > "$tmp" || true
+    if [ ! -s "$tmp" ]; then
+        if [ "$1" = "$SUDO_LOCAL" ]; then
+            echo '# sudo_local' > "$tmp"
+        else
+            rm -f "$tmp"; return 0
+        fi
+    fi
+    write_file "$tmp" "$1" || abort_denied "$tmp"
+    rm -f "$tmp"
+}
 
 # Step 2: Remove our line from sudo_local
-if [ -f /etc/pam.d/sudo_local ]; then
-    CONTENT=$(grep -v pam_immurok /etc/pam.d/sudo_local || true)
-    if [ -n "$CONTENT" ]; then
-        echo "$CONTENT" > /etc/pam.d/sudo_local
-    else
-        echo '# sudo_local' > /etc/pam.d/sudo_local
-    fi
-    chmod 444 /etc/pam.d/sudo_local
-fi
+strip_line "$SUDO_LOCAL"
 
 # Step 2b: Remove our line from /etc/pam.d/sudo (macOS 13.x installs write there)
-if [ -f /etc/pam.d/sudo ] && grep -q pam_immurok /etc/pam.d/sudo; then
-    CONTENT=$(grep -v pam_immurok /etc/pam.d/sudo || true)
-    if [ -n "$CONTENT" ]; then
-        echo "$CONTENT" > /etc/pam.d/sudo
-        chmod 444 /etc/pam.d/sudo
-    fi
-fi
+strip_line "$SUDO_FILE"
 
 # Step 3: Remove our line from authorization
-if [ -f /etc/pam.d/authorization ]; then
-    CONTENT=$(grep -v pam_immurok /etc/pam.d/authorization || true)
-    if [ -n "$CONTENT" ]; then
-        echo "$CONTENT" > /etc/pam.d/authorization
-        chmod 444 /etc/pam.d/authorization
-    fi
-fi
+strip_line "$AUTH"
+
+rm -rf "$BACKUP"
 
 # Step 4: Remove PAM module + imk CLI + PAM 信道密钥 + 审计日志
-rm -f /usr/local/lib/pam/pam_immurok.so
-rm -f /usr/local/bin/imk
-rm -rf /etc/immurok/pam
-rmdir /etc/immurok 2>/dev/null || true
-rm -f /var/log/immurok-pam.log
+rm -f "$R/usr/local/lib/pam/pam_immurok.so"
+rm -f "$R/usr/local/bin/imk"
+rm -rf "$R/etc/immurok/pam"
+rmdir "$R/etc/immurok" 2>/dev/null || true
+rm -f "$R/var/log/immurok-pam.log"
 
 # Step 5: Remove App
-rm -rf /Applications/immurok.app
+rm -rf "$R/Applications/immurok.app"
 
 # Step 6: Remove user data directory
 rm -rf "$REAL_HOME/.immurok"
 
-# Step 7: Remove Keychain entry
-sudo -u "$REAL_USER" security delete-generic-password -s "com.katsu.immurok" -a "unlock-password" 2>/dev/null || true
+if [ -z "$R" ]; then
+    # Step 7: Remove legacy Keychain entry (current entries are cleared by the App itself)
+    sudo -u "$REAL_USER" security delete-generic-password -s "com.katsu.immurok" -a "unlock-password" 2>/dev/null || true
 
-# Step 8: Remove UserDefaults
-sudo -u "$REAL_USER" defaults delete com.immurok.app 2>/dev/null || true
+    # Step 8: Remove UserDefaults
+    sudo -u "$REAL_USER" defaults delete com.immurok.app 2>/dev/null || true
 
-# Step 9: Clean up pkg receipts
-pkgutil --forget com.immurok.pkg 2>/dev/null || true
-pkgutil --forget com.immurok.uninstall 2>/dev/null || true
-# Legacy receipt identifiers
-pkgutil --forget com.katsu.immurok 2>/dev/null || true
-pkgutil --forget com.katsu.immurok.uninstall 2>/dev/null || true
-pkgutil --forget com.katsu.immurok.pam 2>/dev/null || true
-pkgutil --forget com.katsu.immurok.pam-uninstall 2>/dev/null || true
+    # Step 9: Clean up pkg receipts
+    pkgutil --forget com.immurok.pkg 2>/dev/null || true
+    pkgutil --forget com.immurok.uninstall 2>/dev/null || true
+    # Legacy receipt identifiers
+    pkgutil --forget com.katsu.immurok 2>/dev/null || true
+    pkgutil --forget com.katsu.immurok.uninstall 2>/dev/null || true
+    pkgutil --forget com.katsu.immurok.pam 2>/dev/null || true
+    pkgutil --forget com.katsu.immurok.pam-uninstall 2>/dev/null || true
+
+    # Step 10: Wait for the App to finish its own user-level cleanup and quit
+    # (it polls once per second). Fall back to killing it if it is still around
+    # (e.g. not responding, or launched this pkg some other way).
+    for _ in $(seq 1 20); do
+        pgrep -x immurok >/dev/null 2>&1 || break
+        sleep 1
+    done
+    killall immurok 2>/dev/null || true
+fi
 
 exit 0

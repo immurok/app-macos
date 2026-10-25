@@ -1,16 +1,29 @@
 #!/bin/bash
 set -e
 
-# postinstall runs as root — write directly, no authopen needed
+# postinstall — 以 root 经 system_installd 运行。把 pam_immurok 行写入
+# /etc/pam.d/sudo_local 与 /etc/pam.d/authorization（13.x 另写 /etc/pam.d/sudo）。
+# 自包含于 app-macos/ 下，公开仓库 immurok/app-macos 的 CI 可直接打包。
 #
-# Installs the immurok PAM line into sudo_local + authorization. Mirrors the
-# legacy scripts/pam-pkg/install-postinstall, kept self-contained under
-# app-macos/ so the synced public repo (immurok/app-macos) can build the pkg
-# in CI without depending on files outside the app-macos tree.
+# macOS 27 起 /etc/pam.d 受 TCC（kTCCServiceSystemPolicySysAdminFiles）保护：
+# 第一次写入会弹「"Installer" would like to administer your computer」，
+# 用户点 Don't Allow 则写入返回 Operation not permitted。此时：
+#   1. 把已改动的文件恢复原样（不留半成品）；
+#   2. 仍 exit 0 —— App / PAM 模块 / imk 照常装好，由 App 检测缺行并提供修复。
+#
+# IMMUROK_ROOT 前缀所有路径（bash 测试用，生产为空）；
+# IMMUROK_OS_MAJOR 覆盖 sw_vers（同上）。
 
-SO_FILE="/usr/local/lib/pam/pam_immurok.so"
-APP_PATH="/Applications/immurok.app"
+R="${IMMUROK_ROOT:-}"
+PAMD="$R/etc/pam.d"
+SO_FILE="$R/usr/local/lib/pam/pam_immurok.so"
+APP_PATH="$R/Applications/immurok.app"
+IMK_BIN="$R/usr/local/bin/imk"
+AUTH="$PAMD/authorization"
+SUDO_LOCAL="$PAMD/sudo_local"
+SUDO_FILE="$PAMD/sudo"
 CONFIG_LINE="auth sufficient /usr/local/lib/pam/pam_immurok.so"
+OS_MAJOR="${IMMUROK_OS_MAJOR:-$(sw_vers -productVersion | cut -d. -f1)}"
 
 # Safety: .so must exist before touching pam.d
 if [ ! -f "$SO_FILE" ]; then
@@ -24,49 +37,80 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
-# Configure sudo_local (create if not exists, skip if already present).
-# Written on ALL versions: macOS 13 ignores it today, but it survives an OS
-# upgrade to 14+ (Apple never resets sudo_local), so sudo auth keeps working
-# across the 13 → 14 upgrade without a repair.
-if [ -f /etc/pam.d/sudo_local ]; then
-    if ! grep -q pam_immurok /etc/pam.d/sudo_local; then
-        TMPFILE=$(mktemp)
-        echo "$CONFIG_LINE" > "$TMPFILE"
-        cat /etc/pam.d/sudo_local >> "$TMPFILE"
-        cp "$TMPFILE" /etc/pam.d/sudo_local && rm "$TMPFILE"
-        chmod 444 /etc/pam.d/sudo_local
+# ---- 备份 / 检查写入 / 失败恢复 ----
+BACKUP="$(mktemp -d)"
+CREATED=""   # 本次新建（原本不存在）的文件，失败时删除
+
+backup_file() {   # $1=目标；不存在则记为新建
+    if [ -f "$1" ]; then
+        cp -p "$1" "$BACKUP/$(basename "$1")"
+    else
+        CREATED="$CREATED $1"
     fi
-else
-    TMPFILE=$(mktemp)
-    echo "$CONFIG_LINE" > "$TMPFILE"
-    cp "$TMPFILE" /etc/pam.d/sudo_local && rm "$TMPFILE"
-    chmod 444 /etc/pam.d/sudo_local
+}
+write_file() {    # $1=临时文件 $2=目标；任一步失败返回非 0
+    cp "$1" "$2" && chmod 444 "$2"
+}
+# 恢复备份。被拒时 unlink 同样会被 TCC 拒，所以：内容未变的文件不碰；
+# 先原地覆盖（root 对 444 文件可直接写），失败才退回 rm+cp；每一步都不能让
+# set -e 半路退出，否则到不了约定的退出码与日志行。
+restore_all() {
+    local f dest
+    for f in "$BACKUP"/*; do
+        [ -e "$f" ] || continue
+        dest="$PAMD/$(basename "$f")"
+        if ! cmp -s "$f" "$dest"; then
+            cp -p "$f" "$dest" 2>/dev/null \
+                || { rm -f "$dest" 2>/dev/null && cp -p "$f" "$dest" 2>/dev/null; } \
+                || echo "immurok: failed to restore $dest" >&2
+        fi
+    done
+    for f in $CREATED; do rm -f "$f" 2>/dev/null || true; done
+}
+abort_denied() {  # $1=临时文件（可空）
+    [ -n "${1:-}" ] && rm -f "$1"
+    restore_all
+    rm -rf "$BACKUP"
+    echo "immurok: /etc/pam.d write denied (TCC), install continues; repair from the app" >&2
+    exit 0
+}
+
+# ---- sudo_local：全版本写入。13.x 当下不读它，但升级到 14+ 后仍生效，无需修复 ----
+if ! grep -qE '^[^#]*pam_immurok' "$SUDO_LOCAL" 2>/dev/null; then
+    backup_file "$SUDO_LOCAL"
+    TMP=$(mktemp)
+    echo "$CONFIG_LINE" > "$TMP"
+    [ -f "$SUDO_LOCAL" ] && cat "$SUDO_LOCAL" >> "$TMP"
+    write_file "$TMP" "$SUDO_LOCAL" || abort_denied "$TMP"
+    rm -f "$TMP"
 fi
 
-# macOS 13 Ventura and earlier: /etc/pam.d/sudo has no `include sudo_local`
-# line, so the module must go into /etc/pam.d/sudo itself. That file is reset
-# by every macOS update; the app monitors it and offers immurok_repair.pkg.
-OS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
+# ---- macOS 13 Ventura 及更早：sudo 不 include sudo_local，行必须直写 /etc/pam.d/sudo。
+# 该文件每次系统更新都会被重置；App 监控并提供 immurok_repair.pkg ----
 if [ "$OS_MAJOR" -lt 14 ] 2>/dev/null; then
-    if [ -f /etc/pam.d/sudo ] && ! grep -qE '^[^#]*pam_immurok' /etc/pam.d/sudo; then
-        TMPFILE=$(mktemp)
-        echo "$CONFIG_LINE" > "$TMPFILE"
-        cat /etc/pam.d/sudo >> "$TMPFILE"
-        cp "$TMPFILE" /etc/pam.d/sudo && rm "$TMPFILE"
-        chmod 444 /etc/pam.d/sudo
+    if [ -f "$SUDO_FILE" ] && ! grep -qE '^[^#]*pam_immurok' "$SUDO_FILE"; then
+        backup_file "$SUDO_FILE"
+        TMP=$(mktemp)
+        echo "$CONFIG_LINE" > "$TMP"
+        cat "$SUDO_FILE" >> "$TMP"
+        write_file "$TMP" "$SUDO_FILE" || abort_denied "$TMP"
+        rm -f "$TMP"
     fi
 fi
 
-# Configure authorization (skip if already present)
-if ! grep -q pam_immurok /etc/pam.d/authorization; then
-    TMPFILE=$(mktemp)
-    echo "$CONFIG_LINE" > "$TMPFILE"
-    cat /etc/pam.d/authorization >> "$TMPFILE"
-    cp "$TMPFILE" /etc/pam.d/authorization && rm "$TMPFILE"
-    chmod 444 /etc/pam.d/authorization
+# ---- authorization ----
+if ! grep -qE '^[^#]*pam_immurok' "$AUTH" 2>/dev/null; then
+    backup_file "$AUTH"
+    TMP=$(mktemp)
+    echo "$CONFIG_LINE" > "$TMP"
+    [ -f "$AUTH" ] && cat "$AUTH" >> "$TMP"
+    write_file "$TMP" "$AUTH" || abort_denied "$TMP"
+    rm -f "$TMP"
 fi
+
+rm -rf "$BACKUP"
 
 # Ensure imk CLI is executable (payload preserves mode, belt-and-suspenders)
-[ -f /usr/local/bin/imk ] && chmod 755 /usr/local/bin/imk
+[ -f "$IMK_BIN" ] && chmod 755 "$IMK_BIN"
 
 exit 0

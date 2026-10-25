@@ -79,6 +79,31 @@ struct DeviceTabView: View {
     @State private var showingConnParams = false
     @State private var connParamsMessage = ""
 
+    // MARK: - 本机绑定状态（第二层）
+
+    /// 设备侧认得本机（活动槽已配对）**且**本机 Keychain 里有共享密钥，才算绑定。
+    /// 只有一边成立是状态分裂（换过设备 / Keychain 被清），当作未绑定让用户重绑。
+    private var isBoundToThisMac: Bool {
+        viewModel.isDevicePaired && viewModel.hasLocalPairing
+    }
+
+    private var bindingDotColor: Color {
+        guard viewModel.isDeviceConnected else { return Color.secondary.opacity(0.3) }
+        return isBoundToThisMac ? .green : .orange
+    }
+
+    private var bindingStatusText: String {
+        guard viewModel.isDeviceConnected else {
+            return "device.binding.needs.connection".localized
+        }
+        guard isBoundToThisMac else { return "device.binding.unbound".localized }
+        // 设备只在活动槽的地址上广播，连着的这台主机必然坐在活动槽上。
+        if dualHostVM.slotBitmap != 0 {
+            return "device.binding.bound.slot".localized(Int(dualHostVM.activeSlot))
+        }
+        return "device.binding.bound".localized
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -87,13 +112,25 @@ struct DeviceTabView: View {
                     bluetoothWarningView
                 }
 
-                // Connection Status
+                // Device Status —— 两层状态分开画。
+                //
+                // 用户把「系统蓝牙里连上了」和「App 里绑定了」当成一回事：看到绿点
+                // 「已连接」就以为完事，设密码时才被告知「蓝牙已连接不等于已绑定」。
+                // 这里把两层各占一行、各自的图标和措辞都不同：
+                //   蓝牙连接 —— 系统层面，相当于插上线
+                //   本机绑定 —— App 层面（ECDH），相当于登录
+                // 已连接但未绑定时，主按钮「绑定到这台 Mac」直接出现在第二行。
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("device.connection.status".localized, systemImage: "antenna.radiowaves.left.and.right")
+                        Label("device.connection.status".localized, systemImage: "laptopcomputer.and.arrow.down")
                             .font(.headline)
 
-                        HStack {
+                        // 第一层：蓝牙连接
+                        HStack(spacing: 8) {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .foregroundColor(.secondary)
+                                .frame(width: 18)
+                            Text("device.status.bluetooth".localized)
                             Circle()
                                 .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
                                 .frame(width: 10, height: 10)
@@ -170,6 +207,44 @@ struct DeviceTabView: View {
                                 .help(batteryTooltipText(level: level, mv: viewModel.batteryVoltageMv))
                                 .disabled(!viewModel.isDeviceConnected)
                             }
+                        }
+
+                        Divider()
+
+                        // 第二层：本机绑定
+                        HStack(spacing: 8) {
+                            Image(systemName: "key.fill")
+                                .foregroundColor(.secondary)
+                                .frame(width: 18)
+                            Text("device.status.binding".localized)
+                            Circle()
+                                .fill(bindingDotColor)
+                                .frame(width: 10, height: 10)
+                            Text(bindingStatusText)
+                                .foregroundColor(.secondary)
+
+                            Spacer()
+
+                            if viewModel.isDeviceConnected && !isBoundToThisMac {
+                                // 与双主机卡片里的按钮是同一个动作；设备侧按活动槽
+                                // 判断首次绑定还是登记第二台主机，App 侧不分叉。
+                                Button("pairing.start".localized) { viewModel.startPairing() }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .disabled(viewModel.isPairing || viewModel.isPreparingPairing)
+                            }
+                        }
+
+                        if viewModel.isDeviceConnected && !isBoundToThisMac {
+                            Text("device.binding.unbound.hint".localized)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if viewModel.isDeviceConnected && isBoundToThisMac && !viewModel.isDeviceVerified {
+                            Text("device.not.verified".localized)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .padding(4)
@@ -1942,8 +2017,8 @@ struct PermissionsTabView: View {
                             set: { tryEnableSudoAuth($0) }
                         )
                     )
-                    // 仅 macOS 13.x:/etc/pam.d/sudo 被系统更新重置后提示修复
-                    if setupManager.needsLegacySudoRepair {
+                    // /etc/pam.d/sudo_local（13.x 为 /etc/pam.d/sudo）缺行时提示修复
+                    if setupManager.needsSudoRepair {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(.orange)
@@ -2434,6 +2509,17 @@ struct StatusSectionView: View {
                         )
                         Divider()
 
+                        // 本机绑定 —— 与「设备连接」分开列，蓝牙连上不等于绑定。
+                        statusRow(
+                            title: "device.status.binding".localized,
+                            isOK: isBoundToThisMac,
+                            actionTitle: viewModel.isDeviceConnected && !isBoundToThisMac
+                                ? "pairing.start".localized : nil
+                        ) {
+                            viewModel.pendingSettingsTab = .device
+                        }
+                        Divider()
+
                         // 指纹数量
                         statusRow(
                             title: "status.fingerprint.count".localized,
@@ -2563,9 +2649,15 @@ struct StatusSectionView: View {
         .padding(.vertical, 8)
     }
 
+    private var isBoundToThisMac: Bool {
+        viewModel.isDevicePaired && viewModel.hasLocalPairing
+    }
+
     private var statusMessage: Text {
         if !viewModel.isDeviceConnected {
             return Text("status.waiting.device".localized)
+        } else if !isBoundToThisMac {
+            return Text("status.tap.pair".localized)
         } else if viewModel.fingerprintCount == 0 {
             return Text("status.tap.enroll".localized)
         } else if !viewModel.isPasswordConfigured {
@@ -2617,25 +2709,11 @@ struct AboutTabView: View {
         return "FW v\(fw)"
     }
 
-    private var logoImage: NSImage {
-        if let url = Bundle.main.url(forResource: "icon", withExtension: "png"),
-           let img = NSImage(contentsOf: url) {
-            img.isTemplate = true
-            return img
-        }
-        return NSApplication.shared.applicationIconImage
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             // App Icon and Info - compact
             VStack(spacing: 8) {
-                Image(nsImage: logoImage)
-                    .resizable()
-                    .renderingMode(.template)
-                    .interpolation(.high)
-                    .frame(width: 56, height: 56)
-                    .foregroundColor(.accentColor)
+                AppLogoView(size: 56)
 
                 HStack(spacing: 10) {
                     Text("\(appVersionText) / \(fwVersionText)")
@@ -2759,10 +2837,15 @@ struct AboutTabView: View {
     private func performUninstall() {
         setupManager.uninstall { success, error in
             if success {
+                // 用户级清理（Keychain / UserDefaults）已在 SetupManager 内完成；
+                // App bundle 此时已被 postinstall 删除，提示后主动退出，
+                // 让 postinstall 的等待循环立即结束（否则它超时后 killall 兜底）。
                 showAlert(title: "about.uninstall.done".localized, message: "about.uninstall.done.message".localized)
-            } else {
-                showAlert(title: "about.uninstall.failed".localized, message: error ?? "error.unknown".localized)
+                NSApp.terminate(nil)
+            } else if let error = error {
+                showAlert(title: "about.uninstall.failed".localized, message: error)
             }
+            // error == nil：用户取消 / TCC 拒绝后关掉 Installer，静默回到原状态
         }
     }
 

@@ -74,6 +74,25 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 | `AC_API_ISSUER_ID` | App Store Connect Issuer ID (UUID) |
 | `AC_API_KEY_P8_BASE64` | base64 of the `AuthKey_*.p8` |
 | `KEYCHAIN_PASSWORD` | any random string (temp keychain password) |
+| `HOMEBREW_TAP_TOKEN` | *(optional)* PAT with **Contents: read & write** on `immurok/homebrew-tap`; lets the workflow bump the Homebrew cask after a release |
+
+### 4. Homebrew tap (optional)
+
+[`immurok/homebrew-tap`](https://github.com/immurok/homebrew-tap) serves
+`brew install --cask immurok/tap/immurok`, which installs this same pkg.
+After a `v*` tag publishes, the **Bump Homebrew cask** step clones the tap
+with `HOMEBREW_TAP_TOKEN`, runs its `scripts/bump.sh <version> <sha256>` and
+pushes. Pre-release tags are skipped. Without the secret the step only prints
+a warning; bump by hand:
+
+```bash
+cd homebrew-tap && scripts/bump.sh 1.7.0 && git commit -am "immurok 1.7.0" && git push
+```
+
+Create the token at GitHub → Settings → Developer settings → Fine-grained
+tokens: resource owner `immurok`, repository `homebrew-tap` only, permission
+*Contents: Read and write*. Set it with
+`gh secret set HOMEBREW_TAP_TOKEN --repo immurok/app-macos`.
 
 ## Building locally
 

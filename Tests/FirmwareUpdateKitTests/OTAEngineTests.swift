@@ -84,6 +84,21 @@ final class OTAEngineTests: XCTestCase {
         }
     }
 
+    func testEndVersionRollbackMapsToHeaderRejected() async {
+        // 反降级检查和签名校验一样是 END 之后 deferred verify 才判定的（hidkbd.c
+        // 里 ECDSA 通过后才比 SVN floor），不是 HEADER 阶段；0xF3
+        // (OTA_ERR_VERSION_ROLLBACK) 复用 headerRejected 这个 case——枚举注释早就
+        // 写了"含 v2 拒收 / SVN 反降级"，只是判定阶段和 case 名字对不上，不新增枚举。
+        let t = MockTransport()
+        t.responder = { op in op == 0x83 ? Data([0xF3]) : Data([0x00]) }
+        do {
+            try await OTAEngine(transport: t).push(makePkg()) { _ in }
+            XCTFail("should throw")
+        } catch let e as OTAEngineError {
+            XCTAssertEqual(e, .headerRejected(code: 0xF3))
+        } catch { XCTFail("wrong error") }
+    }
+
     func testEndNoResponseIsSuccess() async throws {
         // END 后设备直接重启不回包 = 成功
         let t = MockTransport()

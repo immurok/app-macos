@@ -79,6 +79,7 @@ public final class OTAEngine {
             switch code {
             case 0xF1: throw OTAEngineError.sha256Mismatch
             case 0xF2: throw OTAEngineError.signatureMismatch
+            case 0xF3: throw OTAEngineError.headerRejected(code: 0xF3)  // SVN 反降级，deferred verify 阶段判定
             default: break  // 0x00 或其他 = 接受
             }
         }

@@ -110,4 +110,41 @@ IMMUROK_ROOT="$ROOT2" bash "$REPAIR" >/dev/null 2>&1
 if [ $? -eq 0 ]; then echo "FAIL[no-so]: .so 缺失时应非 0 退出"; FAILS=$((FAILS+1)); fi
 rm -rf "$ROOT2"
 
+# ---- TCC 被拒（以只读文件模拟 Operation not permitted）----
+# deny：authorization 只读 → 非 0 退出，两文件内容逐字节不变，stderr 有明确日志
+ROOT6="$(make_root)"
+cp "$ROOT6/etc/pam.d/authorization" "$ROOT6/orig.authorization"
+cp "$ROOT6/etc/pam.d/sudo_local" "$ROOT6/orig.sudo_local"
+chmod 444 "$ROOT6/etc/pam.d/authorization"
+IMMUROK_ROOT="$ROOT6" bash "$REPAIR" >/dev/null 2>"$ROOT6/err.log"
+RC6=$?
+if [ $RC6 -eq 0 ]; then echo "FAIL[deny]: 写入被拒时应非 0 退出"; FAILS=$((FAILS+1)); fi
+cmp -s "$ROOT6/etc/pam.d/authorization" "$ROOT6/orig.authorization" || { echo "FAIL[deny]: authorization 内容被改动"; FAILS=$((FAILS+1)); }
+cmp -s "$ROOT6/etc/pam.d/sudo_local" "$ROOT6/orig.sudo_local" || { echo "FAIL[deny]: sudo_local 内容被改动"; FAILS=$((FAILS+1)); }
+grep -q "write denied (TCC), repair aborted" "$ROOT6/err.log" || { echo "FAIL[deny]: stderr 缺少 write denied (TCC), repair aborted"; FAILS=$((FAILS+1)); }
+chmod -R u+w "$ROOT6"; rm -rf "$ROOT6"
+
+# dir-deny：文件只读且目录只读（unlink 也被拒）→ 非 0 退出、内容不变、日志行必须出现（不能被 set -e 半路打断）
+ROOT8="$(make_root)"
+cp "$ROOT8/etc/pam.d/authorization" "$ROOT8/orig.authorization"
+chmod 444 "$ROOT8/etc/pam.d/authorization"; chmod 555 "$ROOT8/etc/pam.d"
+IMMUROK_ROOT="$ROOT8" bash "$REPAIR" >/dev/null 2>"$ROOT8/err.log"
+RC8=$?
+if [ $RC8 -eq 0 ]; then echo "FAIL[dir-deny]: 写入被拒时应非 0 退出"; FAILS=$((FAILS+1)); fi
+cmp -s "$ROOT8/etc/pam.d/authorization" "$ROOT8/orig.authorization" || { echo "FAIL[dir-deny]: authorization 内容被改动"; FAILS=$((FAILS+1)); }
+grep -q "write denied (TCC), repair aborted" "$ROOT8/err.log" || { echo "FAIL[dir-deny]: stderr 缺少 write denied (TCC), repair aborted"; FAILS=$((FAILS+1)); }
+chmod -R u+w "$ROOT8"; rm -rf "$ROOT8"
+
+# partial-deny：脚本先写 authorization 再写 sudo_local；sudo_local 只读 → authorization 已写成后必须恢复
+ROOT7="$(make_root)"
+cp "$ROOT7/etc/pam.d/authorization" "$ROOT7/orig.authorization"
+cp "$ROOT7/etc/pam.d/sudo_local" "$ROOT7/orig.sudo_local"
+chmod 444 "$ROOT7/etc/pam.d/sudo_local"
+IMMUROK_ROOT="$ROOT7" bash "$REPAIR" >/dev/null 2>&1
+RC7=$?
+if [ $RC7 -eq 0 ]; then echo "FAIL[partial-deny]: 写入被拒时应非 0 退出"; FAILS=$((FAILS+1)); fi
+cmp -s "$ROOT7/etc/pam.d/authorization" "$ROOT7/orig.authorization" || { echo "FAIL[partial-deny]: authorization 未恢复为原内容"; FAILS=$((FAILS+1)); }
+cmp -s "$ROOT7/etc/pam.d/sudo_local" "$ROOT7/orig.sudo_local" || { echo "FAIL[partial-deny]: sudo_local 内容被改动"; FAILS=$((FAILS+1)); }
+chmod -R u+w "$ROOT7"; rm -rf "$ROOT7"
+
 if [ $FAILS -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$FAILS FAILURE(S)"; exit 1; fi

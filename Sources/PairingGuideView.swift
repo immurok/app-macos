@@ -35,6 +35,14 @@ struct PairingGuideSheet: View {
             Text("pairing.guide.title".localized)
                 .font(.headline)
 
+            // 当前该按哪里，画出来：等指纹时手指在顶面传感器上，等按钮时
+            // 翻到底面按按钮（顶面传感器打叉）。换步骤时用 .id 重建视图，
+            // 让按压动画从头起动；交换密钥阶段定格不动。
+            DeviceIllustration(scene: viewModel.pairingStep == .waitingFingerprint ? .touchSensor : .pressButton,
+                               animated: viewModel.pairingStep != .computing)
+                .frame(maxWidth: .infinity)
+                .id(viewModel.pairingStep)
+
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(steps) { step in
                     row(step)

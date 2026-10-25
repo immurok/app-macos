@@ -165,8 +165,16 @@ build_app() {
     # which only ships with full Xcode.app. To stay CLT-friendly we build each
     # arch separately and lipo-combine. Cross-compile from arm64 host to
     # x86_64 works fine on Apple Silicon + CLT.
-    swift build -c release --arch arm64
-    swift build -c release --arch x86_64
+    # Swift 6.4 起默认 build system 变成 swiftbuild，产物落在 .build/out/ 而不是
+    # .build/<arch>-apple-macosx/release/，下面的 lipo 会拿到陈旧二进制。钉死
+    # native 后端（已标 deprecated，但目前仍可用）保住每 arch 独立产物路径。
+    local extra=(--build-system native)
+    if [ "$DO_TEST_HOOKS" = true ]; then
+        extra+=(-Xswiftc -DTEST_HOOKS)
+        log_warn "TEST_HOOKS build: TEST:* control plane compiled in — do not ship"
+    fi
+    swift build -c release --arch arm64 "${extra[@]}"
+    swift build -c release --arch x86_64 "${extra[@]}"
     mkdir -p .build/universal/release
     lipo -create -output .build/universal/release/immurokApp \
         .build/arm64-apple-macosx/release/immurokApp \
@@ -200,12 +208,22 @@ prepare_bundle() {
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" Resources/Info.plist
     log_info "Build number: $BUILD_NUM -> $NEW_BUILD"
 
-    # Copy uninstall pkg to app bundle Resources (for in-app uninstall)
-    if [ -f "Resources/immurok_uninstall.pkg" ]; then
-        cp "Resources/immurok_uninstall.pkg" immurok.app/Contents/Resources/
-        log_info "Uninstall package bundled in app Resources"
+    # Build the uninstall pkg (nopayload, postinstall does all cleanup) and
+    # bundle it in app Resources for the in-app "uninstall" action. Mirrors
+    # build-pkg.sh (which additionally signs it for release). UNSIGNED here
+    # for local dev — without it, SetupManager.uninstall() fails immediately
+    # and the About page froze (nested modal inside the SwiftUI alert action).
+    if [ -f "packaging/uninstall-postinstall" ]; then
+        UNINST_SCRIPTS="$(mktemp -d)"
+        cp packaging/uninstall-postinstall "$UNINST_SCRIPTS/postinstall"
+        chmod +x "$UNINST_SCRIPTS/postinstall"
+        pkgbuild --nopayload --scripts "$UNINST_SCRIPTS" \
+            --identifier "com.immurok.uninstall" --version "1.0" \
+            immurok.app/Contents/Resources/immurok_uninstall.pkg >/dev/null
+        rm -rf "$UNINST_SCRIPTS"
+        log_info "Uninstall pkg (unsigned, dev) bundled in app Resources"
     else
-        log_warn "Uninstall package not found in Resources/"
+        log_warn "packaging/uninstall-postinstall not found"
     fi
 
     # Copy bundled OTA bridge firmware (1.6.0 HMAC bridge, frozen forever)
@@ -350,6 +368,7 @@ DO_APP=false
 DO_SIGN=false
 DO_AGENT=false
 DO_ALL=false
+DO_TEST_HOOKS=false
 
 if [ $# -eq 0 ]; then
     DO_ALL=true
@@ -382,6 +401,10 @@ while [[ $# -gt 0 ]]; do
             DO_AGENT=true
             shift
             ;;
+        -t|--test-hooks)
+            DO_TEST_HOOKS=true
+            shift
+            ;;
         --all)
             DO_ALL=true
             shift
@@ -396,6 +419,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -a, --app         Build app"
             echo "  -s, --sign        Sign and deploy to /Applications"
             echo "  --agent           Sign and deploy via imk single-sudo (for AI agents)"
+            echo "  -t, --test-hooks  Compile TEST:* hooks into the app (devtest only, never ship)"
             echo "  --all             Build everything and deploy (default)"
             echo "  -h, --help        Show this help"
             exit 0

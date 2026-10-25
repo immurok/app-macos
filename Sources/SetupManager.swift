@@ -14,12 +14,14 @@ class SetupManager: ObservableObject {
     @Published var isAuthorizationEnabled = false
     @Published var hasAccessibilityPermission = false
     @Published var isAuthorizationConfigured = false
+    @Published var isSudoLocalConfigured = false
     @Published var isLegacySudoConfigured = true
 
     // MARK: - Paths
 
     private let pamModuleDestination = "/usr/local/lib/pam/pam_immurok.so"
     private let authorizationPath = "/etc/pam.d/authorization"
+    private let sudoLocalPath = "/etc/pam.d/sudo_local"
     private let legacySudoPath = "/etc/pam.d/sudo"
 
     /// macOS 13 Ventura 及更早:/etc/pam.d/sudo 没有 `include sudo_local`,
@@ -49,7 +51,9 @@ class SetupManager: ObservableObject {
             NotificationCenter.default.post(name: .accessibilityGranted, object: nil)
         }
         isAuthorizationConfigured = Self.authorizationLineConfigured(at: authorizationPath)
-        // 14+ 走 sudo_local(系统更新不重置),无需监控,恒视为已配置
+        // sudo_local 全版本由安装包写入（macOS 27 起写入可能被 TCC 拒绝），需要监控
+        isSudoLocalConfigured = Self.authorizationLineConfigured(at: sudoLocalPath)
+        // 13.x 的 sudo 行直写 /etc/pam.d/sudo（系统更新会重置）；14+ 不用该文件
         isLegacySudoConfigured = Self.isLegacyOS
             ? Self.authorizationLineConfigured(at: legacySudoPath)
             : true
@@ -70,20 +74,23 @@ class SetupManager: ObservableObject {
         }
     }
 
-    /// 需要修复:用户想要 authorization 功能,但文件里行丢了(多为系统升级所致)。
+    /// 需要修复：PAM 模块已装但 /etc/pam.d/authorization 缺行。
+    /// 这些行是安装包必写的，缺了就是安装不完整（macOS 27 上安装时 TCC 被拒，
+    /// 或系统升级重置），与用户是否打开授权开关无关。
     var needsAuthorizationRepair: Bool {
-        return isAuthorizationEnabled && !isAuthorizationConfigured
+        return isPAMModuleInstalled && !isAuthorizationConfigured
     }
 
-    /// 需要修复:macOS 13.x 上用户想要 sudo 功能,但 /etc/pam.d/sudo 里行丢了
-    /// (系统更新必然重置该文件)。14+ 恒为 false。
-    var needsLegacySudoRepair: Bool {
-        return Self.isLegacyOS && isSudoAuthEnabled && !isLegacySudoConfigured
+    /// 需要修复：PAM 模块已装但 sudo 的 pam.d 行缺失——14+ 看 sudo_local，
+    /// 13.x 看 /etc/pam.d/sudo（系统更新必然重置该文件）。
+    var needsSudoRepair: Bool {
+        guard isPAMModuleInstalled else { return false }
+        return Self.isLegacyOS ? !isLegacySudoConfigured : !isSudoLocalConfigured
     }
 
     /// 任一 pam.d 行丢失,菜单/通知统一入口。repair.pkg 一次性补齐全部。
     var needsPAMRepair: Bool {
-        return needsAuthorizationRepair || needsLegacySudoRepair
+        return needsAuthorizationRepair || needsSudoRepair
     }
 
     /// Check if setup wizard should be shown
@@ -188,79 +195,109 @@ class SetupManager: ObservableObject {
     }
 
     /// 打开 bundle 内的 immurok_repair.pkg,经 system_installd 以特权 root 运行其
-    /// postinstall,幂等补回 authorization 行。这是唯一能写 /etc/pam.d 的途径——
-    /// osascript 管理员授权拿到的 root 会被 TCC 拒绝(已实证)。镜像 uninstall 流程:
-    /// 打开 pkg 后轮询文件直到行补回或超时。
-    /// completion(成功, 错误信息?)。用户在 Installer 中取消 → 超时 → 成功=false,错误=nil。
+    /// postinstall,幂等补回 authorization / sudo_local(13.x 另补 /etc/pam.d/sudo)行。
+    /// 这是唯一能写 /etc/pam.d 的途径——osascript 管理员授权拿到的 root 会被 TCC
+    /// 拒绝(已实证)。macOS 27 起写入还会弹 TCC 窗,用户点 Don't Allow 时 pkg 失败。
+    /// completion(成功, 错误信息?)。用户取消 / 拒绝 / Installer 退出 / 超时 → 成功=false,错误=nil。
     func repairAuthorization(completion: @escaping (Bool, String?) -> Void) {
         guard let pkgPath = repairPkgPath else {
-            completion(false, "alert.need.pam.reinstall".localized)
+            DispatchQueue.main.async {
+                completion(false, "alert.need.pam.reinstall".localized)
+            }
             return
         }
 
         NSWorkspace.shared.open(URL(fileURLWithPath: pkgPath))
+        waitForInstaller(done: { [weak self] in
+            guard let self = self else { return false }
+            self.refreshStatus()
+            return !self.needsPAMRepair
+        }) { success, _ in
+            completion(success, nil)
+        }
+    }
 
-        // 轮询 pam.d 行是否补回(用户在 Installer 中完成安装 + 授权)。
-        // 13.x 上 repair.pkg 同时补 authorization 和 /etc/pam.d/sudo,两者都要到位。
+    // MARK: - Uninstall
+
+    /// Complete uninstall: open uninstall pkg which handles all cleanup.
+    /// completion 始终异步回调：调用方在 SwiftUI `.alert` 的按钮 action 里调用本方法，
+    /// 若在 action 内同步弹 NSAlert（runModal），会与正在收起的 SwiftUI alert sheet
+    /// 叠加成嵌套 modal，设置窗口直接卡死（已实证）。
+    /// completion(成功, 错误信息?)：取消 / 拒绝 / Installer 退出 → (false, nil) 静默；超时 → 带错误文案。
+    func uninstall(completion: @escaping (Bool, String?) -> Void) {
+        guard let pkgPath = uninstallPkgPath else {
+            DispatchQueue.main.async {
+                completion(false, "alert.uninstall.pkg.missing".localized)
+            }
+            return
+        }
+
+        NSWorkspace.shared.open(URL(fileURLWithPath: pkgPath))
+        waitForInstaller(done: { [weak self] in
+            guard let self = self else { return false }
+            return !FileManager.default.fileExists(atPath: self.pamModuleDestination)
+        }) { [weak self] success, timedOut in
+            guard let self = self else { return }
+            if success {
+                // 卸载 pkg 已跑完清理。root postinstall 无法访问用户 Keychain，
+                // 锁屏密码等条目必须趁 App 进程还活着时由 App 自己清；
+                // 同时复位引导完成标记，重装后能重新走首次引导。
+                // postinstall 不再一上来 killall：它删完文件后等 App 自行退出
+                // （调用方在 completion 里 terminate），超时才兜底 kill。
+                ImmurokSecurity.shared.clearAllKeychainData()
+                UserDefaults.standard.removeObject(forKey: SetupWizardView.completedKey)
+                self.refreshStatus()
+                completion(true, nil)
+            } else {
+                self.refreshStatus()
+                completion(false, timedOut ? "alert.operation.timeout".localized : nil)
+            }
+        }
+    }
+
+    // MARK: - Installer 等待
+
+    /// 打开 pkg 后等待 Installer 完成：每秒轮询 `done()`，为真即成功；
+    /// Installer.app 退出（用户取消、TCC 拒绝后关窗、安装结束）时做最后一次判定；
+    /// 超时按失败。completion 只回调一次，在主线程。
+    private func waitForInstaller(timeout: TimeInterval = 300,
+                                  done: @escaping () -> Bool,
+                                  completion: @escaping (_ success: Bool, _ timedOut: Bool) -> Void) {
         let startTime = Date()
-        let timeout: TimeInterval = 300
+        var finished = false
+        var observer: NSObjectProtocol?
+
+        func finish(_ success: Bool, timedOut: Bool) {
+            guard !finished else { return }
+            finished = true
+            if let observer = observer {
+                NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            }
+            completion(success, timedOut)
+        }
+
+        observer = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.bundleIdentifier == "com.apple.installer" else { return }
+            finish(done(), timedOut: false)
+        }
 
         func check() {
-            refreshStatus()
-            if !needsPAMRepair {
-                completion(true, nil)
+            guard !finished else { return }
+            if done() {
+                finish(true, timedOut: false)
                 return
             }
             if Date().timeIntervalSince(startTime) >= timeout {
-                completion(false, nil)  // 超时/取消,按"未完成"处理,不弹错误
+                finish(false, timedOut: true)
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { check() }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { check() }
-    }
-
-    // MARK: - Uninstall
-
-    /// Complete uninstall: open uninstall pkg which handles all cleanup
-    func uninstall(completion: @escaping (Bool, String?) -> Void) {
-        guard let pkgPath = uninstallPkgPath else {
-            completion(false, "alert.uninstall.pkg.missing".localized)
-            return
-        }
-
-        NSWorkspace.shared.open(URL(fileURLWithPath: pkgPath))
-
-        // Poll for PAM module removal to detect completion
-        let startTime = Date()
-        let timeout: TimeInterval = 300
-
-        func check() {
-            if !FileManager.default.fileExists(atPath: pamModuleDestination) {
-                // 卸载 pkg 已完成。root postinstall 无法访问用户 Keychain，
-                // 锁屏密码等条目必须趁 App 进程还活着时由 App 自己清；
-                // 同时复位引导完成标记，重装后能重新走首次引导。
-                ImmurokSecurity.shared.clearAllKeychainData()
-                UserDefaults.standard.removeObject(forKey: SetupWizardView.completedKey)
-                refreshStatus()
-                completion(true, nil)
-                return
-            }
-
-            if Date().timeIntervalSince(startTime) >= timeout {
-                refreshStatus()
-                completion(false, "alert.operation.timeout".localized)
-                return
-            }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                check()
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            check()
-        }
     }
 
 }
