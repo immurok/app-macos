@@ -350,6 +350,7 @@
   "permission.screen.lock.sound.tip": "Звук блокировки",
   "permission.screen.unlock": "Разблокировка экрана",
   "permission.screen.unlock.hint": "После совпадения отпечатка пароль вводится автоматически и экран разблокируется",
+  "permission.screen.unlock.changePassword": "Изменить пароль",
   "permission.screen.unlock.sound": "Звук разблокировки",
   "permission.screen.unlock.sound.silent": "Без звука",
   "permission.screen.unlock.sound.tip": "Звук разблокировки",

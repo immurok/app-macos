@@ -350,6 +350,7 @@
   "permission.screen.lock.sound.tip": "Sperrton",
   "permission.screen.unlock": "Bildschirm entsperren",
   "permission.screen.unlock.hint": "Bei erkanntem Fingerabdruck das Passwort automatisch eingeben und den Bildschirm entsperren",
+  "permission.screen.unlock.changePassword": "Passwort ändern",
   "permission.screen.unlock.sound": "Entsperrton",
   "permission.screen.unlock.sound.silent": "Stumm",
   "permission.screen.unlock.sound.tip": "Entsperrton",

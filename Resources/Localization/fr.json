@@ -350,6 +350,7 @@
   "permission.screen.lock.sound.tip": "Son de verrouillage",
   "permission.screen.unlock": "Déverrouillage d'écran",
   "permission.screen.unlock.hint": "Saisit automatiquement le mot de passe pour déverrouiller l’écran après reconnaissance de l’empreinte",
+  "permission.screen.unlock.changePassword": "Modifier le mot de passe",
   "permission.screen.unlock.sound": "Son de déverrouillage",
   "permission.screen.unlock.sound.silent": "Silencieux",
   "permission.screen.unlock.sound.tip": "Son de déverrouillage",

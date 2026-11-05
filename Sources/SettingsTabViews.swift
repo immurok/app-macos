@@ -1956,6 +1956,19 @@ struct PermissionsTabView: View {
                         icon: "lock.open",
                         titleKey: "permission.screen.unlock",
                         trailing: {
+                            // 不跟随开关：只开 Passwords 时登录密码也在用，这里是唯一修改入口。
+                            if viewModel.isPasswordConfigured {
+                                Button {
+                                    viewModel.configurePassword()
+                                } label: {
+                                    Image(systemName: "key")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("permission.screen.unlock.changePassword".localized)
+                                .accessibilityLabel("permission.screen.unlock.changePassword".localized)
+                            }
                             if screenUnlockEnabled {
                                 soundPicker(selection: $unlockSound,
                                             tipKey: "permission.screen.unlock.sound.tip")

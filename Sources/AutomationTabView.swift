@@ -53,6 +53,12 @@ struct AutomationTabView: View {
     }
 
     private func setPassword(for item: AutomationItem) {
+        // Passwords 与屏幕解锁共用登录密码，必须走校验路径，防止存错后在锁屏盲打。
+        if item.builtinKey == "passwords" {
+            viewModel.setupLoginPasswordIfNeeded()
+            refreshToken = UUID()
+            return
+        }
         guard let pw = viewModel.promptAutomationPassword(name: item.name) else { return }
         store.setPassword(pw, for: item)
         refreshToken = UUID()
@@ -107,6 +113,8 @@ private struct AutomationRow: View {
     let onSetPassword: () -> Void
 
     private var hasPassword: Bool { store.hasPassword(item) }
+    /// Passwords 用登录密码，修改入口在「功能 > 屏幕解锁」，这里只保留未配置时的设置入口。
+    private var showsPasswordButton: Bool { item.builtinKey != "passwords" || !hasPassword }
 
     var body: some View {
         GroupBox {
@@ -134,9 +142,11 @@ private struct AutomationRow: View {
 
                 Spacer()
 
-                Button(hasPassword ? "automation.changePassword".localized : "automation.setPassword".localized,
-                       action: onSetPassword)
-                    .buttonStyle(.borderless).font(.caption)
+                if showsPasswordButton {
+                    Button(hasPassword ? "automation.changePassword".localized : "automation.setPassword".localized,
+                           action: onSetPassword)
+                        .buttonStyle(.borderless).font(.caption)
+                }
 
                 if item.builtinKey == nil {
                     Button { onEdit() } label: { Image(systemName: "pencil") }.buttonStyle(.borderless)

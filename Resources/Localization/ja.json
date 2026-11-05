@@ -350,6 +350,7 @@
   "permission.screen.lock.sound.tip": "ロックサウンド",
   "permission.screen.unlock": "画面ロック解除",
   "permission.screen.unlock.hint": "指紋が一致したらパスワードを自動入力して画面ロックを解除します",
+  "permission.screen.unlock.changePassword": "パスワードを変更",
   "permission.screen.unlock.sound": "ロック解除サウンド",
   "permission.screen.unlock.sound.silent": "なし",
   "permission.screen.unlock.sound.tip": "ロック解除サウンド",

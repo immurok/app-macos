@@ -350,6 +350,7 @@
   "permission.screen.lock.sound.tip": "Sonido de bloqueo",
   "permission.screen.unlock": "Desbloqueo de pantalla",
   "permission.screen.unlock.hint": "Escribe la contraseña automáticamente para desbloquear la pantalla al reconocer la huella",
+  "permission.screen.unlock.changePassword": "Cambiar contraseña",
   "permission.screen.unlock.sound": "Sonido de desbloqueo",
   "permission.screen.unlock.sound.silent": "Silencio",
   "permission.screen.unlock.sound.tip": "Sonido de desbloqueo",

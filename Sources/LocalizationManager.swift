@@ -479,6 +479,7 @@ class LocalizationManager: ObservableObject {
         // Permissions
         "permission.screen.unlock": "屏幕解锁",
         "permission.screen.unlock.hint": "指纹匹配后自动输入密码解锁屏幕",
+        "permission.screen.unlock.changePassword": "修改密码",
         "permission.screen.unlock.sound": "解锁音效",
         "permission.screen.unlock.sound.silent": "静音",
         "permission.screen.lock": "屏幕锁定",
@@ -1111,6 +1112,7 @@ class LocalizationManager: ObservableObject {
         // Permissions
         "permission.screen.unlock": "螢幕解鎖",
         "permission.screen.unlock.hint": "指紋匹配後自動輸入密碼解鎖螢幕",
+        "permission.screen.unlock.changePassword": "修改密碼",
         "permission.screen.unlock.sound": "解鎖音效",
         "permission.screen.unlock.sound.silent": "靜音",
         "permission.screen.lock": "螢幕鎖定",
@@ -1746,6 +1748,7 @@ class LocalizationManager: ObservableObject {
         // Permissions
         "permission.screen.unlock": "Screen Unlock",
         "permission.screen.unlock.hint": "Auto-type password to unlock screen on fingerprint match",
+        "permission.screen.unlock.changePassword": "Change Password",
         "permission.screen.unlock.sound": "Unlock Sound",
         "permission.screen.unlock.sound.silent": "Silent",
         "permission.screen.lock": "Screen Lock",

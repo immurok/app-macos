@@ -350,6 +350,7 @@
   "permission.screen.lock.sound.tip": "Som de bloqueio",
   "permission.screen.unlock": "Desbloqueio de tela",
   "permission.screen.unlock.hint": "Digita a senha automaticamente para desbloquear a tela quando a impressão digital corresponder",
+  "permission.screen.unlock.changePassword": "Alterar senha",
   "permission.screen.unlock.sound": "Som de desbloqueio",
   "permission.screen.unlock.sound.silent": "Silencioso",
   "permission.screen.unlock.sound.tip": "Som de desbloqueio",
