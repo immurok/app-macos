@@ -130,3 +130,13 @@ jobs:
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -am "immurok $VERSION"
           git push origin HEAD:main
+
+  # Discord card. Called from here because the release above is created with
+  # GITHUB_TOKEN, which never triggers `on: release` in another workflow.
+  announce:
+    needs: build
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/discord-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

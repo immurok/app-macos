@@ -1,0 +1,181 @@
+# Posts a release announcement + a condensed changelog card to Discord.
+#
+# MASTER COPY: scripts/github-workflows/discord-release.yml in the monorepo.
+# scripts/sync-github.sh (app-macos, app-linux-rs, firmware) and
+# app-win/tools/publish-app-win.ps1 (app-win) copy it into each public repo's
+# .github/workflows/ — edit it there, never in a mirror.
+#
+# Setup: secret DISCORD_WEBHOOK = webhook URL of the target channel
+# (Discord → channel settings → Integrations → Webhooks). An organization
+# secret shared with the four repos is the simplest. Without it the job warns
+# and passes.
+#
+# Three ways in, one code path (the release is always re-read by tag):
+#   release: published   releases published by a person (firmware; hand-made ones).
+#   workflow_call        releases created by a release workflow. Those are made
+#                        with GITHUB_TOKEN, and GitHub starts no workflow for
+#                        events caused by GITHUB_TOKEN — so `release: published`
+#                        never fires for them; release.yml calls this file as
+#                        its last job instead.
+#   workflow_dispatch    re-send by hand, e.g. after editing the release notes.
+#
+# Pre-releases are not announced, except through workflow_dispatch.
+#
+# Release-note text that should stay out of the card (install instructions,
+# standing warnings) goes between  <!-- announce:skip -->  and
+# <!-- /announce:skip -->  in the release body.
+name: Discord release card
+
+on:
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag of the release to announce'
+        required: true
+        type: string
+    secrets:
+      DISCORD_WEBHOOK:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of the release to announce (e.g. v1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post release card
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "::warning::DISCORD_WEBHOOK secret not set; release $TAG not announced"
+            exit 0
+          fi
+          gh api "repos/$REPO/releases/tags/$TAG" > release.json
+
+          python3 - <<'PY'
+          import json, os, re
+
+          MAX_ITEMS = 10      # bullets on the card
+          MAX_CHARS = 1400    # changelog text on the card
+          ITEM_CHARS = 170    # one bullet
+
+          PRODUCTS = {
+              "app-macos":    ("immurok for macOS",   0x8E8E93),
+              "app-win":      ("immurok for Windows", 0x0078D4),
+              "app-linux-rs": ("immurok for Linux",   0xE95420),
+              "firmware":     ("immurok firmware",    0x2ECC71),
+          }
+
+          rel = json.load(open("release.json", encoding="utf-8"))
+          if rel.get("prerelease") and os.environ["EVENT"] != "workflow_dispatch":
+              print("pre-release: not announced")
+              raise SystemExit
+
+          repo = os.environ["REPO"].split("/")[-1]
+          product, color = PRODUCTS.get(repo, (repo, 0x5865F2))
+          version = rel["tag_name"].lstrip("v")
+          url = rel["html_url"]
+
+
+          def blocks(body):
+              """Release notes -> [kind, indent, text]; hard-wrapped lines rejoined."""
+              body = re.sub(r"<!--\s*announce:skip\s*-->.*?<!--\s*/announce:skip\s*-->",
+                            "", body, flags=re.S)
+              body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+              out = []
+              for raw in body.replace("\r\n", "\n").split("\n"):
+                  line = raw.rstrip()
+                  if not line.strip():
+                      out.append(None)                      # paragraph break
+                      continue
+                  if "Full Changelog" in line and "/compare/" in line:
+                      continue                              # the card links to the release
+                  m = re.match(r"#{1,6}\s+(.*)", line)
+                  if m:
+                      out.append(["head", "", m.group(1).strip()])
+                      continue
+                  m = re.match(r"(\s*)[-*+]\s+(.*)", line)
+                  if m:
+                      out.append(["item", m.group(1), m.group(2).strip()])
+                      continue
+                  if out and out[-1] and out[-1][0] in ("item", "text"):
+                      out[-1][2] += " " + line.strip()      # continuation line
+                      continue
+                  out.append(["text", "", line.strip()])
+              out = [b for b in out if b]
+              # "Fixed" / "Feature:" on a line of its own above a list is a heading.
+              for b, nxt in zip(out, out[1:]):
+                  if b[0] == "text" and nxt[0] == "item" and len(b[2]) <= 40:
+                      b[0] = "head"
+              return out
+
+
+          def shorten(text):
+              """First sentence, capped."""
+              text = re.split(r"(?<=[.!?])\s+(?=[A-Z`\[])", text, maxsplit=1)[0]
+              if len(text) > ITEM_CHARS:
+                  text = text[:ITEM_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+                  if text.count("`") % 2:
+                      text += "`"                           # do not leave code open
+                  text += "…"
+              return text
+
+
+          lines, used, shown, entries = [], 0, 0, 0
+          for kind, indent, text in blocks(rel.get("body") or ""):
+              if kind == "head":
+                  # the notes' own "## 1.2.3 — date" title repeats the card title
+                  if version in text or shown >= MAX_ITEMS or used >= MAX_CHARS:
+                      continue
+                  if lines:
+                      lines.append("")
+                  lines.append("**" + text.rstrip(":").strip("*") + "**")
+                  continue
+              entries += 1
+              if shown >= MAX_ITEMS or used >= MAX_CHARS:
+                  continue
+              line = (indent + "- " if kind == "item" else "") + shorten(text)
+              lines.append(line)
+              used += len(line)
+              shown += 1
+          while lines and (not lines[-1] or lines[-1].startswith("**")):
+              lines.pop()                                   # heading left with no entries
+          if entries > shown:
+              lines += ["", "*…and %d more*" % (entries - shown)]
+          lines += ["", "[Release notes & downloads](%s)" % url]
+
+          payload = {
+              "content": "🚀 **%s v%s** has been released." % (product, version),
+              "embeds": [{
+                  "title": "What's new in v%s" % version,
+                  "url": url,
+                  "description": "\n".join(lines).strip(),
+                  "color": color,
+                  "footer": {"text": os.environ["REPO"]},
+                  "timestamp": rel.get("published_at"),
+              }],
+              "allowed_mentions": {"parse": []},
+          }
+          json.dump(payload, open("payload.json", "w", encoding="utf-8"))
+          print(payload["content"])
+          print(payload["embeds"][0]["description"])
+          PY
+
+          [ -f payload.json ] || exit 0
+          curl -sS --fail-with-body -H 'Content-Type: application/json' \
+            -d @payload.json "$DISCORD_WEBHOOK"
