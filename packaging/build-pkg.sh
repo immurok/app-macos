@@ -78,8 +78,11 @@ log_step "Building universal binaries (arm64 + x86_64)"
 # swift build 之前用本次发布的版本覆盖掉仓库里的值，否则 pkg 里的 imk
 # 会报上一次本地构建的版本。
 "$PKG_DIR/sync-cli-version.sh" "$VERSION"
-swift build -c release --arch arm64
-swift build -c release --arch x86_64
+# Swift 6.4 起默认 build system 是 swiftbuild，产物落在 .build/out/ 而不是
+# .build/<arch>-apple-macosx/release/，下面的 lipo 会拿到陈旧二进制。和
+# build-deploy.sh 一样钉死 native 后端。
+swift build -c release --arch arm64 --build-system native
+swift build -c release --arch x86_64 --build-system native
 mkdir -p .build/universal/release
 lipo -create -output .build/universal/release/immurokApp \
     .build/arm64-apple-macosx/release/immurokApp \

@@ -292,6 +292,7 @@ class BLEManager: NSObject {
     private var fpFailureCount = 0  // FP_NOT_MATCH counter, max 2 then deny
     private var otaReadCallback: ((Data?) -> Void)?
     private var otaWriteReadyCallback: ((Bool) -> Void)?
+    private var rssiCompletions: [(Int?) -> Void] = []  // 等 didReadRSSI 的回调（BLE 队列）
     private var reconnectTimer: DispatchSourceTimer?
     private var sleepActivity: NSObjectProtocol?
     private var displaySleeping = false
@@ -1128,6 +1129,20 @@ class BLEManager: NSObject {
                 interval: (UInt16(r[2]) << 8) | UInt16(r[3]),
                 latency: (UInt16(r[4]) << 8) | UInt16(r[5]),
                 timeout: (UInt16(r[6]) << 8) | UInt16(r[7])))
+        }
+    }
+
+    /// 读取当前连接的 RSSI（dBm）。走本机蓝牙控制器，不占设备命令通道，
+    /// 所以可以在窗口显示期间按秒轮询。nil = 未连接 / 读取失败。
+    /// completion 在 BLE 队列回调。
+    func readRSSI(completion: @escaping (Int?) -> Void) {
+        queue.async { [weak self] in
+            guard let self, self.deviceState.isConnected, let p = self.peripheral else {
+                completion(nil)
+                return
+            }
+            self.rssiCompletions.append(completion)
+            p.readRSSI()
         }
     }
 
@@ -1997,6 +2012,10 @@ extension BLEManager: CBCentralManagerDelegate {
         // 也跟着永久占用 DeviceActivityCoordinator 的 .auth 令牌。
         otaWriteReadyCallback?(false)
         otaWriteReadyCallback = nil
+        // 断链后 didReadRSSI 不会再来，把在等的回调以 nil 收尾
+        let pendingRSSI = rssiCompletions
+        rssiCompletions.removeAll()
+        for cb in pendingRSSI { cb(nil) }
         otaCharacteristic = nil
         firmwareVersion = nil
         isDeviceVerified = false
@@ -2042,6 +2061,14 @@ extension BLEManager: CBCentralManagerDelegate {
 // MARK: - CBPeripheralDelegate
 
 extension BLEManager: CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+        // 127 是 HCI 的「RSSI 不可用」
+        let value: Int? = (error == nil && RSSI.intValue != 127) ? RSSI.intValue : nil
+        let pending = rssiCompletions
+        rssiCompletions.removeAll()
+        for cb in pending { cb(value) }
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
 

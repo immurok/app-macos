@@ -96,6 +96,9 @@ struct DualHostPanel: View {
     @ObservedObject var appViewModel: AppViewModel
     /// 鼠标当前悬停在哪张卡上 —— 只有悬停的卡才浮现自己的 unpair 按钮。
     @State private var hoveredSlot: UInt8?
+    /// 「主机切换」指纹是否已录入，只用来在引导第一步打勾。
+    var hasSwitchFinger: Bool = false
+    @State private var showingSecondHostGuide = false
 
     var body: some View {
         GroupBox {
@@ -152,6 +155,10 @@ struct DualHostPanel: View {
             .padding(4)
         }
         .onAppear { viewModel.refresh() }
+        .sheet(isPresented: $showingSecondHostGuide) {
+            SecondHostGuideSheet(hasSwitchFinger: hasSwitchFinger,
+                                 targetSlot: viewModel.otherSlot)
+        }
         // 连接状态变化时刷新槽卡片：断开→清空,重连→拉最新（#3）。
         .onChange(of: appViewModel.isDeviceConnected) { _ in viewModel.refresh() }
     }
@@ -275,10 +282,31 @@ struct DualHostPanel: View {
             }
         } else {
             // 空的对方槽：本机替不了那台电脑做 ECDH，只能说清去哪儿操作。
-            Text("dualhost.card.otherhint".localized)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            //
+            // 本机已绑定时，悬停这张卡把说明文字换成「如何添加第二台主机？」
+            // 按钮，点开图文引导。两者叠在同一个位置，卡片高度不变。本机自己
+            // 都还没绑定时不给入口：那时该先绑本机，引导讲的步骤用不上。
+            let showGuide = appViewModel.hasLocalPairing && hoveredSlot == slot
+            ZStack {
+                Text("dualhost.card.otherhint".localized)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .opacity(showGuide ? 0 : 1)
+                Button { showingSecondHostGuide = true } label: {
+                    Label("dualhost.guide.button".localized,
+                          systemImage: "questionmark.circle")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .frame(maxWidth: .infinity)
+                .opacity(showGuide ? 1 : 0)
+                .allowsHitTesting(showGuide)
+            }
+            .animation(.easeInOut(duration: 0.15), value: showGuide)
         }
     }
 

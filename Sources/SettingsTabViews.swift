@@ -19,29 +19,81 @@ fileprivate struct AndOTPEntry: Decodable {
     let period: Int?
 }
 
-// MARK: - AppKit-backed Tooltip
+// MARK: - 点击式说明（InfoTip）
 //
-// SwiftUI's `.help(_:)` doesn't reliably surface a tooltip on plain Image
-// views (no Button wrapper) on macOS 13+. We attach an NSView with
-// `toolTip` set via the standard AppKit mechanism, which always works.
+// 行标题旁的 (i)：鼠标移上去变成手形，点一下弹出说明气泡，再点别处收起。
+//
+// 之前是悬停 1 秒出系统 tooltip，问题有三个：等得久且没有任何「这里能看」
+// 的暗示；手形光标用 onHover 里 NSCursor.push/pop，视图在悬停中消失或
+// 事件丢一次就不成对，光标会卡成手形；带 onInfoClick 的行点一下是静默
+// 复制，没有反馈。现在光标走 AppKit 的 cursor rect（由窗口管理，不会卡），
+// 说明走 popover，复制变成气泡里一个看得见的按钮。
 
-private struct TooltipBacking: NSViewRepresentable {
-    let text: String
-    func makeNSView(context: Context) -> NSView {
-        let v = NSView()
-        v.toolTip = text
+/// 透明的 AppKit 视图：负责手形光标和点击。盖在图标上面（overlay）。
+private struct ClickableCursorArea: NSViewRepresentable {
+    let action: () -> Void
+
+    final class AreaView: NSView {
+        var action: (() -> Void)?
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .pointingHand)
+        }
+        override func mouseDown(with event: NSEvent) { action?() }
+        // 窗口不在前台时第一下点击也直接生效，不用先点一下激活窗口。
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+
+    func makeNSView(context: Context) -> AreaView {
+        let v = AreaView()
+        v.action = action
         return v
     }
-    func updateNSView(_ nsView: NSView, context: Context) {
-        nsView.toolTip = text
+    func updateNSView(_ nsView: AreaView, context: Context) {
+        nsView.action = action
     }
 }
 
-extension View {
-    /// macOS-native tooltip on hover (~1s delay). Works on any view because
-    /// it overlays a transparent NSView with `toolTip` set.
-    func nsTooltip(_ text: String) -> some View {
-        background(TooltipBacking(text: text))
+/// (i) 图标 + 点击弹出的说明气泡。
+/// `onCopy` 非 nil 时气泡里多一个复制按钮（用于导出命令这类要拿走的文本）。
+struct InfoTip: View {
+    let text: String
+    var onCopy: (() -> Void)? = nil
+
+    @State private var isShown = false
+    @State private var copied = false
+
+    var body: some View {
+        Image(systemName: "info.circle")
+            .font(.caption)
+            .foregroundColor(isShown ? .accentColor : .secondary)
+            // 图标本身只有 ~11pt，点击区放大一圈好点中。
+            .padding(3)
+            .contentShape(Rectangle())
+            .overlay(ClickableCursorArea { isShown.toggle() })
+            .padding(-3)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(text)
+            .popover(isPresented: $isShown, arrowEdge: .bottom) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text(text)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let onCopy = onCopy {
+                        Button {
+                            onCopy()
+                            copied = true
+                        } label: {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                .foregroundColor(copied ? .green : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: 300, alignment: .leading)
+                .onDisappear { copied = false }
+            }
     }
 }
 
@@ -65,6 +117,57 @@ private func batteryTooltipText(level: Int, mv: Int?) -> String {
         return String(format: "%d%% / %.3fV — %@", level, volts, refresh)
     }
     return "\(level)% — \(refresh)"
+}
+
+// MARK: - 连接参数窗口
+
+/// 连接参数（打开时读一次）+ RSSI（窗口显示期间每秒刷新）。
+/// RSSI 读的是本机蓝牙控制器，不给设备发命令，轮询不耗设备电量。
+private struct ConnParamsSheet: View {
+    @ObservedObject var viewModel: AppViewModel
+    let message: String
+    @Binding var isPresented: Bool
+    @State private var rssi: Int?
+    // 关窗时往 immurok.log 写一行 RSSI 摘要，用户反馈信号问题时日志里有据可查
+    @State private var samples: [Int] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("device.connparams.title".localized)
+                .font(.headline)
+
+            // 和参数拼成同一个 Text，行距才一致
+            Text(message + "\n" + "device.connparams.rssi".localized(rssi.map { "\($0) dBm" } ?? "--"))
+                .monospacedDigit()
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("common.ok".localized) { isPresented = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 340)
+        .onExitCommand { isPresented = false }
+        // .task 跟着 sheet 的生命周期走，关窗即取消，不会在后台继续读
+        .task {
+            while !Task.isCancelled {
+                viewModel.readRSSI { value in
+                    rssi = value
+                    if let value { samples.append(value) }
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+        .onDisappear {
+            guard let lo = samples.min(), let hi = samples.max() else { return }
+            let avg = Double(samples.reduce(0, +)) / Double(samples.count)
+            LogManager.shared.log(String(format: "RSSI: min=%d avg=%.0f max=%d dBm (%d samples)",
+                                         lo, avg, hi, samples.count))
+        }
+    }
 }
 
 // MARK: - Device Tab
@@ -249,10 +352,12 @@ struct DeviceTabView: View {
                     }
                     .padding(4)
                 }
-                .alert("device.connparams.title".localized, isPresented: $showingConnParams) {
-                    Button("common.ok".localized, role: .cancel) {}
-                } message: {
-                    Text(connParamsMessage)
+                // 用 sheet 而不是 alert：alert 的正文弹出后不会跟着状态刷新，
+                // RSSI 要在窗口显示期间持续更新。
+                .sheet(isPresented: $showingConnParams) {
+                    ConnParamsSheet(viewModel: viewModel,
+                                    message: connParamsMessage,
+                                    isPresented: $showingConnParams)
                 }
 
                 // Fingerprint Management
@@ -339,7 +444,8 @@ struct DeviceTabView: View {
 
                 // 双主机面板。取代了原先「槽位徽章 + 独立 Pairing 区块」的
                 // 两段式布局 —— 配对/解绑现在就在各自的主机卡片里。
-                DualHostPanel(viewModel: dualHostVM, appViewModel: viewModel)
+                DualHostPanel(viewModel: dualHostVM, appViewModel: viewModel,
+                              hasSwitchFinger: fpViewModel.hasSwitchFinger)
 
             }
             .padding(20)
@@ -923,7 +1029,8 @@ struct KeysTabView: View {
         confirm.alertStyle = .warning
         confirm.addButton(withTitle: "alert.delete".localized)
         confirm.addButton(withTitle: "alert.cancel".localized)
-        confirm.buttons.first?.hasDestructiveAction = true
+        // 不要设 hasDestructiveAction：macOS 27 深色模式的 sheet 里，
+        // 破坏性按钮会被画成不可见，弹窗只剩「取消」。
         guard confirm.runModalOverSettings() == .alertFirstButtonReturn else { return }
 
         let indices = selectedEntries.map { UInt8($0) }
@@ -2070,6 +2177,7 @@ struct PermissionsTabView: View {
                 permissionRow(
                     icon: "command",
                     titleKey: "permission.cli",
+                    hintKey: "permission.cli.hint",
                     trailing: {
                         if cliEnabled {
                             soundPicker(selection: $agentAuthSound,
@@ -2149,11 +2257,11 @@ struct PermissionsTabView: View {
     // MARK: - Row Layout
 
     /// Standard permission row: icon · title · info-tooltip · [trailing] · toggle
-    /// - `hintKey`: localized hint shown as hover tooltip on the (i) icon
+    /// - `hintKey`: localized hint shown in a popover when the (i) icon is clicked
     /// - `hint`: raw hint string (overrides hintKey when both given; for
     ///           dynamic content like file paths)
-    /// - `onInfoClick`: makes the (i) clickable; common use is "click to
-    ///                  copy the hint to clipboard"
+    /// - `onInfoClick`: adds a copy button inside the popover; the closure
+    ///                  does the copying
     /// - `trailing`: optional view rendered just before the toggle (e.g.
     ///               HotkeyRecorderButton for quick-fill)
     @ViewBuilder
@@ -2174,22 +2282,7 @@ struct PermissionsTabView: View {
                 .font(.headline)
             let resolvedHint = hint ?? hintKey?.localized
             if let resolvedHint = resolvedHint {
-                // Use AppKit-backed tooltip (nsTooltip) — SwiftUI .help()
-                // doesn't reliably show on plain Image views.
-                Image(systemName: "info.circle")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .nsTooltip(resolvedHint)
-                    .onHover { hovering in
-                        if hovering {
-                            NSCursor.pointingHand.push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                    }
-                    .onTapGesture {
-                        onInfoClick?()
-                    }
+                InfoTip(text: resolvedHint, onCopy: onInfoClick)
             }
             Spacer()
             trailing()

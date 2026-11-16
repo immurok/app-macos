@@ -198,7 +198,7 @@ private struct BottomFace: View {
 /// 设备顶面：外壳圆角方 + 中央指纹传感器双环。
 /// `sensorGlow` 给传感器上色（按指纹时绿灯）；
 /// `ledBlue` 非 nil 时在下边缘画指示灯，true 亮 / false 暗（配合闪烁动画）。
-private struct TopFace: View {
+struct TopFace: View {
     let size: CGFloat
     let sensorGlow: Color?
     let ledBlue: Bool?
@@ -241,7 +241,7 @@ private struct TopFace: View {
 /// **视图中心就是指腹圆心**：调用方用 position 把指尖放到目标点，再用 rotationEffect（默认
 /// 绕中心）转到想要的方向，指尖位置不变。
 /// `pressing` 为 true 时整体沿指向前顶 5pt，配合 repeatForever 就是按压动画。
-private struct Finger: View {
+struct Finger: View {
     let length: CGFloat
     let pressing: Bool
 

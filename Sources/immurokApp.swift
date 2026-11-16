@@ -21,7 +21,7 @@ struct immurokApp: App {
         .menuBarExtraStyle(.window)
 
         // Settings window - 可通过菜单打开
-        Window("immurok", id: "settings") {
+        Window(settingsWindowTitle, id: "settings") {
             ContentView(viewModel: viewModel)
         }
         .windowResizability(.contentMinSize)

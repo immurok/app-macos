@@ -267,6 +267,22 @@ class AppViewModel: ObservableObject {
         }
     }
 
+    /// 读取当前连接的 RSSI（dBm）。completion 在主线程回调；nil = 未连接 / 读取失败。
+    /// 锁屏期间不读：没人在看窗口，而且和电量定时器一样，锁屏后不主动碰
+    /// CoreBluetooth（2026-11-09 窗口开着轮询时锁屏，8 秒后链路超时过一次，
+    /// 因果未证实，先按保守处理）。
+    func readRSSI(completion: @escaping (Int?) -> Void) {
+        guard isDeviceConnected, !isScreenLocked else {
+            completion(nil)
+            return
+        }
+        bleManager.readRSSI { rssi in
+            Task { @MainActor in
+                completion(rssi)
+            }
+        }
+    }
+
     // MARK: - BLE Callbacks
 
     private func setupBLECallbacks() {

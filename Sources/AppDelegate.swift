@@ -544,17 +544,90 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // CGEvent keystrokes go to whatever currently has key focus; if a
             // race or attacker process held focus past our window-visible
             // detection, the password would land in the wrong window.
-            guard self.isLoginWindowFrontmost() else {
-                Task { @MainActor in LogManager.shared.log("Aborting unlock: loginwindow not frontmost") }
+            // 别的 App 在锁屏期间占着前台时，先尝试把锁屏进程置前；置前后仍要
+            // 通过 isLoginWindowFrontmost 校验才输密码，校验不过照旧放弃。
+            self.ensureLoginWindowFrontmost(timeout: 1.0, t0: t0) { [weak self] front in
+                guard front, let self = self else {
+                    Task { @MainActor in LogManager.shared.log("Aborting unlock: loginwindow not frontmost") }
+                    return
+                }
+                // loginwindow's password field is ready as soon as the window is on screen.
+                // AX API cannot detect it (not exposed as AXSecureTextField), so type immediately —
+                // UNLESS Apple Watch unlock is mid-authentication, in which case typing the password
+                // collides with the watch flow and errors. Gate on that (bug: watch prompt + immurok).
+                self.typePasswordAvoidingWatch(password, t0: t0,
+                                               deadline: CFAbsoluteTimeGetCurrent() + 8.0)
+            }
+        }
+    }
+
+    /// 当前前台 App 的描述（仅用于诊断日志）。
+    private func frontAppLabel() -> String {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return "none" }
+        return "\(app.bundleIdentifier ?? "?") (\(app.localizedName ?? "?"), pid \(app.processIdentifier))"
+    }
+
+    /// 屏幕上锁屏窗口（loginwindow / ScreenSaverEngine）的属主进程。
+    private func lockScreenOwnerApps() -> [NSRunningApplication] {
+        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        var pids: [pid_t] = []
+        for window in windowList {
+            guard let owner = window[kCGWindowOwnerName as String] as? String,
+                  owner == "loginwindow" || owner == "ScreenSaverEngine",
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  !pids.contains(pid) else { continue }
+            pids.append(pid)
+        }
+        return pids.compactMap { NSRunningApplication(processIdentifier: $0) }
+    }
+
+    /// 确认锁屏进程在前台；不在则主动把它置前（NSRunningApplication.activate
+    /// + AX frontmost 双路），轮询到生效或超时。只负责置前，不放宽校验。
+    private func ensureLoginWindowFrontmost(timeout: TimeInterval, t0: CFAbsoluteTime,
+                                            completion: @escaping (Bool) -> Void) {
+        if isLoginWindowFrontmost() {
+            completion(true)
+            return
+        }
+        let front = frontAppLabel()
+        let targets = lockScreenOwnerApps()
+        Task { @MainActor in
+            LogManager.shared.log("loginwindow not frontmost (front=\(front)) — activating lock screen (\(targets.count) target(s))")
+        }
+        guard !targets.isEmpty else {
+            completion(false)
+            return
+        }
+        let deadline = CFAbsoluteTimeGetCurrent() + timeout
+
+        func attempt() {
+            for app in targets {
+                app.activate(options: [])
+                let element = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetAttributeValue(element, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            }
+        }
+
+        func poll() {
+            if isLoginWindowFrontmost() {
+                let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                Task { @MainActor in LogManager.shared.log("loginwindow brought to front +\(ms)ms") }
+                completion(true)
                 return
             }
-            // loginwindow's password field is ready as soon as the window is on screen.
-            // AX API cannot detect it (not exposed as AXSecureTextField), so type immediately —
-            // UNLESS Apple Watch unlock is mid-authentication, in which case typing the password
-            // collides with the watch flow and errors. Gate on that (bug: watch prompt + immurok).
-            self.typePasswordAvoidingWatch(password, t0: t0,
-                                           deadline: CFAbsoluteTimeGetCurrent() + 8.0)
+            if CFAbsoluteTimeGetCurrent() >= deadline {
+                let still = frontAppLabel()
+                Task { @MainActor in LogManager.shared.log("Activate lock screen failed, front still \(still)") }
+                completion(false)
+                return
+            }
+            attempt()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }
         }
+
+        poll()
     }
 
     /// 在避开 Apple Watch 认证的前提下输入密码解锁。

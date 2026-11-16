@@ -833,7 +833,8 @@ class FingerprintViewModel: ObservableObject {
         confirm.alertStyle = .warning
         confirm.addButton(withTitle: "alert.delete".localized)
         confirm.addButton(withTitle: "alert.cancel".localized)
-        confirm.buttons.first?.hasDestructiveAction = true
+        // 不要设 hasDestructiveAction：macOS 27 深色模式的 sheet 里，
+        // 破坏性按钮会被画成不可见，弹窗只剩「取消」。
         guard confirm.runModalOverSettings() == .alertFirstButtonReturn else { return }
 
         isLoading = true
