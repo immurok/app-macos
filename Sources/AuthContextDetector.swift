@@ -6,6 +6,8 @@ enum AuthContext {
     case none
     case secureField(item: AutomationItem, field: AXUIElement, sheet: AXUIElement)
     case appStoreConfirmSheet(item: AutomationItem, sheet: AXUIElement)
+    /// Safari AutoFill Touch ID sheet: no password field yet, "Enter Password…" must be pressed first.
+    case safariAutoFillTouchID(item: AutomationItem, button: AXUIElement)
 }
 
 /// 在主动指纹路径被触发时，检索当前焦点上下文并分类。单一职责、无副作用。
@@ -31,22 +33,16 @@ struct AuthContextDetector {
         //   前台却是 Safari——只有按属主才能命中。
         //   rightArrow 策略（1Password）**不走这条**：它必须经 Path 2 的"恰好一个 secure field"
         //   硬化判据，否则改主密码等多字段表单的某个框被聚焦时会从这里绕过 guard 被误注入。
-        path1: if let focused = systemWideFocusedSecureField(),
-           let ownerPID = ownerPID(of: focused),
-           let ownerBundle = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
-           let item = appItems.first(where: { $0.matches(bundleID: ownerBundle) && $0.submitStrategy != .rightArrow }),
-           InjectionWhitelist.passesSigning(for: item, pid: ownerPID, bundleID: ownerBundle),
-           let hit = enclosingContainer(of: focused) {
-            // 属主是浏览器（如 Safari 内 Passwords 解锁）：只认原生 sheet，且上行链不得穿过
-            // AXWebArea——网页登录框满足不了这两条，防止把登录密码注入任意网站。
-            // 拒绝时不终止检测，放行到 Path 2-4（如另一浏览器里的 Bitwarden 浮层）。
-            if Self.webBrowserBundles.contains(ownerBundle),
-               hit.crossedWebArea || role(of: hit.container) != "AXSheet" {
-                NSLog("AuthContextDetector: reject browser-owned secure field (%@) — webArea=%d containerRole=%@",
-                      ownerBundle, hit.crossedWebArea ? 1 : 0, role(of: hit.container) ?? "nil")
-                break path1
-            }
-            return .secureField(item: item, field: focused, sheet: hit.container)
+        if let hit = focusedSecureFieldContext(appItems: appItems) {
+            return hit
+        }
+
+        // Path 1b) Safari AutoFill Touch ID sheet (no password field yet), judged by frontmost Safari:
+        //   only a native AXSheet attached to its window, with the fixed AXIdentifier (web content
+        //   can't produce an AXSheet). On a hit the caller presses "Enter Password…", and once the
+        //   password field appears, injection goes through Path 1.
+        if let hit = safariAutoFillTouchIDButton(appItems: appItems) {
+            return .safariAutoFillTouchID(item: hit.item, button: hit.button)
         }
 
         // Path 2) 定向下行扫描：1Password 桌面锁定窗 / 扩展浮层（rightArrow 策略），以及 Passwords
@@ -91,7 +87,98 @@ struct AuthContextDetector {
         return .none
     }
 
+    /// Runs Path 1 only (focused password field). Used by the Safari two-step poll so it doesn't run the full Path 2-4 scans every 100ms.
+    func detectFocusedSecureField() -> AuthContext {
+        let appItems = AutomationStore.shared.enabledItems().filter { $0.targetKind == .app }
+        return focusedSecureFieldContext(appItems: appItems) ?? .none
+    }
+
+    /// Path 1 body: system-wide focused secure field → match an app item by owning process (including browser hardening).
+    private func focusedSecureFieldContext(appItems: [AutomationItem]) -> AuthContext? {
+        guard let focused = systemWideFocusedSecureField(),
+              let ownerPID = ownerPID(of: focused),
+              let ownerBundle = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier,
+              let item = appItems.first(where: { $0.matches(bundleID: ownerBundle) && $0.submitStrategy != .rightArrow }),
+              InjectionWhitelist.passesSigning(for: item, pid: ownerPID, bundleID: ownerBundle),
+              let hit = enclosingContainer(of: focused) else { return nil }
+        // 属主是浏览器（如 Safari 内 Passwords 解锁）：只认原生 sheet，且上行链不得穿过
+        // AXWebArea——网页登录框满足不了这两条，防止把登录密码注入任意网站。
+        // 拒绝时不终止检测，放行到 Path 2-4（如另一浏览器里的 Bitwarden 浮层）。
+        if Self.webBrowserBundles.contains(ownerBundle),
+           hit.crossedWebArea || role(of: hit.container) != "AXSheet" {
+            NSLog("AuthContextDetector: reject browser-owned secure field (%@) — webArea=%d containerRole=%@",
+                  ownerBundle, hit.crossedWebArea ? 1 : 0, role(of: hit.container) ?? "nil")
+            return nil
+        }
+        return .secureField(item: item, field: focused, sheet: hit.container)
+    }
+
+    /// If frontmost Safari's focused/main window has the AutoFill Touch ID sheet, returns its "Enter Password…" button.
+    private func safariAutoFillTouchIDButton(appItems: [AutomationItem]) -> (item: AutomationItem, button: AXUIElement)? {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              let bundleID = front.bundleIdentifier,
+              Self.webBrowserBundles.contains(bundleID),
+              let item = appItems.first(where: { $0.submitStrategy == .generic && $0.matches(bundleID: bundleID) }),
+              InjectionWhitelist.passesSigning(for: item, pid: front.processIdentifier, bundleID: bundleID),
+              let appEl = AXAppProbe.responsiveApplication(pid: front.processIdentifier, tag: "safari-autofill-sheet")
+        else { return nil }
+
+        // Only the focused/main window (a sheet on a background window wouldn't give the password
+        // field system focus, so Path 1 couldn't pick it up). With a sheet attached, AXFocusedWindow
+        // may be the sheet itself rather than its parent, so accept the window and its direct children.
+        var candidates: [AXUIElement] = []
+        for attr in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+            if let w = copyElement(appEl, attr) { candidates.append(w); candidates += children(of: w) }
+        }
+        guard let sheet = candidates.first(where: {
+            role(of: $0) == "AXSheet" && identifier(of: $0) == AutoFillTouchIDSheet.sheetIdentifier
+        }) else {
+            let desc = [kAXFocusedWindowAttribute, kAXMainWindowAttribute].map { attr -> String in
+                guard let w = copyElement(appEl, attr) else { return "\(attr)=nil" }
+                return "\(attr)=\(role(of: w) ?? "?")/\(identifier(of: w) ?? "-")"
+            }.joined(separator: " ")
+            Task { @MainActor in LogManager.shared.log("[ax] Safari AutoFill sheet not found: \(desc)") }
+            return nil
+        }
+        let buttons = collectButtons(sheet, maxDepth: 4)
+        let infos = buttons.map { btn -> ButtonInfo in
+            var t: CFTypeRef?
+            AXUIElementCopyAttributeValue(btn, kAXTitleAttribute as CFString, &t)
+            let title = (t as? String).flatMap { $0.isEmpty ? nil : $0 } ?? description(of: btn)
+            return ButtonInfo(subrole: subrole(of: btn), title: title, frame: .zero)
+        }
+        guard let idx = AutoFillTouchIDSheet.pickPasswordButton(from: infos) else {
+            NSLog("AuthContextDetector: AutoFill Touch ID sheet found but password button ambiguous (%@)",
+                  infos.map { $0.title ?? "nil" }.joined(separator: ", "))
+            return nil
+        }
+        return (item, buttons[idx])
+    }
+
     // MARK: - AX helpers
+
+    private func identifier(of el: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXIdentifierAttribute as CFString, &ref)
+        return ref as? String
+    }
+
+    private func description(of el: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXDescriptionAttribute as CFString, &ref)
+        return ref as? String
+    }
+
+    /// Collects AXButtons in the subtree with bounded depth (document order).
+    private func collectButtons(_ el: AXUIElement, maxDepth: Int) -> [AXUIElement] {
+        if maxDepth < 0 { return [] }
+        var out: [AXUIElement] = []
+        for kid in children(of: el) {
+            if role(of: kid) == "AXButton" { out.append(kid) }
+            else { out += collectButtons(kid, maxDepth: maxDepth - 1) }
+        }
+        return out
+    }
 
     /// 系统级焦点元素若是安全密码框则返回它，否则 nil。
     private func systemWideFocusedSecureField() -> AXUIElement? {

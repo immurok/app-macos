@@ -26,6 +26,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // auth branch — a bare match with no auth context (e.g. long-press to
     // lock with no dialog visible) leaves this nil so the lock can fire.
     private var lastAuthFlowAt: Date?
+    /// Safari AutoFill two-step flow in progress (pressed "Enter Password…", waiting for the password field).
+    private var safariAutoFillInFlight = false
     private static let lockSuppressWindow: TimeInterval = 3.0
 
     // (Password now stored in Keychain, not received via BLE)
@@ -286,6 +288,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             // ===== 密码注入检测（阶段 2：Passwords 登录密码真注入，其余仍只 log）=====
             // pending-PAM 已在上方早返回（PAM 优先仲裁天然满足），此处只可能是主动路径。
+            // A touch while the Safari two-step flow waits for the password field (≤1.5s): ignore it to avoid double inject/submit.
+            if safariAutoFillInFlight {
+                LogManager.shared.log("[inject] Safari AutoFill flow in progress, ignoring touch")
+                return
+            }
             let detectT0 = CFAbsoluteTimeGetCurrent()
             let injectionContext = AuthContextDetector().detect()
             let detectMs = Int((CFAbsoluteTimeGetCurrent() - detectT0) * 1000)
@@ -293,25 +300,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .secureField(let item, let field, let sheet):
                 // 密码来源与提交策略都来自条目自身（enabled 已在 detect() 过滤）。
                 if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
-                    LogManager.shared.log("[inject] secure field (\(item.name)) strategy=\(item.submitStrategy)")
-                    lastAuthFlowAt = Date()
-                    let injector = AuthInjector()
-                    injector.focus(field)
-                    injector.inject(pw, into: field)
-                    // rightArrow(1Password) / belowButton(Bitwarden) 是 Chromium 网页表单：需专用提交
-                    //（鼠标点击解锁按钮，SEI 拦回车、AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
-                    let isWeb = (item.submitStrategy == .rightArrow || item.submitStrategy == .belowButton)
-                    let delay = isWeb ? 0.3 : 0.15
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        switch item.submitStrategy {
-                        case .rightArrow:  injector.submitOnePassword(field: field, container: sheet)
-                        case .belowButton: injector.submitBitwarden(field: field, container: sheet)
-                        default:           injector.submit(container: sheet, field: field)
-                        }
-                    }
+                    injectSecureField(item: item, field: field, sheet: sheet, secret: pw)
                     return   // 已处理，不再走原 authorization 逻辑
                 }
                 LogManager.shared.log("[inject/detect] secureField item=\(item.name) no stored password, fall through")
+            case .safariAutoFillTouchID(let item, let button):
+                // Two-step: press "Enter Password…" → wait for Safari to swap in the password sheet → same injection path as above.
+                if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
+                    LogManager.shared.log("[inject] Safari AutoFill Touch ID sheet → press 'Enter Password…'")
+                    lastAuthFlowAt = Date()
+                    safariAutoFillInFlight = true
+                    defer { safariAutoFillInFlight = false }
+                    var safariPID: pid_t = 0
+                    AXUIElementGetPid(button, &safariPID)
+                    AXUIElementPerformAction(button, kAXPressAction as CFString)
+                    for _ in 0..<15 {   // up to ~1.5s
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        // Only accept a password field in the same Safari process (don't let the wait window match the Passwords item's other processes).
+                        if case .secureField(let next, let field, let sheet) = AuthContextDetector().detectFocusedSecureField(),
+                           next.id == item.id {
+                            var fieldPID: pid_t = 0
+                            AXUIElementGetPid(field, &fieldPID)
+                            guard fieldPID == safariPID else { continue }
+                            injectSecureField(item: next, field: field, sheet: sheet, secret: pw)
+                            return
+                        }
+                    }
+                    LogManager.shared.log("[inject] password field did not appear after 'Enter Password…'")
+                    return
+                }
+                LogManager.shared.log("[inject/detect] Safari AutoFill sheet item=\(item.name) no stored password, fall through")
             case .appStoreConfirmSheet(let item, let sheet):
                 if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
                     LogManager.shared.log("[inject] driving App Store wizard")
@@ -379,6 +397,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // process. Refuse to grant authority without explicit context.
                 NSLog("No auth dialog detected, ignoring fingerprint (no pre-auth)")
                 LogManager.shared.log("No auth window → skip pre-auth (avoid consumption by unrelated processes)")
+            }
+        }
+    }
+
+    /// Injects the secret into a confirmed password field and submits per the item's strategy.
+    @MainActor
+    private func injectSecureField(item: AutomationItem, field: AXUIElement, sheet: AXUIElement, secret pw: String) {
+        LogManager.shared.log("[inject] secure field (\(item.name)) strategy=\(item.submitStrategy)")
+        lastAuthFlowAt = Date()
+        let injector = AuthInjector()
+        injector.focus(field)
+        injector.inject(pw, into: field)
+        // rightArrow(1Password) / belowButton(Bitwarden) 是 Chromium 网页表单：需专用提交
+        //（鼠标点击解锁按钮，SEI 拦回车、AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
+        let isWeb = (item.submitStrategy == .rightArrow || item.submitStrategy == .belowButton)
+        let delay = isWeb ? 0.3 : 0.15
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            switch item.submitStrategy {
+            case .rightArrow:  injector.submitOnePassword(field: field, container: sheet)
+            case .belowButton: injector.submitBitwarden(field: field, container: sheet)
+            default:           injector.submit(container: sheet, field: field)
             }
         }
     }

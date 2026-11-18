@@ -53,7 +53,7 @@ public enum MainButtonSelector {
         title?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private static func isCancel(_ title: String?) -> Bool {
+    static func isCancel(_ title: String?) -> Bool {
         guard let t = normalized(title) else { return false }
         return cancelTitles.contains(t)
     }
