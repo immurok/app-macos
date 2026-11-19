@@ -227,6 +227,40 @@ struct AuthInjector {
         return true
     }
 
+    /// 两步解锁（revealThenFill）：按"露出密码框"按钮 → 轮询该进程出现**恰好一个**密码框
+    /// → 聚焦 + 注入 → 通用提交。系统 Touch ID 弹窗（coreautha）是原生 SwiftUI，AXPress 有效；
+    /// 失败再合成鼠标点击按钮中心兜底。超时（3s）不注入。
+    func revealThenFill(button: AXUIElement, pid: pid_t, secret: String,
+                        completion: @escaping (Bool) -> Void) {
+        let pressed = AXUIElementPerformAction(button, kAXPressAction as CFString)
+        if pressed == .success {
+            logLine("reveal → AXPress '\(title(of: button) ?? "?")' ok")
+        } else if let c = frameCenter(of: button) {
+            logLine("reveal → AXPress failed (\(pressed.rawValue)), click \(c)")
+            clickMouse(at: c)
+        } else {
+            logLine("reveal → cannot press button"); completion(false); return
+        }
+        let deadline = CFAbsoluteTimeGetCurrent() + 3.0
+        func poll() {
+            let appEl = AXUIElementCreateApplication(pid)
+            if let hit = AuthContextDetector().soleSecureFieldWithWindow(under: appEl) {
+                logLine("reveal → password field appeared, injecting")
+                focus(hit.field)
+                inject(secret, into: hit.field)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    completion(self.submit(container: hit.window, field: hit.field))
+                }
+                return
+            }
+            guard CFAbsoluteTimeGetCurrent() < deadline else {
+                logLine("reveal → no password field within 3s, giving up"); completion(false); return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }
+    }
+
     /// App Store 多步向导（对齐 AuthProbe 里实测稳定的 appStoreAutoFlow）：
     /// **直接锁定 App Store 进程的 AX 树**（不依赖 frontmost / 焦点）→ 按主按钮（Install）
     /// → 轮询密码框出现（**子树扫描，不要求已聚焦**）→ 自己聚焦（kAXFocused，失败合成鼠标点击）

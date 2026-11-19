@@ -111,4 +111,33 @@ final class MainButtonSelectorTests: XCTestCase {
         ]
         XCTAssertEqual(MainButtonSelector.pick(from: buttons), 3)
     }
+
+    // MARK: - pickSoleNonCancel（两步解锁的"露出密码框"按钮）
+
+    func testSoleNonCancelTouchIDPrompt() {
+        let b = [ButtonInfo(subrole: nil, title: "Use Mac Password…", frame: .zero),
+                 ButtonInfo(subrole: nil, title: "Cancel", frame: .zero)]
+        XCTAssertEqual(MainButtonSelector.pickSoleNonCancel(from: b), 0)
+    }
+    func testSoleNonCancelLocalized() {
+        let b = [ButtonInfo(subrole: nil, title: "Cancelar", frame: .zero),
+                 ButtonInfo(subrole: nil, title: "Usar contraseña del Mac…", frame: .zero)]
+        XCTAssertEqual(MainButtonSelector.pickSoleNonCancel(from: b), 1)
+    }
+    func testSoleNonCancelRequiresCancel() {
+        let b = [ButtonInfo(subrole: nil, title: "Open 1Password", frame: .zero)]
+        XCTAssertNil(MainButtonSelector.pickSoleNonCancel(from: b))
+    }
+    func testSoleNonCancelRejectsAmbiguous() {
+        let b = [ButtonInfo(subrole: nil, title: "A", frame: .zero),
+                 ButtonInfo(subrole: nil, title: "B", frame: .zero),
+                 ButtonInfo(subrole: "AXCancelButton", title: "x", frame: .zero)]
+        XCTAssertNil(MainButtonSelector.pickSoleNonCancel(from: b))
+    }
+    func testSoleNonCancelIgnoresWindowControls() {
+        let b = [ButtonInfo(subrole: "AXCloseButton", title: nil, frame: .zero),
+                 ButtonInfo(subrole: nil, title: "Use Password…", frame: .zero),
+                 ButtonInfo(subrole: nil, title: "Cancel", frame: .zero)]
+        XCTAssertEqual(MainButtonSelector.pickSoleNonCancel(from: b), 1)
+    }
 }

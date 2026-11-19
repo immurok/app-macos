@@ -472,6 +472,7 @@
   "automation.strategy.rightArrow": "Flecha derecha (estilo 1Password)",
   "automation.strategy.belowButton": "Botón inferior (estilo Bitwarden)",
   "automation.strategy.appStoreWizard": "Asistente de App Store",
+  "automation.strategy.revealThenFill": "Mostrar contraseña y rellenar (estilo diálogo Touch ID)",
   "automation.noTarget": "Aún sin objetivo localizado",
   "automation.field.type": "Tipo",
   "automation.field.app": "App",

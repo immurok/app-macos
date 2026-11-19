@@ -472,6 +472,7 @@
   "automation.strategy.rightArrow": "Pfeil rechts (wie 1Password)",
   "automation.strategy.belowButton": "Schaltfläche darunter (wie Bitwarden)",
   "automation.strategy.appStoreWizard": "App-Store-Assistent",
+  "automation.strategy.revealThenFill": "Passwort einblenden, dann ausfüllen (Touch-ID-Dialog)",
   "automation.noTarget": "Noch kein Ziel gefunden",
   "automation.field.type": "Typ",
   "automation.field.app": "App",

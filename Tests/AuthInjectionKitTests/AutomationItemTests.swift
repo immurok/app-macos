@@ -19,6 +19,17 @@ final class AutomationItemTests: XCTestCase {
         XCTAssertEqual(byKey["passwords"]!.secretService, "com.immurok.password")
         XCTAssertEqual(byKey["1password"]!.secretService, "com.immurok.onepassword-password")
         XCTAssertEqual(byKey["bitwarden"]!.secretService, "com.immurok.bitwarden-password")
+        XCTAssertEqual(byKey["touchid"]!.secretService, "com.immurok.password")
+    }
+    func testTouchIDPromptBuiltin() {
+        let t = AutomationItem.builtinDefaults().first { $0.builtinKey == "touchid" }!
+        XCTAssertEqual(t.bundleIDs, ["com.apple.LocalAuthentication.UIAgent"])
+        XCTAssertEqual(t.signing, .applePlatform)
+        XCTAssertEqual(t.submitStrategy, .revealThenFill)
+        XCTAssertFalse(t.enabled)
+        XCTAssertTrue(t.isValid)
+        XCTAssertTrue(t.usesLoginPassword)
+        XCTAssertFalse(AutomationItem.builtinDefaults().first { $0.builtinKey == "1password" }!.usesLoginPassword)
     }
     func testCustomSecretServiceUsesUUID() {
         let id = UUID()
@@ -29,7 +40,7 @@ final class AutomationItemTests: XCTestCase {
     }
     func testBuiltinDefaultsShape() {
         let items = AutomationItem.builtinDefaults()
-        XCTAssertEqual(Set(items.map { $0.builtinKey }), ["appstore", "passwords", "1password", "bitwarden"])
+        XCTAssertEqual(Set(items.map { $0.builtinKey }), ["appstore", "passwords", "1password", "bitwarden", "touchid"])
         let pw = items.first { $0.builtinKey == "passwords" }!
         XCTAssertTrue(pw.bundleIDs.contains("com.apple.Passwords"))
         XCTAssertTrue(pw.bundleIDs.contains("com.apple.AuthKitUI.AKAuthorizationRemoteViewService"))
@@ -66,7 +77,7 @@ final class AutomationItemTests: XCTestCase {
         // 自定义项原样保留
         XCTAssertEqual(refreshed.first { $0.builtinKey == nil }, custom)
         // 存盘里缺失的内置项被补上（enabled 默认 false）
-        for key in ["appstore", "1password", "bitwarden"] {
+        for key in ["appstore", "1password", "bitwarden", "touchid"] {
             let added = refreshed.first { $0.builtinKey == key }
             XCTAssertNotNil(added, key)
             XCTAssertEqual(added?.enabled, false, key)

@@ -449,6 +449,7 @@
   "automation.strategy.rightArrow": "Right arrow (1Password style)",
   "automation.strategy.belowButton": "Button below (Bitwarden style)",
   "automation.strategy.appStoreWizard": "App Store wizard",
+  "automation.strategy.revealThenFill": "Reveal password, then fill (Touch ID prompt style)",
   "automation.noTarget": "No target located yet",
   "automation.field.type": "Type",
   "automation.field.app": "App",

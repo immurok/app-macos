@@ -322,6 +322,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 LogManager.shared.log("[inject/detect] App Store confirm page, no stored password")
+            case .revealPassword(let item, let button, let pid):
+                if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
+                    LogManager.shared.log("[inject] \(item.name): reveal password field, then fill")
+                    lastAuthFlowAt = Date()
+                    AuthInjector().revealThenFill(button: button, pid: pid, secret: pw) { ok in
+                        LogManager.shared.log("[inject] \(item.name) reveal flow result ok=\(ok)")
+                    }
+                    return
+                }
+                LogManager.shared.log("[inject/detect] \(item.name) reveal button found, no stored password")
             case .none:
                 // 诊断：注入未触发时记录前台 App + 焦点元素子角色，便于 on-device 定位
                 //（未命中白名单/签名、焦点非 AXSecureTextField、或找不到容器都会落到这里）。

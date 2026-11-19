@@ -472,6 +472,7 @@
   "automation.strategy.rightArrow": "右矢印（1Password式）",
   "automation.strategy.belowButton": "下のボタン（Bitwarden式）",
   "automation.strategy.appStoreWizard": "App Store ウィザード",
+  "automation.strategy.revealThenFill": "パスワード入力を表示して入力（Touch ID ダイアログ型）",
   "automation.noTarget": "ターゲット未取得",
   "automation.field.type": "種類",
   "automation.field.app": "アプリ",

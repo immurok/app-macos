@@ -472,6 +472,7 @@
   "automation.strategy.rightArrow": "Стрелка справа (стиль 1Password)",
   "automation.strategy.belowButton": "Кнопка снизу (стиль Bitwarden)",
   "automation.strategy.appStoreWizard": "Мастер App Store",
+  "automation.strategy.revealThenFill": "Показать поле пароля и заполнить (диалог Touch ID)",
   "automation.noTarget": "Цель не найдена",
   "automation.field.type": "Тип",
   "automation.field.app": "App",
