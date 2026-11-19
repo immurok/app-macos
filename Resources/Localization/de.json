@@ -382,6 +382,8 @@
   "alert.pamkey.failed.title": "Starke Prüfung konnte nicht aktiviert werden",
   "alert.pamkey.failed.manual": "Führen Sie dies im Terminal aus:\nsudo imk pam-key install",
   "permission.sudo.hint": "sudo-Passwortabfrage per PAM durch Fingerabdruck ersetzen",
+  "permission.tripleTouchScreenSaver": "Bildschirmschoner per Dreifachberührung",
+  "permission.tripleTouchScreenSaver.hint": "Bei entsperrtem Mac den Sensor dreimal nacheinander berühren (etwa 2 s Abstand), um den Bildschirmschoner zu starten",
   "permission.unlock.password": "Entsperrpasswort",
   "quickfill.empty": "Keine Schlüssel",
   "quickfill.error.empty": "Schlüssel ist leer",

@@ -382,6 +382,8 @@
   "alert.pamkey.failed.title": "No se pudo activar la verificación fuerte",
   "alert.pamkey.failed.manual": "Ejecuta en el Terminal:\nsudo imk pam-key install",
   "permission.sudo.hint": "Sustituye la contraseña de sudo por la huella mediante PAM",
+  "permission.tripleTouchScreenSaver": "Salvapantallas con triple toque",
+  "permission.tripleTouchScreenSaver.hint": "Con el Mac desbloqueado, toca el sensor tres veces seguidas (con unos 2 s de separación) para iniciar el salvapantallas",
   "permission.unlock.password": "Contraseña",
   "quickfill.empty": "Sin claves",
   "quickfill.error.empty": "La clave está vacía",
