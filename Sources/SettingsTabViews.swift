@@ -2006,6 +2006,7 @@ struct PermissionsTabView: View {
     // Feature toggles stored in UserDefaults
     @AppStorage("immurok.screenUnlockEnabled") private var screenUnlockEnabled = true
     @AppStorage("immurok.screenLockEnabled") private var screenLockEnabled = false
+    @AppStorage("immurok.tripleTouchScreenSaver") private var tripleTouchScreenSaver = false
     @AppStorage("immurok.sudoAuthEnabled") private var sudoAuthEnabled = false
     @AppStorage("immurok.authorizationEnabled") private var authorizationEnabled = false
     @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
@@ -2053,6 +2054,17 @@ struct PermissionsTabView: View {
                         }
                     },
                     isOn: $screenLockEnabled
+                )
+            }
+
+            // 连续三次触摸 → 启动屏幕保护程序
+            GroupBox {
+                permissionRow(
+                    icon: "moon.stars",
+                    titleKey: "permission.tripleTouchScreenSaver",
+                    hintKey: "permission.tripleTouchScreenSaver.hint",
+                    trailing: { EmptyView() },
+                    isOn: $tripleTouchScreenSaver
                 )
             }
 

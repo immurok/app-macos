@@ -382,6 +382,8 @@
   "alert.pamkey.failed.title": "Impossible d'activer la vérification forte",
   "alert.pamkey.failed.manual": "Exécutez dans le Terminal :\nsudo imk pam-key install",
   "permission.sudo.hint": "Remplace la demande de mot de passe sudo par l’empreinte via PAM",
+  "permission.tripleTouchScreenSaver": "Économiseur d’écran par triple toucher",
+  "permission.tripleTouchScreenSaver.hint": "Mac déverrouillé, touchez le capteur trois fois de suite (à environ 2 s d’intervalle) pour lancer l’économiseur d’écran",
   "permission.unlock.password": "Mot de passe",
   "quickfill.empty": "Aucune clé",
   "quickfill.error.empty": "La clé est vide",

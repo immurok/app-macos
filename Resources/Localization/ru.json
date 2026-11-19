@@ -382,6 +382,8 @@
   "alert.pamkey.failed.title": "Не удалось включить строгую проверку",
   "alert.pamkey.failed.manual": "Выполните в Терминале:\nsudo imk pam-key install",
   "permission.sudo.hint": "Заменяет запрос пароля sudo отпечатком через PAM",
+  "permission.tripleTouchScreenSaver": "Заставка тройным касанием",
+  "permission.tripleTouchScreenSaver.hint": "Когда Mac разблокирован, коснитесь датчика три раза подряд (с интервалом около 2 с), чтобы запустить заставку",
   "permission.unlock.password": "Пароль",
   "quickfill.empty": "Нет ключей",
   "quickfill.error.empty": "Ключ пуст",
