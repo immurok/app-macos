@@ -54,7 +54,7 @@ struct AutomationTabView: View {
 
     private func setPassword(for item: AutomationItem) {
         // Passwords 与屏幕解锁共用登录密码，必须走校验路径，防止存错后在锁屏盲打。
-        if item.builtinKey == "passwords" {
+        if item.usesLoginPassword {
             viewModel.setupLoginPasswordIfNeeded()
             refreshToken = UUID()
             return
@@ -114,7 +114,7 @@ private struct AutomationRow: View {
 
     private var hasPassword: Bool { store.hasPassword(item) }
     /// Passwords 用登录密码，修改入口在「功能 > 屏幕解锁」，这里只保留未配置时的设置入口。
-    private var showsPasswordButton: Bool { item.builtinKey != "passwords" || !hasPassword }
+    private var showsPasswordButton: Bool { !item.usesLoginPassword || !hasPassword }
 
     var body: some View {
         GroupBox {

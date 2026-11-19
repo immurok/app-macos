@@ -7,6 +7,7 @@ public enum SubmitStrategy: String, Codable {
     case rightArrow     // 1Password：密码框右侧同行箭头，合成鼠标点击
     case belowButton    // Bitwarden：密码框正下方整宽按钮，合成鼠标点击
     case appStoreWizard // App Store：Install→等密码页→注入→提交
+    case revealThenFill // 两步：先按"唯一非取消按钮"（如 Use Mac Password…）露出密码框 → 注入 → 通用提交
 }
 
 /// 一条用户可配置（或内置）的密码注入条目。密码不在此结构内，单独存 Keychain（见 secretService）。
@@ -41,9 +42,13 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
         case "passwords":  return "com.immurok.password"
         case "1password":  return "com.immurok.onepassword-password"
         case "bitwarden":  return "com.immurok.bitwarden-password"
+        case "touchid":    return "com.immurok.password"   // 系统 Touch ID 弹窗要 Mac 登录密码
         default:           return "com.immurok.automation.\(id.uuidString)"
         }
     }
+
+    /// 使用 Mac 登录密码（与屏幕解锁共用、存前必须本地验密）的内置项。
+    public var usesLoginPassword: Bool { builtinKey == "passwords" || builtinKey == "touchid" }
 
     public func matches(bundleID: String) -> Bool { bundleIDs.contains(bundleID) }
 
@@ -80,7 +85,7 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
             extensionOrigin: nil, urlFragment: nil, fieldAXIdentifier: nil, submitStrategy: .generic)
     }
 
-    /// 4 个内置条目（enabled 默认 false，迁移时按旧开关覆盖）。
+    /// 内置条目（enabled 默认 false，迁移时按旧开关覆盖）。
     public static func builtinDefaults() -> [AutomationItem] {
         [
             AutomationItem(id: UUID(), name: "App Store", enabled: false, builtinKey: "appstore",
@@ -108,6 +113,13 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
                 signing: .applePlatform,
                 extensionOrigin: "chrome-extension://nngceckbapebfimnlniiiahkandclblb/",
                 urlFragment: "#/lock", fieldAXIdentifier: nil, submitStrategy: .belowButton),
+            // macOS 系统 Touch ID / Apple Watch 授权弹窗（"X is trying to unlock" + Use Mac Password… / Cancel），
+            // 属主是 coreautha（LocalAuthentication UIAgent）。1Password Safari 扩展解锁即走这个弹窗。
+            // 两步：按 Use Mac Password… → 注入 Mac 登录密码 → 提交。
+            AutomationItem(id: UUID(), name: "macOS Touch ID prompt", enabled: false, builtinKey: "touchid",
+                targetKind: .app, bundleIDs: ["com.apple.LocalAuthentication.UIAgent"],
+                signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
+                fieldAXIdentifier: nil, submitStrategy: .revealThenFill),
         ]
     }
 }

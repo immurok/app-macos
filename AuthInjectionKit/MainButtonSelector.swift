@@ -75,4 +75,21 @@ public enum MainButtonSelector {
         let pool = confirms.isEmpty ? candidates : confirms
         return pool.max { a, b in a.element.frame.maxX < b.element.frame.maxX }?.offset
     }
+
+    /// 两步解锁的"露出密码框"按钮：要求候选里**至少有一个取消类**按钮，且**恰好一个**非取消按钮，
+    /// 返回它的下标；否则 nil。语言无关（不依赖 "Use Mac Password…" 文案，只靠取消词表排除）。
+    /// 例：系统 Touch ID 弹窗 [Use Mac Password…, Cancel] → 0。
+    public static func pickSoleNonCancel(from buttons: [ButtonInfo]) -> Int? {
+        let isCancelBtn: (ButtonInfo) -> Bool = { b in
+            b.subrole == "AXCancelButton" || isCancel(b.title)
+        }
+        guard buttons.contains(where: isCancelBtn) else { return nil }
+        let others = buttons.enumerated().filter { el in
+            if isCancelBtn(el.element) { return false }
+            if let sr = el.element.subrole, excludedSubroles.contains(sr) { return false }
+            return true
+        }
+        guard others.count == 1 else { return nil }
+        return others[0].offset
+    }
 }

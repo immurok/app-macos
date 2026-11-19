@@ -6,6 +6,8 @@ enum AuthContext {
     case none
     case secureField(item: AutomationItem, field: AXUIElement, sheet: AXUIElement)
     case appStoreConfirmSheet(item: AutomationItem, sheet: AXUIElement)
+    /// revealThenFill 第一步：尚无密码框，先按此按钮（如 Use Mac Password…）露出它。
+    case revealPassword(item: AutomationItem, button: AXUIElement, pid: pid_t)
 }
 
 /// 在主动指纹路径被触发时，检索当前焦点上下文并分类。单一职责、无副作用。
@@ -55,7 +57,12 @@ struct AuthContextDetector {
         //   generic 策略（Passwords 类）要求前台才扫（后台窗口不注入）。
         // 浏览器进程不做下行全树扫描：树巨大且网页里随处可能恰好有一个密码框（会被误注入）。
         // 浏览器内的原生解锁 sheet（Safari Passwords）出现时密码框自动聚焦，Path 1 已覆盖。
-        for item in appItems where item.submitStrategy != .appStoreWizard {
+        // revealThenFill（系统 Touch ID 弹窗）优先：它是盖在调用方之上的模态框。1Password 桌面 App
+        // 解锁时弹窗下面还压着 1P 锁定窗（恰好一个密码框），若先扫 1Password 条目会误命中它，
+        // 往被遮住的框里注入并点箭头，弹窗本身永远轮不到。
+        let path2Items = appItems.filter { $0.submitStrategy == .revealThenFill }
+            + appItems.filter { $0.submitStrategy != .revealThenFill && $0.submitStrategy != .appStoreWizard }
+        for item in path2Items {
             for bundleID in item.bundleIDs where !Self.webBrowserBundles.contains(bundleID) {
                 for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID) {
                     if item.submitStrategy == .generic && !app.isActive { continue }
@@ -63,6 +70,11 @@ struct AuthContextDetector {
                     guard let appEl = AXAppProbe.responsiveApplication(pid: app.processIdentifier, tag: "app-scan \(bundleID)") else { continue }
                     if let hit = soleSecureFieldWithWindow(under: appEl) {
                         return .secureField(item: item, field: hit.field, sheet: hit.window)
+                    }
+                    // revealThenFill：没有密码框时，找"恰好一个非取消按钮 + 一个取消按钮"的窗口，
+                    // 先按它露出密码框（系统 Touch ID 弹窗的 Use Mac Password…）。
+                    if item.submitStrategy == .revealThenFill, let btn = revealButton(under: appEl) {
+                        return .revealPassword(item: item, button: btn, pid: app.processIdentifier)
                     }
                 }
             }
@@ -182,6 +194,39 @@ struct AuthContextDetector {
         return false
     }
 
+    /// 逐窗口找"露出密码框"按钮：窗口内按钮须满足 MainButtonSelector.pickSoleNonCancel
+    ///（至少一个取消类 + 恰好一个其它按钮）。按钮标题取 AXTitle，空则取 AXDescription
+    ///（SwiftUI 弹窗如 coreautha 的按钮只有 description）。
+    private func revealButton(under appEl: AXUIElement) -> AXUIElement? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &ref) == .success,
+              let windows = ref as? [AXUIElement] else { return nil }
+        for win in windows {
+            var buttons: [AXUIElement] = []
+            func rec(_ el: AXUIElement, _ depth: Int) {
+                if depth > 8 || buttons.count > 12 { return }
+                for c in children(of: el) {
+                    if role(of: c) == "AXButton" { buttons.append(c) } else { rec(c, depth + 1) }
+                }
+            }
+            rec(win, 0)
+            let infos = buttons.map { ButtonInfo(subrole: subrole(of: $0), title: label(of: $0), frame: .zero) }
+            if let idx = MainButtonSelector.pickSoleNonCancel(from: infos) {
+                NSLog("AuthContextDetector: reveal button '%@'", infos[idx].title ?? "?")
+                return buttons[idx]
+            }
+        }
+        return nil
+    }
+
+    private func label(of el: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXTitleAttribute as CFString, &ref)
+        if let s = ref as? String, !s.isEmpty { return s }
+        AXUIElementCopyAttributeValue(el, kAXDescriptionAttribute as CFString, &ref)
+        return ref as? String
+    }
+
     /// 扫描 root 子树里的**全部** AXSecureTextField（有界，>1 即提前收手），
     /// **仅当恰好一个时**返回它及所在 AXWindow/AXSheet 容器，否则 nil。
     ///
@@ -192,7 +237,7 @@ struct AuthContextDetector {
     ///    单个密码框；而"修改主密码"等表单有当前/新/确认多个 secure field，用"恰好一个"即可天然排除，
     ///    避免把登录密码误注入多字段表单。解锁后的编辑登录条目是明文框（0 个 secure field），也不触发。
     ///    其余"单个密码框"场景（确认密码以显示/授权）本身也要账户密码，注入登录密码无害。
-    private func soleSecureFieldWithWindow(under root: AXUIElement) -> (field: AXUIElement, window: AXUIElement)? {
+    func soleSecureFieldWithWindow(under root: AXUIElement) -> (field: AXUIElement, window: AXUIElement)? {
         var budget = 8000
         var results: [(AXUIElement, AXUIElement?)] = []
         func rec(_ el: AXUIElement, _ nearestWindow: AXUIElement?) {

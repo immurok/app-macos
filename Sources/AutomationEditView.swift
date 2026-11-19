@@ -32,6 +32,7 @@ struct AutomationEditView: View {
                 Text("automation.strategy.rightArrow".localized).tag(SubmitStrategy.rightArrow)
                 Text("automation.strategy.belowButton".localized).tag(SubmitStrategy.belowButton)
                 Text("automation.strategy.appStoreWizard".localized).tag(SubmitStrategy.appStoreWizard)
+                Text("automation.strategy.revealThenFill".localized).tag(SubmitStrategy.revealThenFill)
             }
 
             Divider()
