@@ -44,6 +44,15 @@ final class AutomationItemTests: XCTestCase {
         XCTAssertTrue(pw.bundleIDs.contains("com.apple.Safari"))
         XCTAssertTrue(pw.isValid)
     }
+    func testPasswordsBuiltinCoversLocalAuthenticationPrompt() {
+        // System "Touch ID or enter your password" prompts raised through LocalAuthentication
+        // (e.g. Safari card autofill) are a standalone window of coreautha, whose bundle ID is
+        // com.apple.LocalAuthentication.UIAgent. After "Use Password…", its password field is
+        // owned by that process, so the item must list it for AuthContextDetector to match.
+        let pw = AutomationItem.builtinDefaults().first { $0.builtinKey == "passwords" }!
+        XCTAssertTrue(pw.bundleIDs.contains("com.apple.LocalAuthentication.UIAgent"))
+        XCTAssertTrue(pw.isValid)
+    }
 
     func testRefreshBuiltinIdentityUpdatesStoredItems() {
         // 存盘的旧内置项（bundleIDs 缺 Safari）刷新后拿到新身份，但保留 id/enabled。
