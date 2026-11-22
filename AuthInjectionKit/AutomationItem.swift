@@ -90,10 +90,13 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
             // com.apple.Safari：Safari 内的 Passwords 解锁 sheet（设置 → 密码等）密码框属主是
             // Safari 进程本身。网页密码框同属 Safari，靠 AuthContextDetector 的
             // "原生 sheet 且不在 AXWebArea 内"硬化判据区分，绝不注入网页字段。
+            // com.apple.LocalAuthentication.UIAgent (coreautha) owns the system "Touch ID or enter
+            // your password" window raised through LocalAuthentication, such as Safari card autofill.
+            // Its password field appears after "Use Password…" and is owned by that process.
             AutomationItem(id: UUID(), name: "Passwords", enabled: false, builtinKey: "passwords",
                 targetKind: .app,
                 bundleIDs: ["com.apple.Passwords", "com.apple.AuthKitUI.AKAuthorizationRemoteViewService",
-                            "com.apple.Safari"],
+                            "com.apple.Safari", "com.apple.LocalAuthentication.UIAgent"],
                 signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
                 fieldAXIdentifier: nil, submitStrategy: .generic),
             AutomationItem(id: UUID(), name: "1Password", enabled: false, builtinKey: "1password",
