@@ -346,7 +346,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let hasPasswordField = self.isSecureInputFocused()
 
-            if hasPasswordField {
+            // LocalAuthentication 密码框（coreautha，如「隐私与安全性」放行未知来源 App）直接向
+            // 钥匙包校验密码，不经过 PAM：发空回车只会被判"密码错误"并累计失败次数，预授权也
+            // 永远等不到请求。所以这里改为注入登录密码并点默认按钮，仍归 GUI Authorization 开关管。
+            let localAuth = hasPasswordField ? AuthContextDetector().localAuthDialog() : .notPresent
+            if case .ready(let field, let window) = localAuth {
+                guard let pw = ImmurokSecurity.shared.loadPassword() else {
+                    LogManager.shared.log("LocalAuthentication dialog → no stored login password, skip (not PAM-backed)")
+                    return
+                }
+                LogManager.shared.log("LocalAuthentication dialog → inject login password")
+                self.lastAuthFlowAt = Date()
+                let injector = AuthInjector()
+                injector.focus(field)
+                injector.inject(pw, into: field)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    injector.submit(container: window, field: field)
+                }
+            } else if case .untrusted = localAuth {
+                LogManager.shared.log("LocalAuthentication dialog → signature/window check failed, skip")
+            } else if hasPasswordField {
                 // Any focused password field at this point is GUI auth, not
                 // terminal sudo: terminal sudo runs through pam_immurok which
                 // arms BLE-backed AUTH on the device, so the user's touch is

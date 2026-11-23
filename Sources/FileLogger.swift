@@ -22,6 +22,11 @@ enum FileLogger {
         let url = logDirectory.appendingPathComponent(name)
         writerQueue.async {
             guard let data = line.data(using: .utf8) else { return }
+            // 清理工具会把整个 ~/Library/Logs/immurok 删掉；目录只在首次访问时建一次，
+            // 之后每次写入都静默失败，直到重启 App。写之前确认目录还在。
+            if !FileManager.default.fileExists(atPath: logDirectory.path) {
+                try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+            }
             if FileManager.default.fileExists(atPath: url.path) {
                 guard let handle = try? FileHandle(forWritingTo: url) else { return }
                 defer { try? handle.close() }

@@ -24,11 +24,23 @@ final class AutomationStore: ObservableObject {
             // 内置项身份只读：每次加载用 builtinDefaults 刷新（bundleIDs 等随版本更新），
             // 只保留用户态（id/enabled）。有变化才回写。
             items = AutomationItem.refreshingBuiltinIdentity(decoded)
+            disableItemsWithoutPassword()
             if items != decoded { persist() }
             return
         }
         items = migrateFromLegacyDefaults()
+        disableItemsWithoutPassword()
         persist()
+    }
+
+    /// 不变量：enabled 的条目必须有密码。没密码的条目摸指纹时注入不了，还会落到
+    /// GUI Authorization 的回车 + 预授权兜底里。旧版本存盘、导入、新建都可能带来这种状态，
+    /// 统一在这里关掉。调用方负责 persist（或已持锁）。
+    private func disableItemsWithoutPassword() {
+        for i in items.indices where items[i].enabled
+            && !ImmurokSecurity.shared.hasSecret(service: items[i].secretService) {
+            items[i].enabled = false
+        }
     }
 
     /// 首次运行：内置项 enabled 取旧 UserDefaults 开关值；密码沿用旧 Keychain service（无需搬动）。
@@ -54,11 +66,11 @@ final class AutomationStore: ObservableObject {
 
     // MARK: CRUD
     func add(_ item: AutomationItem) {
-        lock.lock(); items.append(item); persist(); lock.unlock()
+        lock.lock(); items.append(item); disableItemsWithoutPassword(); persist(); lock.unlock()
     }
     func update(_ item: AutomationItem) {
         lock.lock()
-        if let i = items.firstIndex(where: { $0.id == item.id }) { items[i] = item; persist() }
+        if let i = items.firstIndex(where: { $0.id == item.id }) { items[i] = item; disableItemsWithoutPassword(); persist() }
         lock.unlock()
     }
     func remove(id: UUID) {
@@ -125,6 +137,8 @@ final class AutomationStore: ObservableObject {
                 ImmurokSecurity.shared.saveSecret(pw, service: item.secretService)
             }
         }
+        // 密码落盘后再收口：导入文件里标了 enabled 却没带密码的条目关掉。
+        lock.lock(); disableItemsWithoutPassword(); persist(); lock.unlock()
     }
 }
 

@@ -45,6 +45,16 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
         }
     }
 
+    /// 该条目注入的是 Mac 登录密码（与屏幕解锁共用同一 Keychain 条目）。
+    /// 这类条目的密码设置/修改必须走带校验的登录密码入口，不能在 Automation 里随手存。
+    public var usesLoginPassword: Bool { builtinKey == "passwords" }
+
+    /// LocalAuthentication 的系统密码框（coreautha）。它直接向钥匙包校验密码，不经过 PAM，
+    /// 所以"提交空密码 + authorization 预授权"对它无效，只会白记一次密码错误。
+    /// 它不是 Automation 条目：归「GUI Authorization」开关管，由 AppDelegate 的 authorization
+    /// 分支直接注入登录密码。
+    public static let localAuthUIAgentBundleID = "com.apple.LocalAuthentication.UIAgent"
+
     public func matches(bundleID: String) -> Bool { bundleIDs.contains(bundleID) }
 
     /// bundleIDs 非空且每个都能通过身份校验（防 requirement 串注入）。
@@ -59,7 +69,9 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
     public static func refreshingBuiltinIdentity(_ stored: [AutomationItem]) -> [AutomationItem] {
         let defaults = Dictionary(uniqueKeysWithValues: builtinDefaults().map { ($0.builtinKey!, $0) })
         var seen = Set<String>()
-        var result: [AutomationItem] = stored.map { item in
+        // 存盘里 builtinKey 已不在当前内置表的条目（旧版本的内置项）直接丢弃：
+        // 它既不可删又没有身份来源，留着只会变成删不掉的僵尸条目。
+        var result: [AutomationItem] = stored.filter { $0.builtinKey == nil || defaults[$0.builtinKey!] != nil }.map { item in
             guard let key = item.builtinKey, let fresh = defaults[key] else { return item }
             seen.insert(key)
             var m = fresh

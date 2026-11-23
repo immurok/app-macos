@@ -30,7 +30,8 @@ struct AutomationTabView: View {
                     ForEach(store.items) { item in
                         AutomationRow(item: item, store: store,
                             onEdit: { viewModel.editingAutomationItem = item },
-                            onSetPassword: { setPassword(for: item) })
+                            onSetPassword: { setPassword(for: item) },
+                            onToggle: { setEnabled($0, for: item) })
                             .id("\(item.id)-\(refreshToken)")
                     }
                 }
@@ -53,8 +54,8 @@ struct AutomationTabView: View {
     }
 
     private func setPassword(for item: AutomationItem) {
-        // Passwords 与屏幕解锁共用登录密码，必须走校验路径，防止存错后在锁屏盲打。
-        if item.builtinKey == "passwords" {
+        // Passwords / System Authentication 与屏幕解锁共用登录密码，必须走校验路径，防止存错后在锁屏盲打。
+        if item.usesLoginPassword {
             viewModel.setupLoginPasswordIfNeeded()
             refreshToken = UUID()
             return
@@ -62,6 +63,19 @@ struct AutomationTabView: View {
         guard let pw = viewModel.promptAutomationPassword(name: item.name) else { return }
         store.setPassword(pw, for: item)
         refreshToken = UUID()
+    }
+
+    /// 开关规则：开启必须已有密码，没有就当场索取，取消则保持关闭；关闭时清掉该条目的密码。
+    /// 例外：用登录密码的条目（Passwords）关闭时不清，那份密码屏幕解锁和 GUI Authorization 还在用。
+    private func setEnabled(_ on: Bool, for item: AutomationItem) {
+        if on {
+            if !store.hasPassword(item) { setPassword(for: item) }
+            if store.hasPassword(item) { store.setEnabled(true, id: item.id) }
+        } else {
+            store.setEnabled(false, id: item.id)
+            if !item.usesLoginPassword { store.clearPassword(item) }
+        }
+        refreshToken = UUID()   // 被拒绝的开启也要重建行，让开关弹回关闭
     }
 
     // MARK: - 导入导出
@@ -111,10 +125,11 @@ private struct AutomationRow: View {
     @ObservedObject var store: AutomationStore
     let onEdit: () -> Void
     let onSetPassword: () -> Void
+    let onToggle: (Bool) -> Void
 
     private var hasPassword: Bool { store.hasPassword(item) }
-    /// Passwords 用登录密码，修改入口在「功能 > 屏幕解锁」，这里只保留未配置时的设置入口。
-    private var showsPasswordButton: Bool { item.builtinKey != "passwords" || !hasPassword }
+    /// 用登录密码的条目，修改入口在「功能 > 屏幕解锁」，这里只保留未配置时的设置入口。
+    private var showsPasswordButton: Bool { !item.usesLoginPassword || !hasPassword }
 
     var body: some View {
         GroupBox {
@@ -155,7 +170,7 @@ private struct AutomationRow: View {
 
                 Toggle("", isOn: Binding(
                     get: { item.enabled },
-                    set: { store.setEnabled($0, id: item.id) }))
+                    set: { onToggle($0) }))
                     .labelsHidden().toggleStyle(.switch)
             }
             .padding(6)

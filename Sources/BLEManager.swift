@@ -1171,6 +1171,15 @@ class BLEManager: NSObject {
                 return
             }
             let count = Int(response[1])
+            // 应答里不带命令码，迟到的别的应答（例如电量 [00 d4 0e …]）会被当成 KEY_COUNT，
+            // 第二个字节被读成两百多条，随后逐条 KEY_READ 让设备连续收发近 30 秒。
+            // 超过该类别容量的数量一定是错位应答，按读取失败处理。
+            guard count <= cat.maxEntries else {
+                let msg = "KEY_COUNT cat=\(cat.rawValue) implausible count=\(count) (max \(cat.maxEntries)), ignored"
+                Task { @MainActor in LogManager.shared.log(msg) }
+                completion(0, 0)
+                return
+            }
             var checksum: UInt32 = 0
             if response.count >= 6 {
                 checksum = UInt32(response[2])

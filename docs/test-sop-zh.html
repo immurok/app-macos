@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>immurok for macOS — 测试 SOP（中文）</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
+    --text:#e6e8ee; --muted:#9aa3b2; --brand:#5b8cff; --ok:#3ecf8e;
+    --warn:#ffb454; --danger:#ff6b6b; --code:#0b0d12;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px 96px}
+  header.hero{
+    text-align:center;padding:56px 24px 36px;border-bottom:1px solid var(--line);
+    background:radial-gradient(1200px 400px at 50% -120px,rgba(91,140,255,.18),transparent);
+  }
+  header.hero .logo{width:84px;height:84px}
+  header.hero h1{margin:18px 0 6px;font-size:30px;letter-spacing:.5px}
+  header.hero p{color:var(--muted);margin:0}
+  .badge{display:inline-block;margin-top:14px;padding:4px 12px;border:1px solid var(--line);
+    border-radius:999px;color:var(--muted);font-size:13px}
+  nav.toc{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px 22px;margin:32px 0;
+  }
+  nav.toc h2{margin:0 0 12px;font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+  nav.toc ol{margin:0;padding-left:20px;columns:2;column-gap:32px}
+  nav.toc a{color:var(--text);text-decoration:none}
+  nav.toc a:hover{color:var(--brand)}
+  h2.sec{margin:48px 0 8px;font-size:23px;padding-top:12px;border-top:1px solid var(--line)}
+  h2.sec .n{color:var(--brand);font-variant-numeric:tabular-nums}
+  h3{margin:30px 0 10px;font-size:18px}
+  p{margin:10px 0}
+  code{background:var(--code);padding:2px 6px;border-radius:5px;font-size:13px;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;color:#cfe0ff}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#d6e3ff;line-height:1.55}
+  kbd{background:#222632;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;
+    padding:1px 7px;font-size:12px;font-family:inherit}
+  ol.steps{counter-reset:s;list-style:none;padding-left:0;margin:12px 0}
+  ol.steps>li{position:relative;padding:8px 0 8px 42px;border-bottom:1px dashed var(--line)}
+  ol.steps>li:last-child{border-bottom:none}
+  ol.steps>li::before{
+    counter-increment:s;content:counter(s);position:absolute;left:0;top:8px;
+    width:26px;height:26px;border-radius:50%;background:var(--brand);color:#fff;
+    text-align:center;line-height:26px;font-size:13px;font-weight:600;
+  }
+  .feature{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:8px 22px 18px;margin:22px 0}
+  .feature .meta{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
+  .tag{font-size:12px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .lbl{display:inline-block;min-width:74px;color:var(--brand);font-weight:600}
+  .expect{background:rgba(62,207,142,.08);border-left:3px solid var(--ok);
+    padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+  .note{background:rgba(91,140,255,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+  .warn{background:rgba(255,180,84,.08);border-left:3px solid var(--warn);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left}
+  th{background:var(--panel2);color:var(--muted)}
+  figure{margin:18px 0}
+  figure img{width:100%;border:1px solid var(--line);border-radius:10px;display:block;background:var(--panel2)}
+  figure img.ph{min-height:180px;border-style:dashed}
+  figcaption{color:var(--muted);font-size:13px;text-align:center;margin-top:8px}
+  .lang{text-align:center;margin:18px 0}
+  .lang a{color:var(--brand);text-decoration:none;border:1px solid var(--line);padding:6px 14px;border-radius:8px}
+  footer{color:var(--muted);text-align:center;font-size:13px;margin-top:48px;padding-top:24px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header class="hero">
+  <svg class="logo" viewBox="0 0 84 84" role="img" aria-label="immurok">
+    <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/><stop offset="1" stop-color="#3ecf8e"/>
+    </linearGradient></defs>
+    <rect x="2" y="2" width="80" height="80" rx="20" fill="#171a21" stroke="url(#g1)" stroke-width="2"/>
+    <g fill="none" stroke="url(#g1)" stroke-width="3.4" stroke-linecap="round">
+      <path d="M42 22 C30 22 24 31 24 42 v8"/>
+      <path d="M42 22 C54 22 60 31 60 42 v12"/>
+      <path d="M42 31 C35 31 33 37 33 43 v14"/>
+      <path d="M42 31 C49 31 51 37 51 43 v18"/>
+      <path d="M42 40 v22"/>
+    </g>
+  </svg>
+  <h1>immurok for macOS · 测试 SOP</h1>
+  <p>蓝牙指纹认证伴侣 App — 安装、配置、卸载与功能体验测试手册</p>
+  <div class="badge">版本 1.0.0 · 适用 macOS 13 (Ventura) 及以上 · 文档日期 2026-06-18</div>
+  <div class="lang"><a href="test-sop-en.html">🇬🇧 English version</a></div>
+</header>
+
+<div class="wrap">
+
+<div class="note">
+  <strong>测试前置条件：</strong>一台 macOS 13+ 的 Mac、一支已烧录固件的 immurok 指纹设备（CH592F + R559S）、设备电量充足、Mac 蓝牙已开启。
+  本文档为单一自包含 HTML，所有插图以内嵌 SVG 呈现，不依赖任何外部图片或附加文件夹。
+</div>
+
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#install">安装说明</a></li>
+    <li><a href="#firstrun">首次启动配置</a></li>
+    <li><a href="#uninstall">卸载说明</a></li>
+    <li><a href="#f-pair">功能 1：设备配对</a></li>
+    <li><a href="#f-fp">功能 2：指纹管理</a></li>
+    <li><a href="#f-keys">功能 3：密钥与凭证管理</a></li>
+    <li><a href="#f-unlock">功能 4：锁屏解锁</a></li>
+    <li><a href="#f-sudo">功能 5：sudo 授权</a></li>
+    <li><a href="#f-sysauth">功能 6：系统授权对话框</a></li>
+    <li><a href="#f-ssh">功能 7：SSH agent 签名</a></li>
+    <li><a href="#f-otp">功能 8：Quick Fill OTP 快捷填充</a></li>
+    <li><a href="#f-cli">功能 9：imk CLI 与 Agent 授权</a></li>
+    <li><a href="#f-skill">功能 10：AI agent 安装并测试 imk skill</a></li>
+  </ol>
+</nav>
+
+<!-- ========== 1. 安装 ========== -->
+<h2 class="sec" id="install"><span class="n">1.</span> 安装说明</h2>
+
+<p>immurok 共包含三个组件，正式安装由签名 + 公证的 <code>.pkg</code> 一次性完成：</p>
+<table>
+  <tr><th>安装路径</th><th>组件</th></tr>
+  <tr><td><code>/Applications/immurok.app</code></td><td>菜单栏主程序（GUI）</td></tr>
+  <tr><td><code>/usr/local/bin/imk</code></td><td>命令行工具 imk</td></tr>
+  <tr><td><code>/usr/local/lib/pam/pam_immurok.so</code></td><td>PAM 模块（sudo / 系统授权）</td></tr>
+</table>
+
+<h3>方式 A：使用 .pkg 安装包（推荐 / 终端用户）</h3>
+<ol class="steps">
+  <li>双击 <code>immurok-&lt;版本&gt;.pkg</code> 启动安装器。</li>
+  <li>按提示一路"继续"，输入当前 Mac 管理员密码授权安装。</li>
+  <li>安装器的 <code>postinstall</code> 会自动把 <code>pam_immurok</code> 写入 <code>/etc/pam.d/sudo_local</code> 与 <code>/etc/pam.d/authorization</code>，并赋予 <code>imk</code> 可执行权限。</li>
+  <li>安装完成后，<code>/Applications/immurok.app</code> 即可启动。</li>
+</ol>
+<div class="warn"><strong>Gatekeeper 提示：</strong>若 pkg 未经公证（开发自构建），首次打开会被拦截。可在"系统设置 → 隐私与安全性"中点击"仍要打开"。正式发布版本已 notarize + staple，不会出现此提示。</div>
+
+<h3>方式 B：源码构建（开发者）</h3>
+<pre><code>cd app-macos
+swift build -c release          # 产出 immurokApp 与 imk 两个可执行文件
+
+# 一键构建 + 签名 + 部署到 /Applications
+./build-deploy.sh -a -s</code></pre>
+<p>PAM 模块单独构建：</p>
+<pre><code>cd app-macos/pam
+make
+sudo cp pam_immurok.so /usr/local/lib/pam/</code></pre>
+
+<figure>
+  <svg viewBox="0 0 640 360" role="img" aria-label=".pkg 安装器示意图">
+    <rect width="640" height="360" rx="12" fill="#1d212b"/>
+    <rect x="20" y="20" width="600" height="320" rx="10" fill="#11141b" stroke="#2a2f3a"/>
+    <rect x="20" y="20" width="600" height="40" rx="10" fill="#222632"/>
+    <circle cx="44" cy="40" r="6" fill="#ff6b6b"/><circle cx="64" cy="40" r="6" fill="#ffb454"/><circle cx="84" cy="40" r="6" fill="#3ecf8e"/>
+    <text x="320" y="45" fill="#9aa3b2" font-size="14" text-anchor="middle" font-family="sans-serif">安装 “immurok”</text>
+    <rect x="40" y="80" width="170" height="240" rx="8" fill="#171a21"/>
+    <text x="56" y="112" fill="#9aa3b2" font-size="12" font-family="sans-serif">介绍</text>
+    <text x="56" y="140" fill="#5b8cff" font-size="12" font-family="sans-serif">● 许可</text>
+    <text x="56" y="168" fill="#9aa3b2" font-size="12" font-family="sans-serif">安装类型</text>
+    <text x="56" y="196" fill="#9aa3b2" font-size="12" font-family="sans-serif">安装</text>
+    <text x="240" y="112" fill="#e6e8ee" font-size="15" font-family="sans-serif">将安装以下组件：</text>
+    <text x="240" y="148" fill="#cfe0ff" font-size="13" font-family="monospace">/Applications/immurok.app</text>
+    <text x="240" y="176" fill="#cfe0ff" font-size="13" font-family="monospace">/usr/local/bin/imk</text>
+    <text x="240" y="204" fill="#cfe0ff" font-size="13" font-family="monospace">/usr/local/lib/pam/pam_immurok.so</text>
+    <rect x="470" y="290" width="130" height="34" rx="8" fill="#5b8cff"/>
+    <text x="535" y="312" fill="#fff" font-size="14" text-anchor="middle" font-family="sans-serif">继续</text>
+  </svg>
+  <figcaption>图 1-1　.pkg 安装器示意（内嵌 SVG）</figcaption>
+</figure>
+
+<!-- ========== 2. 首次启动 ========== -->
+<h2 class="sec" id="firstrun"><span class="n">2.</span> 首次启动配置</h2>
+
+<p>首次打开 <code>/Applications/immurok.app</code> 会自动弹出 <strong>3 步配置向导（Setup Wizard）</strong>。已完成的步骤会被自动跳过。</p>
+
+<h3>步骤 ① 欢迎页</h3>
+<p>介绍三大能力：锁屏解锁、sudo 授权、系统授权。点击"下一步"。</p>
+
+<h3>步骤 ② PAM 模块检查</h3>
+<ul>
+  <li>若 <code>pam_immurok.so</code> 已就位（pkg 安装会自动完成），向导显示"已安装"并放行。</li>
+  <li>若未检测到，向导提示需要安装 PAM 组件包（见安装方式 B）。</li>
+</ul>
+
+<h3>步骤 ③ 辅助功能权限（必需）</h3>
+<p>键盘模拟（解锁时自动输入密码、Quick Fill 自动键入）依赖"辅助功能"权限。</p>
+<ol class="steps">
+  <li>向导引导打开"系统设置 → 隐私与安全性 → 辅助功能"。</li>
+  <li>在列表中找到 <strong>immurok</strong> 并打开开关（如无则点 + 手动添加）。</li>
+  <li>返回向导，状态变为"已授权"。</li>
+</ol>
+
+<h3>完成：配置解锁密码</h3>
+<ol class="steps">
+  <li>点击状态栏 immurok 图标 → "打开设置窗口"。</li>
+  <li>进入"权限 / Permissions"标签页，点击"配置解锁密码"。</li>
+  <li>输入当前 Mac 登录密码并保存（密码加密存入 macOS 钥匙串 <code>com.katsu.immurok</code>，不写入磁盘明文）。</li>
+  <li>首次还会请求蓝牙权限，请允许。</li>
+</ol>
+
+<div class="note">完成向导后，建议确认"开机自启动"已开启（基于 <code>SMAppService</code>，无需手动配置 launchd）。此后才能进入下方各项功能测试，许多功能依赖<strong>已配对设备</strong>（见功能 1）。</div>
+
+<figure>
+  <svg viewBox="0 0 640 360" role="img" aria-label="配置向导示意图">
+    <rect width="640" height="360" rx="12" fill="#1d212b"/>
+    <rect x="120" y="30" width="400" height="300" rx="10" fill="#11141b" stroke="#2a2f3a"/>
+    <circle cx="320" cy="92" r="34" fill="none" stroke="#5b8cff" stroke-width="3"/>
+    <path d="M306 92 l10 10 l20 -22" fill="none" stroke="#3ecf8e" stroke-width="4" stroke-linecap="round"/>
+    <text x="320" y="158" fill="#e6e8ee" font-size="18" text-anchor="middle" font-family="sans-serif">配置向导 · 步骤 3 / 3</text>
+    <text x="320" y="188" fill="#9aa3b2" font-size="13" text-anchor="middle" font-family="sans-serif">辅助功能权限</text>
+    <text x="320" y="214" fill="#9aa3b2" font-size="12" text-anchor="middle" font-family="sans-serif">系统设置 → 隐私与安全性 → 辅助功能</text>
+    <rect x="250" y="236" width="140" height="22" rx="6" fill="#222632"/>
+    <text x="320" y="251" fill="#3ecf8e" font-size="12" text-anchor="middle" font-family="sans-serif">immurok ✓ 已授权</text>
+    <rect x="180" y="284" width="80" height="32" rx="8" fill="#222632"/>
+    <text x="220" y="305" fill="#9aa3b2" font-size="13" text-anchor="middle" font-family="sans-serif">上一步</text>
+    <rect x="380" y="284" width="80" height="32" rx="8" fill="#5b8cff"/>
+    <text x="420" y="305" fill="#fff" font-size="13" text-anchor="middle" font-family="sans-serif">完成</text>
+  </svg>
+  <figcaption>图 2-1　首次启动配置向导示意（内嵌 SVG）</figcaption>
+</figure>
+
+<!-- ========== 3. 卸载 ========== -->
+<h2 class="sec" id="uninstall"><span class="n">3.</span> 卸载说明</h2>
+
+<h3>方式 A：App 内卸载（推荐）</h3>
+<p>App 内置了签名的卸载 pkg，会完整清理所有组件。运行后将依次：</p>
+<ol class="steps">
+  <li>结束正在运行的 immurok 进程。</li>
+  <li>从 <code>/etc/pam.d/sudo_local</code> 与 <code>/etc/pam.d/authorization</code> 移除 <code>pam_immurok</code> 配置行。</li>
+  <li>删除 <code>/usr/local/lib/pam/pam_immurok.so</code> 与 <code>/usr/local/bin/imk</code>。</li>
+  <li>删除 <code>/Applications/immurok.app</code>。</li>
+  <li>删除用户数据 <code>~/.immurok</code>、钥匙串密码项与 <code>UserDefaults</code>，并清理 pkg 收据。</li>
+</ol>
+
+<h3>方式 B：手动卸载（开发者）</h3>
+<pre><code>killall immurok 2>/dev/null
+sudo rm -rf /Applications/immurok.app
+sudo rm -f /usr/local/lib/pam/pam_immurok.so /usr/local/bin/imk
+# 从 PAM 配置中移除 pam_immurok 行
+sudo sed -i '' '/pam_immurok/d' /etc/pam.d/sudo_local /etc/pam.d/authorization
+rm -rf ~/.immurok
+security delete-generic-password -s "com.katsu.immurok" -a "unlock-password" 2>/dev/null
+defaults delete com.immurok.app 2>/dev/null</code></pre>
+
+<div class="warn"><strong>验证卸载：</strong>卸载后执行 <code>sudo -k; sudo true</code> 应恢复为正常密码提示（不再走指纹）；<code>which imk</code> 应无输出。</div>
+
+<!-- ========== 功能体验 ========== -->
+<h2 class="sec" id="features"><span class="n">4.</span> 功能体验测试</h2>
+<p>以下每个小节包含：<strong>功能名称 · 简介 · 操作顺序 · 预期效果</strong>。请按顺序测试：功能 1（配对）、功能 2（指纹录入）、功能 3（密钥录入）是其余功能的前提——没有指纹无法触摸授权，没有 SSH key 无法做 SSH/git 签名。</p>
+
+<!-- 1 配对 -->
+<div class="feature" id="f-pair">
+  <h3>功能 1 · 设备配对</h3>
+  <div class="meta"><span class="tag">BLE</span><span class="tag">ECDH P-256</span><span class="tag">前置必做</span></div>
+  <p><span class="lbl">简介</span>配对分<strong>两个独立阶段</strong>：先在<strong>系统蓝牙设置</strong>里把设备当成一个蓝牙键盘连上 Mac（建立链路锚点），再在 <strong>App 内</strong>与设备做 ECDH P-256 密钥交换（协商共享密钥用于后续 HMAC 校验，确保指纹信号不可伪造）。两步都只需做一次。</p>
+
+  <p><span class="lbl">阶段一</span><strong>系统蓝牙连接（类似连接蓝牙键盘）</strong></p>
+  <ol class="steps">
+    <li>确保设备已上电、处于蓝牙广播状态，Mac 蓝牙已开启。</li>
+    <li>打开"系统设置 → 蓝牙"，在列表中找到 immurok 设备。</li>
+    <li>点击"连接"，像连接蓝牙键盘一样完成系统级配对（如有配对码按提示确认）。</li>
+  </ol>
+
+  <p><span class="lbl">阶段二</span><strong>App 内密钥交换配对</strong></p>
+  <ol class="steps">
+    <li>打开 App 设置窗口 → "设备 / Device"标签页。</li>
+    <li>点击 App 上的"配对 / Pair"按钮。</li>
+    <li>在设备上按下物理按键确认，双方完成 ECDH 密钥交换。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>阶段一完成后系统蓝牙显示"已连接"；阶段二完成后 App 内设备状态显示"已配对 / 已连接"，配对信息持久化保存。此后重启 App 会自动重连，状态栏图标显示已连接。</div>
+</div>
+
+<!-- 2 指纹管理 -->
+<div class="feature" id="f-fp">
+  <h3>功能 2 · 指纹管理（录入 / 删除 / 重命名）</h3>
+  <div class="meta"><span class="tag">枚举值需与固件同步</span><span class="tag">前置必做</span></div>
+  <p><span class="lbl">简介</span>在"指纹"标签页管理设备上的指纹。<strong>这是后续所有"触摸授权"类功能（解锁、sudo、系统授权、SSH 签名、Quick Fill）的前提——必须先录入至少一枚指纹。</strong>录入过程的状态机（等待 / 已采集 / 处理中 / 抬起手指）与固件 <code>fingerprint.h</code> 枚举值保持一致。</p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>设置窗口 → "指纹 / Fingerprint"标签页。</li>
+    <li>点击"录入新指纹"，按界面提示多次按压同一手指，直到提示完成。</li>
+    <li>对已录入指纹点击"重命名"修改名称；点击"删除"移除。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>录入过程显示实时进度（采集次数 / 抬起手指提示），完成后列表新增条目；重命名即时生效；删除后该指纹不再能解锁/授权。</div>
+</div>
+
+<!-- 3 密钥管理 -->
+<div class="feature" id="f-keys">
+  <h3>功能 3 · 密钥与凭证管理（含 SSH key 录入 / 生成）</h3>
+  <div class="meta"><span class="tag">SSH</span><span class="tag">API</span><span class="tag">TOTP/OTP</span><span class="tag">System</span><span class="tag">SSH/Quick Fill 前置</span></div>
+  <p><span class="lbl">简介</span>"密钥"标签页支持四类条目：System（系统密码）、SSH/Git 私钥、API 凭证、OTP/TOTP 密钥。机密存储在设备上，受指纹保护。<strong>在测试功能 7（SSH agent）做 ssh / git 操作之前，必须先在这里录入或生成 SSH key；在测试功能 8（Quick Fill）之前，必须先在这里存入 OTP 条目。</strong></p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>设置窗口 → "密钥 / Keys"标签页，选择类别（System / SSH&amp;Git / API / OTP）。</li>
+    <li><strong>录入 SSH key：</strong>切到 SSH/Git 类别，粘贴一段 OpenSSH 格式私钥（导入时校验格式，<strong>不支持加密私钥</strong>），保存。</li>
+    <li><strong>设备端生成 SSH key：</strong>或点"在设备上生成"，由设备生成密钥对、私钥永不导出；生成后可复制公钥用于 <code>~/.ssh/authorized_keys</code> 或 GitHub。</li>
+    <li>OTP：输入 TOTP 密钥（base32）；API：输入名称与凭证。保存后在列表查看，可重命名或删除。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>合法条目保存成功并出现在列表，SSH 条目可见对应公钥；非法 SSH 私钥（格式错误 / 加密 / 不支持的类型）给出明确错误提示，不会保存。</div>
+</div>
+
+<!-- 4 解锁 -->
+<div class="feature" id="f-unlock">
+  <h3>功能 4 · 锁屏解锁</h3>
+  <div class="meta"><span class="tag">键盘模拟</span><span class="tag">需辅助功能权限</span></div>
+  <p><span class="lbl">简介</span>类似 TouchID 的息屏解锁。App 检测到锁屏状态后，设备发送 HMAC 签名的指纹匹配通知（<code>0x21</code>），App 校验通过即从钥匙串读取密码并用 <code>CGEvent</code> 模拟键入。</p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>确认已配置解锁密码、已授予辅助功能权限、设备已连接、已录入指纹（功能 2）。</li>
+    <li>锁定屏幕（<kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>Q</kbd>）。</li>
+    <li>在设备指纹传感器上触摸已录入的手指。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>App 自动在密码框输入登录密码并回车，屏幕解锁。指纹不匹配时无动作，密码不会被输入。</div>
+</div>
+
+<!-- 5 sudo -->
+<div class="feature" id="f-sudo">
+  <h3>功能 5 · sudo 授权</h3>
+  <div class="meta"><span class="tag">PAM</span><span class="tag">sudo_local</span></div>
+  <p><span class="lbl">简介</span>用指纹替代终端中输入 sudo 密码。<code>sudo</code> 触发 <code>pam_immurok.so</code>，PAM 模块通过 <code>~/.immurok/pam.sock</code> 与 App 通信，App 请求指纹，匹配后回 <code>OK</code>。</p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>设置窗口"权限"页确认 "sudo 授权"开关已开启。</li>
+    <li>终端执行 <code>sudo -k</code> 清除缓存，再执行 <code>sudo true</code>。</li>
+    <li>看到提示后在设备上触摸指纹。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>无需输入密码，指纹匹配后 sudo 直接通过。关闭开关后恢复为系统默认密码提示。</div>
+  <div class="warn"><strong>⚠️ macOS 13.x（Ventura）用户注意：</strong>App 对 macOS 13.x 的 sudo 支持将在<strong>下一版本</strong>正式提供。<code>/etc/pam.d/sudo_local</code> 包含机制是 macOS 14（Sonoma）才引入的——13.x 系统不会自动加载 <code>sudo_local</code>，因此安装器写入的配置不会生效。若你当前是 13.x 用户，请按以下步骤手动开启 sudo 支持：
+    <ol class="steps" style="margin-top:8px">
+      <li>确认 PAM 模块已就位：<code>ls /usr/local/lib/pam/pam_immurok.so</code>。</li>
+      <li>备份原配置：<code>sudo cp /etc/pam.d/sudo /etc/pam.d/sudo.bak</code>。</li>
+      <li>把以下行加到 <code>/etc/pam.d/sudo</code> 的<strong>第一条 auth 规则之前</strong>（紧跟首行注释后）：<br><code>auth&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sufficient&nbsp;&nbsp;&nbsp;&nbsp;/usr/local/lib/pam/pam_immurok.so</code><br>例如：<code>sudo sed -i '' '1a\'$'\n''auth       sufficient     /usr/local/lib/pam/pam_immurok.so' /etc/pam.d/sudo</code></li>
+      <li>另开一个终端窗口执行 <code>sudo -k; sudo true</code> 验证（<strong>保留当前窗口</strong>，万一配置出错可用它恢复 <code>sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo</code>）。</li>
+    </ol>
+    升级到支持 13.x 的版本后，请移除这条手动添加的行，改用安装器自动配置。</div>
+</div>
+
+<!-- 6 系统授权 -->
+<div class="feature" id="f-sysauth">
+  <h3>功能 6 · 系统授权对话框</h3>
+  <div class="meta"><span class="tag">PAM authorization</span><span class="tag">GUI 弹窗</span></div>
+  <p><span class="lbl">简介</span>系统设置中需要"输入密码以解锁"的授权弹窗（如修改安全设置）也可走指纹，由 <code>/etc/pam.d/authorization</code> 接入。</p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>确认"系统授权"开关已开启。</li>
+    <li>打开一个需要授权的系统设置（如点击锁形图标解锁某项设置）。</li>
+    <li>在弹出授权对话框时触摸指纹。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>授权对话框被指纹通过并关闭，设置项解锁。<br><strong>注意：</strong>本项目严禁操作 <code>authorizationdb</code>，仅通过 PAM authorization 接入。</div>
+</div>
+
+<!-- 7 SSH -->
+<div class="feature" id="f-ssh">
+  <h3>功能 7 · SSH agent 签名</h3>
+  <div class="meta"><span class="tag">ssh-agent 协议</span><span class="tag">设备端签名</span><span class="tag">需先完成功能 3</span></div>
+  <p><span class="lbl">简介</span>App 实现 SSH agent 协议，把签名请求转发给设备，使用存储在设备上的私钥做 ECDSA 签名——私钥永不离开设备。<strong>前置：必须已在功能 3 录入或生成 SSH key。</strong></p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>确认已在功能 3 中导入或生成 SSH key。</li>
+    <li>设置窗口"权限"页开启 "SSH agent"，按提示设置 <code>SSH_AUTH_SOCK</code> 环境变量指向 App 的 socket。</li>
+    <li>终端执行 <code>ssh-add -l</code> 查看密钥；再执行一次 <code>ssh</code> 或 <code>git push</code>。</li>
+    <li>触发签名时在设备上触摸指纹。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span><code>ssh-add -l</code> 列出设备上的公钥；连接 / push 在指纹确认后由设备完成签名并成功。</div>
+</div>
+
+<!-- 8 Quick Fill -->
+<div class="feature" id="f-otp">
+  <h3>功能 8 · Quick Fill OTP 快捷填充</h3>
+  <div class="meta"><span class="tag">默认 Ctrl+\</span><span class="tag">热键可自定义</span></div>
+  <p><span class="lbl">简介</span>在任意输入框按全局热键（默认 <kbd>Ctrl</kbd>+<kbd>\</kbd>，keyCode 42）弹出快捷面板，搜索并选择条目，指纹确认后自动键入当前 TOTP 验证码或所选机密。</p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li>先在功能 3 中存入至少一个 OTP 条目。</li>
+    <li>在网页/App 的验证码输入框中按 <kbd>Ctrl</kbd>+<kbd>\</kbd>。</li>
+    <li>在弹出面板中搜索并选中目标条目，在设备上触摸指纹确认。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>面板按服务名筛选；指纹确认后当前 6 位 TOTP 自动键入到光标处。可在设置中修改热键。</div>
+  <div class="warn"><strong>首次启动提示：</strong>App 首次启动后热键可能暂不响应——需在 App 设置中重新设置（或重新确认）一次热键，或重启 App 后，<kbd>Ctrl</kbd>+<kbd>\</kbd> 才会生效。</div>
+</div>
+
+<!-- 9 imk CLI -->
+<div class="feature" id="f-cli">
+  <h3>功能 9 · imk CLI 与 Agent 命令授权</h3>
+  <div class="meta"><span class="tag">CLI</span><span class="tag">imk run --agent</span></div>
+  <p><span class="lbl">简介</span><code>imk</code> 用于终端工作流：列出/读取设备上的机密、注入环境变量运行子进程。<code>imk run --agent</code> 会在命令执行<strong>前</strong>弹出授权浮层，覆盖那些本身不触发 PAM 的命令（如 <code>git pull</code>、<code>npm install</code>）。</p>
+  <p><span class="lbl">操作顺序</span></p>
+  <ol class="steps">
+    <li><strong>快速测试：</strong><code>imk run --agent -- echo "hello world"</code> —— 浮层弹出，触摸指纹后终端打印 <code>hello world</code>。</li>
+    <li>列出条目：<code>imk list ssh</code> / <code>imk list otp</code> / <code>imk list api</code>。</li>
+    <li>读取机密到 stdout：<code>imk get imk://api/&lt;name&gt;</code>。</li>
+    <li>注入并运行：<code>imk run --env-file .env -- python deploy.py</code>。</li>
+    <li>Agent 授权：<code>imk run --agent -- git push origin main</code>，浮层弹出时触摸指纹。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span><code>list</code> 输出条目名；<code>get</code> 输出机密值（交互式 TTY 带换行，管道/重定向为原始字节）；<code>--agent</code> 指纹通过返回 <code>OK</code> 后命令才执行，关闭浮层或 30s 超时则返回 <code>REJECT</code> 拒绝执行。</div>
+</div>
+
+<!-- 10 AI agent skill -->
+<div class="feature" id="f-skill">
+  <h3>功能 10 · 在 AI agent 中安装并测试 imk skill</h3>
+  <div class="meta"><span class="tag">Claude Code 插件</span><span class="tag">SKILL.md</span><span class="tag">指纹门</span></div>
+  <p><span class="lbl">简介</span>让 AI agent（Claude Code / Codex / Cursor / Cline …）执行敏感命令（<code>sudo</code>、<code>git push</code>/<code>ssh</code>、读取 secret）时，自动用 <code>imk run --agent --</code> 包装，从而弹出指纹授权门。规则与决策树来自独立的 <strong>imk-skill</strong> 仓库（<code>skills/using-imk/SKILL.md</code>）。</p>
+
+  <p><span class="lbl">安装 · Claude Code</span><strong>作为插件安装</strong></p>
+  <ol class="steps">
+    <li>克隆 skill 仓库到插件目录：<br><code>git clone https://github.com/immurok/imk-skill ~/.claude/plugins/imk-tools</code></li>
+    <li>重启 Claude Code（或重新加载插件），使其识别 <code>using-imk</code> skill。</li>
+    <li>确认 <code>imk</code> 已在 PATH 中：<code>which imk</code> 应输出 <code>/usr/local/bin/imk</code>。</li>
+  </ol>
+
+  <p><span class="lbl">安装 · 其他 agent</span><strong>Codex / Cursor / Cline 等</strong></p>
+  <ol class="steps">
+    <li>打开 <code>imk-skill</code> 仓库中的 <code>skills/using-imk/SKILL.md</code>。</li>
+    <li>把其内容粘贴进该 agent 的 rules / 指令文件（如 <code>AGENTS.md</code>、<code>.cursorrules</code>、Cline 的自定义指令等）。</li>
+    <li>保存后让 agent 重新读取规则。</li>
+  </ol>
+
+  <p><span class="lbl">测试 skill</span></p>
+  <ol class="steps">
+    <li>确保 App 已运行、设备已配对、已录入指纹。</li>
+    <li>直接验证 CLI 门是否生效：<code>imk run --agent -- echo "hello world"</code> —— 浮层弹出，触摸指纹后打印 <code>hello world</code>。</li>
+    <li>在 agent 对话里指派一条敏感命令（例如让它执行 <code>git push</code> 或 <code>sudo systemctl restart api</code>），观察它是否<strong>自动</strong>用 <code>imk run --agent --</code> 包装后再执行。</li>
+    <li>包装命令运行时，在设备上触摸指纹授权。</li>
+  </ol>
+  <div class="expect"><span class="lbl">预期效果</span>agent 对敏感命令主动套上 <code>imk run --agent --</code>；执行前弹出指纹授权门，指纹通过命令才继续，拒绝/超时则命令不执行。纯只读命令（<code>ls</code>/<code>cat</code>/<code>git log</code>）与用户手动输入的命令不会被包装。</div>
+  <div class="note">完整决策树、踩坑列表与安装步骤详见 <code>imk-skill</code> 仓库：<strong>github.com/immurok/imk-skill</strong>（<code>skills/using-imk/SKILL.md</code>）。</div>
+</div>
+
+<footer>
+  immurok for macOS · 测试 SOP（中文）· 文档日期 2026-06-18<br>
+  单一自包含 HTML · 插图均为内嵌 SVG，无外部依赖。English version: <a href="test-sop-en.html" style="color:var(--brand)">test-sop-en.html</a>
+</footer>
+
+</div>
+</body>
+</html>

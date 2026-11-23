@@ -91,6 +91,25 @@ struct AuthContextDetector {
         return .none
     }
 
+    /// LocalAuthentication 系统密码框（coreautha）的识别结果。
+    enum LocalAuthDialog {
+        case notPresent
+        /// 焦点密码框属主自称是 coreautha 但签名校验没过，或找不到所在窗口：不注入、也不发回车。
+        case untrusted
+        case ready(field: AXUIElement, window: AXUIElement)
+    }
+
+    /// 系统级焦点若是 coreautha 的密码框，校验其 Apple 平台签名并返回 (密码框, 所在窗口)。
+    /// 归「GUI Authorization」管，不走 Automation 条目。
+    func localAuthDialog() -> LocalAuthDialog {
+        let bundleID = AutomationItem.localAuthUIAgentBundleID
+        guard let focused = systemWideFocusedSecureField(), let pid = ownerPID(of: focused),
+              NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == bundleID else { return .notPresent }
+        guard InjectionWhitelist.processSatisfies(pid: pid, bundleID: bundleID, signing: .applePlatform),
+              let hit = enclosingContainer(of: focused) else { return .untrusted }
+        return .ready(field: focused, window: hit.container)
+    }
+
     // MARK: - AX helpers
 
     /// 系统级焦点元素若是安全密码框则返回它，否则 nil。

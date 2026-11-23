@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>immurok for macOS — Test SOP (English)</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#2a2f3a;
+    --text:#e6e8ee; --muted:#9aa3b2; --brand:#5b8cff; --ok:#3ecf8e;
+    --warn:#ffb454; --danger:#ff6b6b; --code:#0b0d12;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.7 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:0 24px 96px}
+  header.hero{
+    text-align:center;padding:56px 24px 36px;border-bottom:1px solid var(--line);
+    background:radial-gradient(1200px 400px at 50% -120px,rgba(91,140,255,.18),transparent);
+  }
+  header.hero .logo{width:84px;height:84px}
+  header.hero h1{margin:18px 0 6px;font-size:30px;letter-spacing:.5px}
+  header.hero p{color:var(--muted);margin:0}
+  .badge{display:inline-block;margin-top:14px;padding:4px 12px;border:1px solid var(--line);
+    border-radius:999px;color:var(--muted);font-size:13px}
+  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin:32px 0}
+  nav.toc h2{margin:0 0 12px;font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+  nav.toc ol{margin:0;padding-left:20px;columns:2;column-gap:32px}
+  nav.toc a{color:var(--text);text-decoration:none}
+  nav.toc a:hover{color:var(--brand)}
+  h2.sec{margin:48px 0 8px;font-size:23px;padding-top:12px;border-top:1px solid var(--line)}
+  h2.sec .n{color:var(--brand);font-variant-numeric:tabular-nums}
+  h3{margin:30px 0 10px;font-size:18px}
+  p{margin:10px 0}
+  code{background:var(--code);padding:2px 6px;border-radius:5px;font-size:13px;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;color:#cfe0ff}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#d6e3ff;line-height:1.55}
+  kbd{background:#222632;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:1px 7px;font-size:12px;font-family:inherit}
+  ol.steps{counter-reset:s;list-style:none;padding-left:0;margin:12px 0}
+  ol.steps>li{position:relative;padding:8px 0 8px 42px;border-bottom:1px dashed var(--line)}
+  ol.steps>li:last-child{border-bottom:none}
+  ol.steps>li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:8px;
+    width:26px;height:26px;border-radius:50%;background:var(--brand);color:#fff;text-align:center;line-height:26px;font-size:13px;font-weight:600}
+  .feature{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px 22px 18px;margin:22px 0}
+  .feature .meta{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
+  .tag{font-size:12px;padding:2px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .lbl{display:inline-block;min-width:92px;color:var(--brand);font-weight:600}
+  .expect{background:rgba(62,207,142,.08);border-left:3px solid var(--ok);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+  .note{background:rgba(91,140,255,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+  .warn{background:rgba(255,180,84,.08);border-left:3px solid var(--warn);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left}
+  th{background:var(--panel2);color:var(--muted)}
+  figure{margin:18px 0}
+  figure img{width:100%;border:1px solid var(--line);border-radius:10px;display:block;background:var(--panel2)}
+  figure img.ph{min-height:180px;border-style:dashed}
+  figcaption{color:var(--muted);font-size:13px;text-align:center;margin-top:8px}
+  .lang{text-align:center;margin:18px 0}
+  .lang a{color:var(--brand);text-decoration:none;border:1px solid var(--line);padding:6px 14px;border-radius:8px}
+  footer{color:var(--muted);text-align:center;font-size:13px;margin-top:48px;padding-top:24px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header class="hero">
+  <svg class="logo" viewBox="0 0 84 84" role="img" aria-label="immurok">
+    <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/><stop offset="1" stop-color="#3ecf8e"/>
+    </linearGradient></defs>
+    <rect x="2" y="2" width="80" height="80" rx="20" fill="#171a21" stroke="url(#g1)" stroke-width="2"/>
+    <g fill="none" stroke="url(#g1)" stroke-width="3.4" stroke-linecap="round">
+      <path d="M42 22 C30 22 24 31 24 42 v8"/>
+      <path d="M42 22 C54 22 60 31 60 42 v12"/>
+      <path d="M42 31 C35 31 33 37 33 43 v14"/>
+      <path d="M42 31 C49 31 51 37 51 43 v18"/>
+      <path d="M42 40 v22"/>
+    </g>
+  </svg>
+  <h1>immurok for macOS · Test SOP</h1>
+  <p>Bluetooth fingerprint authentication companion app — install, configure, uninstall &amp; feature walkthrough</p>
+  <div class="badge">Version 1.0.0 · macOS 13 (Ventura)+ · Doc date 2026-06-18</div>
+  <div class="lang"><a href="test-sop-zh.html">🇨🇳 中文版本</a></div>
+</header>
+
+<div class="wrap">
+
+<div class="note">
+  <strong>Prerequisites:</strong> a Mac on macOS 13+, an immurok fingerprint device (CH592F + R559S) with firmware flashed, a charged battery, and Bluetooth enabled on the Mac.
+  This is a single self-contained HTML file; all illustrations are inline SVG, with no external images or extra folders required.
+</div>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#install">Installation</a></li>
+    <li><a href="#firstrun">First-launch setup</a></li>
+    <li><a href="#uninstall">Uninstall</a></li>
+    <li><a href="#f-pair">Feature 1: Device pairing</a></li>
+    <li><a href="#f-fp">Feature 2: Fingerprint management</a></li>
+    <li><a href="#f-keys">Feature 3: Keys &amp; credentials</a></li>
+    <li><a href="#f-unlock">Feature 4: Screen unlock</a></li>
+    <li><a href="#f-sudo">Feature 5: sudo auth</a></li>
+    <li><a href="#f-sysauth">Feature 6: System auth dialog</a></li>
+    <li><a href="#f-ssh">Feature 7: SSH agent signing</a></li>
+    <li><a href="#f-otp">Feature 8: Quick Fill OTP</a></li>
+    <li><a href="#f-cli">Feature 9: imk CLI &amp; agent gate</a></li>
+    <li><a href="#f-skill">Feature 10: Install &amp; test imk skill in an AI agent</a></li>
+  </ol>
+</nav>
+
+<!-- 1 install -->
+<h2 class="sec" id="install"><span class="n">1.</span> Installation</h2>
+<p>immurok ships three components, installed in one shot by a signed + notarized <code>.pkg</code>:</p>
+<table>
+  <tr><th>Install path</th><th>Component</th></tr>
+  <tr><td><code>/Applications/immurok.app</code></td><td>Menu bar app (GUI)</td></tr>
+  <tr><td><code>/usr/local/bin/imk</code></td><td>imk CLI tool</td></tr>
+  <tr><td><code>/usr/local/lib/pam/pam_immurok.so</code></td><td>PAM module (sudo / system auth)</td></tr>
+</table>
+
+<h3>Option A: .pkg installer (recommended / end users)</h3>
+<ol class="steps">
+  <li>Double-click <code>immurok-&lt;version&gt;.pkg</code> to launch the installer.</li>
+  <li>Click through "Continue" and enter your Mac admin password to authorize.</li>
+  <li>The installer's <code>postinstall</code> automatically wires <code>pam_immurok</code> into <code>/etc/pam.d/sudo_local</code> and <code>/etc/pam.d/authorization</code>, and makes <code>imk</code> executable.</li>
+  <li>When done, launch <code>/Applications/immurok.app</code>.</li>
+</ol>
+<div class="warn"><strong>Gatekeeper note:</strong> an un-notarized (self-built) pkg is blocked on first open — allow it via "System Settings → Privacy &amp; Security → Open Anyway". Official releases are notarized + stapled and show no prompt.</div>
+
+<h3>Option B: build from source (developers)</h3>
+<pre><code>cd app-macos
+swift build -c release          # produces immurokApp and imk
+
+# one-shot build + sign + deploy to /Applications
+./build-deploy.sh -a -s</code></pre>
+<p>Build the PAM module separately:</p>
+<pre><code>cd app-macos/pam
+make
+sudo cp pam_immurok.so /usr/local/lib/pam/</code></pre>
+
+<figure>
+  <svg viewBox="0 0 640 360" role="img" aria-label=".pkg installer mockup">
+    <rect width="640" height="360" rx="12" fill="#1d212b"/>
+    <rect x="20" y="20" width="600" height="320" rx="10" fill="#11141b" stroke="#2a2f3a"/>
+    <rect x="20" y="20" width="600" height="40" rx="10" fill="#222632"/>
+    <circle cx="44" cy="40" r="6" fill="#ff6b6b"/><circle cx="64" cy="40" r="6" fill="#ffb454"/><circle cx="84" cy="40" r="6" fill="#3ecf8e"/>
+    <text x="320" y="45" fill="#9aa3b2" font-size="14" text-anchor="middle" font-family="sans-serif">Install “immurok”</text>
+    <rect x="40" y="80" width="170" height="240" rx="8" fill="#171a21"/>
+    <text x="56" y="112" fill="#9aa3b2" font-size="12" font-family="sans-serif">Introduction</text>
+    <text x="56" y="140" fill="#5b8cff" font-size="12" font-family="sans-serif">● License</text>
+    <text x="56" y="168" fill="#9aa3b2" font-size="12" font-family="sans-serif">Installation Type</text>
+    <text x="56" y="196" fill="#9aa3b2" font-size="12" font-family="sans-serif">Install</text>
+    <text x="240" y="112" fill="#e6e8ee" font-size="15" font-family="sans-serif">The following will be installed:</text>
+    <text x="240" y="148" fill="#cfe0ff" font-size="13" font-family="monospace">/Applications/immurok.app</text>
+    <text x="240" y="176" fill="#cfe0ff" font-size="13" font-family="monospace">/usr/local/bin/imk</text>
+    <text x="240" y="204" fill="#cfe0ff" font-size="13" font-family="monospace">/usr/local/lib/pam/pam_immurok.so</text>
+    <rect x="470" y="290" width="130" height="34" rx="8" fill="#5b8cff"/>
+    <text x="535" y="312" fill="#fff" font-size="14" text-anchor="middle" font-family="sans-serif">Continue</text>
+  </svg>
+  <figcaption>Fig 1-1　.pkg installer mockup (inline SVG)</figcaption>
+</figure>
+
+<!-- 2 first run -->
+<h2 class="sec" id="firstrun"><span class="n">2.</span> First-launch setup</h2>
+<p>The first launch of <code>/Applications/immurok.app</code> opens a <strong>3-step Setup Wizard</strong>. Already-completed steps are skipped automatically.</p>
+
+<h3>Step ① Welcome</h3>
+<p>Introduces the three capabilities: screen unlock, sudo auth, system auth. Click "Next".</p>
+
+<h3>Step ② PAM module check</h3>
+<ul>
+  <li>If <code>pam_immurok.so</code> is present (the pkg does this), the wizard shows "Installed" and lets you continue.</li>
+  <li>If missing, the wizard tells you to install the PAM component (see Option B).</li>
+</ul>
+
+<h3>Step ③ Accessibility permission (required)</h3>
+<p>Keyboard simulation (typing the password at unlock, Quick Fill auto-type) needs the Accessibility permission.</p>
+<ol class="steps">
+  <li>The wizard opens "System Settings → Privacy &amp; Security → Accessibility".</li>
+  <li>Find <strong>immurok</strong> in the list and toggle it on (use + to add it manually if absent).</li>
+  <li>Return to the wizard; status flips to "Granted".</li>
+</ol>
+
+<h3>Finish: configure the unlock password</h3>
+<ol class="steps">
+  <li>Click the immurok status-bar icon → "Open Settings Window".</li>
+  <li>Go to the Permissions tab and click "Configure unlock password".</li>
+  <li>Enter your current Mac login password and save (stored encrypted in the macOS Keychain <code>com.katsu.immurok</code>, never written to disk in plaintext).</li>
+  <li>Grant the Bluetooth permission when prompted on first run.</li>
+</ol>
+
+<div class="note">After the wizard, confirm "Launch at login" is enabled (backed by <code>SMAppService</code>, no manual launchd needed). Most features below require a <strong>paired device</strong> (Feature 1).</div>
+
+<figure>
+  <svg viewBox="0 0 640 360" role="img" aria-label="setup wizard mockup">
+    <rect width="640" height="360" rx="12" fill="#1d212b"/>
+    <rect x="120" y="30" width="400" height="300" rx="10" fill="#11141b" stroke="#2a2f3a"/>
+    <circle cx="320" cy="92" r="34" fill="none" stroke="#5b8cff" stroke-width="3"/>
+    <path d="M306 92 l10 10 l20 -22" fill="none" stroke="#3ecf8e" stroke-width="4" stroke-linecap="round"/>
+    <text x="320" y="158" fill="#e6e8ee" font-size="18" text-anchor="middle" font-family="sans-serif">Setup Wizard · Step 3 / 3</text>
+    <text x="320" y="188" fill="#9aa3b2" font-size="13" text-anchor="middle" font-family="sans-serif">Accessibility permission</text>
+    <text x="320" y="214" fill="#9aa3b2" font-size="12" text-anchor="middle" font-family="sans-serif">System Settings → Privacy &amp; Security → Accessibility</text>
+    <rect x="250" y="236" width="140" height="22" rx="6" fill="#222632"/>
+    <text x="320" y="251" fill="#3ecf8e" font-size="12" text-anchor="middle" font-family="sans-serif">immurok ✓ Granted</text>
+    <rect x="180" y="284" width="80" height="32" rx="8" fill="#222632"/>
+    <text x="220" y="305" fill="#9aa3b2" font-size="13" text-anchor="middle" font-family="sans-serif">Back</text>
+    <rect x="380" y="284" width="80" height="32" rx="8" fill="#5b8cff"/>
+    <text x="420" y="305" fill="#fff" font-size="13" text-anchor="middle" font-family="sans-serif">Done</text>
+  </svg>
+  <figcaption>Fig 2-1　First-launch setup wizard mockup (inline SVG)</figcaption>
+</figure>
+
+<!-- 3 uninstall -->
+<h2 class="sec" id="uninstall"><span class="n">3.</span> Uninstall</h2>
+<h3>Option A: in-app uninstall (recommended)</h3>
+<p>The app embeds a signed uninstall pkg that fully cleans up every component. It will:</p>
+<ol class="steps">
+  <li>Terminate the running immurok process.</li>
+  <li>Remove the <code>pam_immurok</code> line from <code>/etc/pam.d/sudo_local</code> and <code>/etc/pam.d/authorization</code>.</li>
+  <li>Delete <code>/usr/local/lib/pam/pam_immurok.so</code> and <code>/usr/local/bin/imk</code>.</li>
+  <li>Delete <code>/Applications/immurok.app</code>.</li>
+  <li>Remove user data <code>~/.immurok</code>, the Keychain password item and <code>UserDefaults</code>, and forget pkg receipts.</li>
+</ol>
+
+<h3>Option B: manual uninstall (developers)</h3>
+<pre><code>killall immurok 2>/dev/null
+sudo rm -rf /Applications/immurok.app
+sudo rm -f /usr/local/lib/pam/pam_immurok.so /usr/local/bin/imk
+# remove the pam_immurok line from PAM config
+sudo sed -i '' '/pam_immurok/d' /etc/pam.d/sudo_local /etc/pam.d/authorization
+rm -rf ~/.immurok
+security delete-generic-password -s "com.katsu.immurok" -a "unlock-password" 2>/dev/null
+defaults delete com.immurok.app 2>/dev/null</code></pre>
+
+<div class="warn"><strong>Verify:</strong> after uninstall, <code>sudo -k; sudo true</code> should fall back to the normal password prompt (no fingerprint), and <code>which imk</code> should print nothing.</div>
+
+<!-- features -->
+<h2 class="sec" id="features"><span class="n">4.</span> Feature walkthrough</h2>
+<p>Each subsection has: <strong>name · description · steps · expected result</strong>. Test in order: Feature 1 (pairing), Feature 2 (enroll a fingerprint) and Feature 3 (store keys) are prerequisites for the rest — you can't touch-authorize without an enrolled fingerprint, and you can't do SSH/git signing without an SSH key.</p>
+
+<div class="feature" id="f-pair">
+  <h3>Feature 1 · Device pairing</h3>
+  <div class="meta"><span class="tag">BLE</span><span class="tag">ECDH P-256</span><span class="tag">prerequisite</span></div>
+  <p><span class="lbl">Description</span>Pairing has <strong>two separate stages</strong>: first connect the device to the Mac in <strong>System Bluetooth Settings</strong>, just like pairing a Bluetooth keyboard (this is the link anchor); then, <strong>inside the app</strong>, do an ECDH P-256 key exchange with the device (deriving a shared key for HMAC verification so fingerprint signals can't be forged). Each step is done once.</p>
+
+  <p><span class="lbl">Stage 1</span><strong>System Bluetooth connection (like pairing a Bluetooth keyboard)</strong></p>
+  <ol class="steps">
+    <li>Power on the device and make sure it's advertising; ensure the Mac's Bluetooth is on.</li>
+    <li>Open System Settings → Bluetooth and find the immurok device in the list.</li>
+    <li>Click "Connect" and complete system-level pairing as you would for a Bluetooth keyboard (confirm the pairing code if prompted).</li>
+  </ol>
+
+  <p><span class="lbl">Stage 2</span><strong>In-app key-exchange pairing</strong></p>
+  <ol class="steps">
+    <li>Open the app's Settings window → Device tab.</li>
+    <li>Click the "Pair" button in the app.</li>
+    <li>Press the physical button on the device to confirm; both sides complete the ECDH key exchange.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>After Stage 1, System Bluetooth shows "Connected"; after Stage 2, the app shows the device as "Paired / Connected" and persists the pairing data. The app then auto-reconnects on restart and the status-bar icon shows connected.</div>
+</div>
+
+<div class="feature" id="f-fp">
+  <h3>Feature 2 · Fingerprint management (enroll / delete / rename)</h3>
+  <div class="meta"><span class="tag">enum synced with firmware</span><span class="tag">prerequisite</span></div>
+  <p><span class="lbl">Description</span>Manage on-device fingerprints in the Fingerprint tab. <strong>This is a prerequisite for every touch-to-authorize feature that follows (unlock, sudo, system auth, SSH signing, Quick Fill) — you must enroll at least one fingerprint first.</strong> The enrollment state machine (waiting / captured / processing / lift finger) matches the firmware <code>fingerprint.h</code> enum values.</p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>Settings → Fingerprint tab.</li>
+    <li>Click "Enroll new fingerprint" and press the same finger repeatedly per the prompts until complete.</li>
+    <li>Use "Rename" to change a name; use "Delete" to remove one.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>Enrollment shows live progress (capture count / lift-finger prompts); a new entry appears when done; rename is instant; a deleted fingerprint can no longer unlock/authorize.</div>
+</div>
+
+<div class="feature" id="f-keys">
+  <h3>Feature 3 · Keys &amp; credentials management (incl. SSH key import / generation)</h3>
+  <div class="meta"><span class="tag">SSH</span><span class="tag">API</span><span class="tag">TOTP/OTP</span><span class="tag">System</span><span class="tag">prereq for SSH/Quick Fill</span></div>
+  <p><span class="lbl">Description</span>The Keys tab supports four categories: System (login password), SSH/Git private keys, API credentials, OTP/TOTP secrets. Secrets are stored on-device and fingerprint-protected. <strong>Before testing Feature 7 (SSH agent) with ssh/git, you must import or generate an SSH key here first; before testing Feature 8 (Quick Fill), you must store an OTP entry here first.</strong></p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>Settings → Keys tab, pick a category (System / SSH&amp;Git / API / OTP).</li>
+    <li><strong>Import an SSH key:</strong> switch to the SSH/Git category, paste an OpenSSH-format private key (validated on import; <strong>encrypted keys are not supported</strong>), save.</li>
+    <li><strong>Generate on device:</strong> or click "Generate on device" — the device creates the key pair and the private key never leaves it; copy the public key afterwards for <code>~/.ssh/authorized_keys</code> or GitHub.</li>
+    <li>OTP: enter the TOTP secret (base32); API: enter a name and credential. Save and view in the list; rename or delete as needed.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>Valid entries save and appear in the list, with the public key shown for SSH entries; an invalid SSH key (bad format / encrypted / unsupported type) shows a clear error and is not saved.</div>
+</div>
+
+<div class="feature" id="f-unlock">
+  <h3>Feature 4 · Screen unlock</h3>
+  <div class="meta"><span class="tag">keyboard sim</span><span class="tag">needs Accessibility</span></div>
+  <p><span class="lbl">Description</span>TouchID-like lock-screen unlock. When the app detects the lock screen, the device sends an HMAC-signed fingerprint-match notification (<code>0x21</code>); on verification the app loads the password from Keychain and types it via <code>CGEvent</code>.</p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>Confirm the unlock password is set, Accessibility is granted, the device is connected, and a fingerprint is enrolled (Feature 2).</li>
+    <li>Lock the screen (<kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>Q</kbd>).</li>
+    <li>Touch an enrolled finger on the device sensor.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>The app types your login password and Return, unlocking the screen. On a non-match nothing happens and no password is typed.</div>
+</div>
+
+<div class="feature" id="f-sudo">
+  <h3>Feature 5 · sudo auth</h3>
+  <div class="meta"><span class="tag">PAM</span><span class="tag">sudo_local</span></div>
+  <p><span class="lbl">Description</span>Replace the sudo password prompt with a fingerprint. <code>sudo</code> triggers <code>pam_immurok.so</code>, which talks to the app over <code>~/.immurok/pam.sock</code>; the app prompts for a fingerprint and replies <code>OK</code> on match.</p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>In Settings → Permissions, confirm "sudo auth" is enabled.</li>
+    <li>Run <code>sudo -k</code> to clear the cache, then <code>sudo true</code>.</li>
+    <li>Touch the device when prompted.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>sudo succeeds on fingerprint match with no password typed. Disabling the toggle restores the default password prompt.</div>
+  <div class="warn"><strong>⚠️ macOS 13.x (Ventura) users:</strong> proper sudo support on macOS 13.x ships in the <strong>next version</strong>. The <code>/etc/pam.d/sudo_local</code> include mechanism was only introduced in macOS 14 (Sonoma) — 13.x does not auto-load <code>sudo_local</code>, so the line the installer writes has no effect. If you are on 13.x, enable sudo support manually:
+    <ol class="steps" style="margin-top:8px">
+      <li>Confirm the PAM module is present: <code>ls /usr/local/lib/pam/pam_immurok.so</code>.</li>
+      <li>Back up the original config: <code>sudo cp /etc/pam.d/sudo /etc/pam.d/sudo.bak</code>.</li>
+      <li>Add this line to <code>/etc/pam.d/sudo</code> <strong>before the first auth rule</strong> (right after the leading comment line):<br><code>auth&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sufficient&nbsp;&nbsp;&nbsp;&nbsp;/usr/local/lib/pam/pam_immurok.so</code><br>e.g. <code>sudo sed -i '' '1a\'$'\n''auth       sufficient     /usr/local/lib/pam/pam_immurok.so' /etc/pam.d/sudo</code></li>
+      <li>Verify in a <strong>separate</strong> terminal window: <code>sudo -k; sudo true</code> (keep the current window open so you can restore with <code>sudo cp /etc/pam.d/sudo.bak /etc/pam.d/sudo</code> if anything breaks).</li>
+    </ol>
+    Once you upgrade to a version with 13.x support, remove this manually-added line and rely on the installer's automatic configuration.</div>
+</div>
+
+<div class="feature" id="f-sysauth">
+  <h3>Feature 6 · System auth dialog</h3>
+  <div class="meta"><span class="tag">PAM authorization</span><span class="tag">GUI dialog</span></div>
+  <p><span class="lbl">Description</span>"Enter your password to unlock" authorization dialogs in System Settings (e.g. changing a security setting) can use a fingerprint too, wired via <code>/etc/pam.d/authorization</code>.</p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>Confirm "System auth" is enabled.</li>
+    <li>Open a System Settings pane that needs authorization (click a lock icon to unlock a setting).</li>
+    <li>Touch the device when the authorization dialog appears.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>The dialog is approved and closes, the setting unlocks.<br><strong>Note:</strong> this project never touches <code>authorizationdb</code> — it integrates only via PAM authorization.</div>
+</div>
+
+<div class="feature" id="f-ssh">
+  <h3>Feature 7 · SSH agent signing</h3>
+  <div class="meta"><span class="tag">ssh-agent protocol</span><span class="tag">on-device signing</span><span class="tag">requires Feature 3</span></div>
+  <p><span class="lbl">Description</span>The app implements the SSH agent protocol and forwards signing requests to the device, which performs ECDSA signing with on-device keys — the private key never leaves the device. <strong>Prerequisite: an SSH key must already be imported or generated in Feature 3.</strong></p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>Confirm an SSH key was imported or generated in Feature 3.</li>
+    <li>In Settings → Permissions enable "SSH agent" and point <code>SSH_AUTH_SOCK</code> at the app's socket as instructed.</li>
+    <li>Run <code>ssh-add -l</code> to list keys, then run an <code>ssh</code> or <code>git push</code>.</li>
+    <li>Touch the device when a signature is requested.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span><code>ssh-add -l</code> lists the on-device public key; the connection / push completes after the device signs on fingerprint confirmation.</div>
+</div>
+
+<div class="feature" id="f-otp">
+  <h3>Feature 8 · Quick Fill OTP</h3>
+  <div class="meta"><span class="tag">default Ctrl+\</span><span class="tag">customizable hotkey</span></div>
+  <p><span class="lbl">Description</span>Press a global hotkey (default <kbd>Ctrl</kbd>+<kbd>\</kbd>, keyCode 42) in any field to pop a quick panel, search and pick an entry, and after fingerprint confirmation it auto-types the current TOTP code or the selected secret.</p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li>First store at least one OTP entry (Feature 3).</li>
+    <li>In a verification-code field on a website/app, press <kbd>Ctrl</kbd>+<kbd>\</kbd>.</li>
+    <li>Search and select the target entry in the panel, then touch the device to confirm.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>The panel filters by service name; after fingerprint confirmation the current 6-digit TOTP is typed at the cursor. The hotkey is configurable in Settings.</div>
+  <div class="warn"><strong>First-launch note:</strong> right after the first launch the global hotkey may not respond yet — re-set (or re-confirm) the hotkey in the app's settings, or restart the app, before it starts responding to <kbd>Ctrl</kbd>+<kbd>\</kbd>.</div>
+</div>
+
+<div class="feature" id="f-cli">
+  <h3>Feature 9 · imk CLI &amp; agent command gate</h3>
+  <div class="meta"><span class="tag">CLI</span><span class="tag">imk run --agent</span></div>
+  <p><span class="lbl">Description</span><code>imk</code> drives terminal workflows: list/read on-device secrets and inject env vars to run a subprocess. <code>imk run --agent</code> pops an approval overlay <strong>before</strong> the command runs, covering commands that wouldn't otherwise trigger PAM (e.g. <code>git pull</code>, <code>npm install</code>).</p>
+  <p><span class="lbl">Steps</span></p>
+  <ol class="steps">
+    <li><strong>Quick test:</strong> <code>imk run --agent -- echo "hello world"</code> — the overlay pops, touch the device, then <code>hello world</code> prints.</li>
+    <li>List entries: <code>imk list ssh</code> / <code>imk list otp</code> / <code>imk list api</code>.</li>
+    <li>Read a secret to stdout: <code>imk get imk://api/&lt;name&gt;</code>.</li>
+    <li>Inject and run: <code>imk run --env-file .env -- python deploy.py</code>.</li>
+    <li>Agent gate: <code>imk run --agent -- git push origin main</code>, touch the device when the overlay appears.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span><code>list</code> prints entry names; <code>get</code> prints the secret (trailing newline on an interactive TTY, raw bytes on a pipe/redirect); with <code>--agent</code> the command runs only after the app returns <code>OK</code> on a fingerprint match — closing the overlay or a 30s timeout returns <code>REJECT</code> and the command does not run.</div>
+</div>
+
+<!-- 10 AI agent skill -->
+<div class="feature" id="f-skill">
+  <h3>Feature 10 · Install &amp; test the imk skill in an AI agent</h3>
+  <div class="meta"><span class="tag">Claude Code plugin</span><span class="tag">SKILL.md</span><span class="tag">fingerprint gate</span></div>
+  <p><span class="lbl">Description</span>Make AI agents (Claude Code / Codex / Cursor / Cline …) automatically wrap sensitive commands (<code>sudo</code>, <code>git push</code>/<code>ssh</code>, reading secrets) with <code>imk run --agent --</code> so a fingerprint approval gate pops up. The rules and decision tree live in the separate <strong>imk-skill</strong> repo (<code>skills/using-imk/SKILL.md</code>).</p>
+
+  <p><span class="lbl">Install · Claude Code</span><strong>install as a plugin</strong></p>
+  <ol class="steps">
+    <li>Clone the skill repo into the plugins directory:<br><code>git clone https://github.com/immurok/imk-skill ~/.claude/plugins/imk-tools</code></li>
+    <li>Restart Claude Code (or reload plugins) so it picks up the <code>using-imk</code> skill.</li>
+    <li>Confirm <code>imk</code> is on PATH: <code>which imk</code> should print <code>/usr/local/bin/imk</code>.</li>
+  </ol>
+
+  <p><span class="lbl">Install · other agents</span><strong>Codex / Cursor / Cline, etc.</strong></p>
+  <ol class="steps">
+    <li>Open <code>skills/using-imk/SKILL.md</code> in the <code>imk-skill</code> repo.</li>
+    <li>Paste its contents into that agent's rules / instructions file (e.g. <code>AGENTS.md</code>, <code>.cursorrules</code>, Cline custom instructions).</li>
+    <li>Save and have the agent re-read its rules.</li>
+  </ol>
+
+  <p><span class="lbl">Test the skill</span></p>
+  <ol class="steps">
+    <li>Make sure the app is running, the device is paired, and a fingerprint is enrolled.</li>
+    <li>Verify the CLI gate directly: <code>imk run --agent -- echo "hello world"</code> — the overlay pops, touch the device, then <code>hello world</code> prints.</li>
+    <li>In the agent chat, ask it to run a sensitive command (e.g. a <code>git push</code> or <code>sudo systemctl restart api</code>) and watch whether it <strong>automatically</strong> wraps it with <code>imk run --agent --</code> before running.</li>
+    <li>Touch the device to approve when the wrapped command runs.</li>
+  </ol>
+  <div class="expect"><span class="lbl">Expected</span>The agent proactively wraps sensitive commands with <code>imk run --agent --</code>; a fingerprint gate appears before execution, the command proceeds only on a match, and is skipped on reject/timeout. Read-only commands (<code>ls</code>/<code>cat</code>/<code>git log</code>) and commands the user types manually are not wrapped.</div>
+  <div class="note">Full decision tree, gotchas and install steps are in the <code>imk-skill</code> repo: <strong>github.com/immurok/imk-skill</strong> (<code>skills/using-imk/SKILL.md</code>).</div>
+</div>
+
+<footer>
+  immurok for macOS · Test SOP (English) · Doc date 2026-06-18<br>
+  Single self-contained HTML · all illustrations are inline SVG, no external dependencies. 中文版本: <a href="test-sop-zh.html" style="color:var(--brand)">test-sop-zh.html</a>
+</footer>
+
+</div>
+</body>
+</html>
