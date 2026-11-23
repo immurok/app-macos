@@ -40,6 +40,7 @@
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
+#include <dlfcn.h>
 
 #define PAM_SM_AUTH
 #define PAM_SM_ACCOUNT
@@ -50,9 +51,30 @@
 #include <security/pam_appl.h>
 #include "pam_auth_verify.h"
 #include "hmac_sha256.h"
+#include "la_race.h"
 
 #define TIMEOUT_SEC 40
 #define BUFFER_SIZE 256
+#define TID_DELAY_MS_DEFAULT 500
+
+/* `tid` option: race a Touch ID / Apple Watch request (LocalAuthentication)
+ * against the immurok fingerprint wait; whichever approves first wins and the
+ * other is cancelled. Started after `tid_delay` ms so requests the App answers
+ * at once (imk run --agent pre-auth) never flash a system dialog. */
+struct tid_opts {
+    int enabled;
+    int delay_ms;
+};
+
+/* LocalAuthentication calls back on its own queue into code in this module,
+ * and libpam dlclose()s modules in pam_end(). la_race_finish() waits for the
+ * callback, but take one extra reference to ourselves as well so the module
+ * can never be unmapped while anything of ours is in flight. */
+static void pin_module(void) {
+    Dl_info info;
+    if (dladdr((const void *)pin_module, &info) && info.dli_fname)
+        (void)dlopen(info.dli_fname, RTLD_NOLOAD | RTLD_NODELETE);
+}
 
 static const char *spinner_frames[] = {
     "\xe2\xa0\x96", "\xe2\xa0\xb2", "\xe2\xa2\xb2", "\xe2\xa2\xb0",
@@ -62,7 +84,8 @@ static const char *spinner_frames[] = {
 #define SPINNER_FRAME_COUNT 10
 
 /* Send authentication request to immurok.app with animated spinner */
-static int authenticate_via_socket(const char *user, const char *service) {
+static int authenticate_via_socket(const char *user, const char *service,
+                                   const struct tid_opts *tid) {
     int sock, tty_fd = -1;
     struct sockaddr_un addr;
     char request[BUFFER_SIZE];
@@ -158,6 +181,13 @@ static int authenticate_via_socket(const char *user, const char *service) {
     int nfds = sock + 1;
     if (kq >= sock) nfds = kq + 1;
 
+    /* Touch ID / Watch race state. la_pipe[0] becomes readable when the
+     * LocalAuthentication request finishes. */
+    int la_pipe[2] = { -1, -1 };
+    int la_wanted = tid && tid->enabled;
+    int la_active = 0;
+    int la_delay_ms = tid ? tid->delay_ms : TID_DELAY_MS_DEFAULT;
+
     /* Wait for response with animated spinner */
     fd_set readfds;
     struct timeval tv;
@@ -166,10 +196,26 @@ static int authenticate_via_socket(const char *user, const char *service) {
     int result = PAM_AUTH_ERR;
 
     while (total_ms < max_ms) {
+        if (la_wanted && !la_active && total_ms >= la_delay_ms) {
+            la_wanted = 0;   /* one attempt per authentication */
+            if (pipe(la_pipe) == 0) {
+                char reason[160];
+                snprintf(reason, sizeof reason, "authenticate as %s", user);
+                if (la_race_start(reason, la_pipe[1], pw->pw_uid) == 0) {
+                    la_active = 1;
+                    if (la_pipe[0] >= nfds) nfds = la_pipe[0] + 1;
+                } else {
+                    close(la_pipe[0]); close(la_pipe[1]);
+                    la_pipe[0] = la_pipe[1] = -1;
+                }
+            }
+        }
         FD_ZERO(&readfds);
         FD_SET(sock, &readfds);
         if (kq >= 0)
             FD_SET(kq, &readfds);
+        if (la_active)
+            FD_SET(la_pipe[0], &readfds);
         tv.tv_sec = 0;
         tv.tv_usec = 80000; /* 80ms per frame */
 
@@ -191,6 +237,31 @@ static int authenticate_via_socket(const char *user, const char *service) {
                    user, service);
             result = PAM_IGNORE;
             break;
+        }
+        if (ret > 0 && la_active && FD_ISSET(la_pipe[0], &readfds)) {
+            char c = 'N';
+            (void)read(la_pipe[0], &c, 1);
+            la_race_finish(0);
+            la_active = 0;
+            if (c == 'Y') {
+                /* Touch ID / Watch approved. Closing the socket below makes the
+                 * App drop the device's fingerprint gate. */
+                syslog(LOG_AUTH | LOG_INFO,
+                       "pam_immurok: approved by Touch ID / Apple Watch (user=%s service=%s)",
+                       user, service);
+                if (tty_fd >= 0) {
+                    snprintf(buf, sizeof(buf),
+                             "\r\033[K\033[32m\xe2\x9c\x93 Approved (Touch ID / Apple Watch)\033[0m");
+                    write(tty_fd, buf, strlen(buf));
+                    usleep(500000);
+                    write(tty_fd, "\r\033[K", 4);
+                }
+                result = PAM_SUCCESS;
+                break;
+            }
+            /* Dialog cancelled or failed: keep waiting for the immurok
+             * fingerprint (Ctrl+C still goes to the password prompt). */
+            if (!FD_ISSET(sock, &readfds)) continue;
         }
         if (ret > 0 && !FD_ISSET(sock, &readfds)) {
             /* Nothing on the socket (only the kqueue could have been ready,
@@ -255,6 +326,7 @@ static int authenticate_via_socket(const char *user, const char *service) {
                              "\r\033[K\033[31m\xe2\x9c\x97 Rejected by user\033[0m\r\n");
                     write(tty_fd, buf, strlen(buf));
                 }
+                if (la_active) { la_race_finish(1); la_active = 0; }
                 /* pam_immurok runs INSIDE sudo's process (it's a dlopen'd
                  * .so), so getpid()=sudo and getppid()=sudo's launcher
                  * (imk via env). We want to kill sudo itself, not its
@@ -291,7 +363,8 @@ static int authenticate_via_socket(const char *user, const char *service) {
             /* Timeout — update spinner */
             if (tty_fd >= 0) {
                 snprintf(buf, sizeof(buf),
-                         "\r\033[K\033[33m%s Please verify your fingerprint...\033[0m",
+                         la_active ? "\r\033[K\033[33m%s Please verify your fingerprint (immurok, Touch ID or Apple Watch)...\033[0m"
+                                   : "\r\033[K\033[33m%s Please verify your fingerprint...\033[0m",
                          spinner_frames[frame % SPINNER_FRAME_COUNT]);
                 write(tty_fd, buf, strlen(buf));
             }
@@ -318,6 +391,13 @@ static int authenticate_via_socket(const char *user, const char *service) {
         }
     }
 
+    /* immurok won, timed out, or was cancelled: dismiss the Touch ID dialog
+     * and wait for its callback before anything is torn down. */
+    if (la_active)
+        la_race_finish(1);
+    if (la_pipe[0] >= 0) close(la_pipe[0]);
+    if (la_pipe[1] >= 0) close(la_pipe[1]);
+
     /* Tear the kqueue down before returning: no handler was installed, so
      * nothing points into this module once we're back in libpam and it is
      * free to dlclose() us in pam_end(). */
@@ -342,7 +422,21 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
     if (pam_get_item(pamh, PAM_SERVICE, (const void **)&service) != PAM_SUCCESS || service == NULL)
         service = "unknown";
 
-    return authenticate_via_socket(user, service);
+    /* Module options: `tid` enables the Touch ID / Apple Watch race,
+     * `tid_delay=<ms>` sets when it starts (default 500 ms). */
+    struct tid_opts tid = { 0, TID_DELAY_MS_DEFAULT };
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "tid") == 0)
+            tid.enabled = 1;
+        else if (strncmp(argv[i], "tid_delay=", 10) == 0) {
+            int ms = atoi(argv[i] + 10);
+            if (ms >= 0 && ms <= TIMEOUT_SEC * 1000) tid.delay_ms = ms;
+        }
+    }
+    if (tid.enabled)
+        pin_module();
+
+    return authenticate_via_socket(user, service, &tid);
 }
 
 /* Required PAM stubs */
