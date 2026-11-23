@@ -79,6 +79,28 @@ Then add to `/etc/pam.d/sudo_local`:
 auth sufficient pam_immurok.so
 ```
 
+#### Touch ID / Apple Watch at the same time (optional)
+
+PAM runs modules one after another, so while `pam_immurok.so` waits for the
+fingerprint, `pam_tid.so` / `pam_watchid.so` lines below it only get their
+turn after Ctrl+C. With the `tid` option, `pam_immurok.so` also asks for
+Touch ID or Apple Watch itself, in parallel. Whichever approves first wins
+and the other is cancelled:
+
+```
+auth sufficient pam_immurok.so tid
+auth sufficient pam_tid.so        # optional fallback when the app isn't running
+```
+
+| Option | Meaning |
+|---|---|
+| `tid` | Race Touch ID / Apple Watch (LocalAuthentication) against the immurok fingerprint wait. |
+| `tid_delay=<ms>` | How long to wait before the Touch ID / Watch dialog opens (default `500`). Requests the app answers at once, like `imk run --agent` pre-auth, finish before it and never show a dialog. |
+
+Without `tid` the module behaves exactly as before. Ctrl+C still skips to the
+rest of the stack (password), and rejecting in the overlay still stops the
+command.
+
 ## Architecture
 
 ```
@@ -96,7 +118,8 @@ imk (CLI)
 └── EnvScanner          Detects environment for context-aware auth
 
 pam/
-└── pam_immurok.c       PAM module, talks to app via Unix socket
+├── pam_immurok.c       PAM module, talks to app via Unix socket
+└── la_race.m           Optional Touch ID / Apple Watch request (`tid` option)
 ```
 
 ## Source Files
@@ -132,6 +155,8 @@ pam/
 2. PAM module connects to `~/.immurok/pam.sock`.
 3. App receives request, prompts for fingerprint via BLE.
 4. On match, app responds `OK` to PAM module.
+5. With the `tid` option, the module also opens a Touch ID / Apple Watch request
+   after 500 ms; the first approval wins and the other request is cancelled.
 
 ### Pre-authorization
 
