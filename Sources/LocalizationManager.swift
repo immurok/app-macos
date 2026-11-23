@@ -720,9 +720,9 @@ class LocalizationManager: ObservableObject {
         // About
         "about.uninstall": "卸载 immurok",
         "about.uninstall.confirm": "确认卸载",
-        "about.uninstall.message": "这将移除 PAM 模块、sudo 配置和所有用户数据。App 本身需要手动删除。",
+        "about.uninstall.message": "这将移除 immurok、sudo 与系统授权配置，以及所有用户数据。",
         "about.uninstall.done": "卸载完成",
-        "about.uninstall.done.message": "PAM 模块和用户数据已移除。\n\n请手动将 immurok.app 移到废纸篓完成卸载。",
+        "about.uninstall.done.message": "immurok 及其用户数据已移除。",
         "about.uninstall.failed": "卸载失败",
 
         // Test
@@ -1365,9 +1365,9 @@ class LocalizationManager: ObservableObject {
         // About
         "about.uninstall": "解除安裝 immurok",
         "about.uninstall.confirm": "確認解除安裝",
-        "about.uninstall.message": "這將移除 PAM 模組、sudo 設定和所有使用者資料。App 本身需要手動刪除。",
+        "about.uninstall.message": "這將移除 immurok、sudo 與系統授權設定，以及所有使用者資料。",
         "about.uninstall.done": "解除安裝完成",
-        "about.uninstall.done.message": "PAM 模組和使用者資料已移除。\n\n請手動將 immurok.app 移到垃圾桶完成解除安裝。",
+        "about.uninstall.done.message": "immurok 及其使用者資料已移除。",
         "about.uninstall.failed": "解除安裝失敗",
 
         // Test
@@ -2010,9 +2010,9 @@ class LocalizationManager: ObservableObject {
         // About
         "about.uninstall": "Uninstall immurok",
         "about.uninstall.confirm": "Confirm Uninstall",
-        "about.uninstall.message": "This will remove the PAM module, sudo configuration, and all user data. The app itself must be deleted manually.",
+        "about.uninstall.message": "This will remove immurok, its sudo and system authorization configuration, and all user data.",
         "about.uninstall.done": "Uninstall Complete",
-        "about.uninstall.done.message": "PAM module and user data have been removed.\n\nPlease manually move immurok.app to Trash to complete uninstallation.",
+        "about.uninstall.done.message": "immurok and its user data have been removed.",
         "about.uninstall.failed": "Uninstall Failed",
 
         // Test

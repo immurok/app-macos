@@ -407,6 +407,11 @@ class ImmurokSecurity {
             kSecAttrService as String: service,
             kSecAttrAccount as String: keychainAccount,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        // 失败不能静默：卸载时 App 包若先被删，这里会以 -67068 全部失败而无人知晓。
+        if status != errSecSuccess && status != errSecItemNotFound {
+            let msg = "Keychain delete failed service=\(service) status=\(status)"
+            Task { @MainActor in LogManager.shared.log(msg) }
+        }
     }
 }

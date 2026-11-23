@@ -28,9 +28,10 @@ else
 fi
 
 # Step 1: Do NOT kill the app here. The App launched this pkg and is polling
-# for /usr/local/lib/pam/pam_immurok.so to disappear; on detection it clears
+# for /usr/local/bin/imk to disappear; on detection it clears
 # its user Keychain entries (unreachable from this root context) and quits
-# itself. Killing it up front would skip that cleanup. See Step 10.
+# itself. Killing it up front would skip that cleanup, and so would deleting
+# its bundle before it is done. See Step 10 / Step 11.
 
 # ---- 备份 / 检查写入 / 失败恢复 ----
 BACKUP="$(mktemp -d)"
@@ -87,17 +88,47 @@ strip_line "$SUDO_FILE"
 # Step 3: Remove our line from authorization
 strip_line "$AUTH"
 
+# Step 3b: 其余 pam.d 文件。我们只写上面三个，但用户可能照教程手动把这行加进了
+# su / screensaver 等别的服务；不撤掉的话，下面一删模块那个服务就坏了。
+for f in "$PAMD"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in "$SUDO_LOCAL"|"$SUDO_FILE"|"$AUTH") continue ;; esac
+    # 只动有生效引用的文件；仅在注释里提到的不碰（不是我们的文件，能不改就不改）。
+    grep -qE '^[^#]*pam_immurok' "$f" || continue
+    strip_line "$f"
+done
+
+# Step 3c: 删模块前的最后一道闸。只要 pam.d 里还有任何一条生效的行引用
+# pam_immurok，就绝不能删模块：PAM 遇到加载不了的模块会让整个服务初始化失败
+#（pam_start 返回 system error，sufficient / optional / include 都一样，2026-11-23
+# 在 macOS 27 实测），sudo 和系统授权框会同时失效，只能进恢复模式修。
+# 走到这里还有残留的典型情况：某个文件删掉我们这行后会变空（strip_line 不写空文件）。
+# 此时模块、App、密钥全部保留并非 0 退出：留着模块是无害的（App 不在时它立刻失败，
+# 认证回退到密码），删掉才是事故。
+REMAINING="$(grep -lE '^[^#]*pam_immurok' "$PAMD"/* 2>/dev/null || true)"
+if [ -n "$REMAINING" ]; then
+    rm -rf "$BACKUP"
+    echo "immurok: pam_immurok is still referenced, module kept, uninstall aborted:" >&2
+    echo "$REMAINING" >&2
+    exit 1
+fi
+
 rm -rf "$BACKUP"
 
-# Step 4: Remove PAM module + imk CLI + PAM 信道密钥 + 审计日志
-rm -f "$R/usr/local/lib/pam/pam_immurok.so"
+# Step 4: Remove imk CLI + PAM 信道密钥 + 审计日志。
+#
+# 故意不删 /usr/local/lib/pam/pam_immurok.so。pam.d 里只要有一行引用了加载不了的
+# 模块，PAM 整个服务初始化失败（见 Step 3c），sudo 和系统授权框一起坏。卸载流程
+# 里任何一步判断失误（漏掉一个文件、别的工具事后又把行加回来、恢复了旧备份）都会
+# 落到这个结果，而模块留在盘上是无害的：没有行引用它时它就是个不会被加载的文件；
+# 有行引用而 App 不在时它连不上 socket 立刻失败，认证回退到密码。
+# 所以宁可留一个文件，也不给"引用悬空"留任何路径。重装会覆盖它。
 rm -f "$R/usr/local/bin/imk"
 rm -rf "$R/etc/immurok/pam"
 rmdir "$R/etc/immurok" 2>/dev/null || true
 rm -f "$R/var/log/immurok-pam.log"
 
-# Step 5: Remove App
-rm -rf "$R/Applications/immurok.app"
+# Step 5 在最后（Step 11）：App 包必须等 App 自己清完 Keychain 并退出之后才能删。
 
 # Step 6: Remove user data directory
 rm -rf "$REAL_HOME/.immurok"
@@ -127,5 +158,13 @@ if [ -z "$R" ]; then
     done
     killall immurok 2>/dev/null || true
 fi
+
+# Step 11: Remove App + App 包外的那份卸载包（见 build-pkg.sh）。
+# 必须排在 Step 10 之后。App 看到 imk 消失后去删自己的 Keychain 条目，系统此时要
+# 从磁盘校验调用方的代码签名；App 包若已被删，每一条 SecItemDelete 都以
+# errSecCSStaticCodeNotFound (-67068) 失败，登录密码、配对密钥全部残留
+#（2026-11-23 实测：旧顺序下 7 个条目一个都没删掉）。
+rm -rf "$R/Applications/immurok.app"
+rm -rf "$R/Library/Application Support/immurok"
 
 exit 0

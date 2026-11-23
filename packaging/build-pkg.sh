@@ -189,6 +189,14 @@ mkdir -p "$WORK/payload/usr/local/lib/pam"
 cp pam/pam_immurok.so "$WORK/payload/usr/local/lib/pam/pam_immurok.so"
 chmod 644 "$WORK/payload/usr/local/lib/pam/pam_immurok.so"
 
+# 卸载包在 App 包外再放一份。用户把 immurok.app 拖进废纸篓后，App 包里那份跟着
+# 没了，而 /etc/pam.d 的行和模块还在；这时 `brew uninstall`（或手动卸载）仍要
+# 有卸载包可跑，才能按"先撤 pam.d 行、再删模块"的顺序收场。cask 优先用这一份。
+mkdir -p "$WORK/payload/Library/Application Support/immurok"
+cp "$BUNDLE/Contents/Resources/immurok_uninstall.pkg" \
+    "$WORK/payload/Library/Application Support/immurok/immurok_uninstall.pkg"
+chmod 644 "$WORK/payload/Library/Application Support/immurok/immurok_uninstall.pkg"
+
 # Disable bundle relocation (else Installer may target an existing copy
 # elsewhere instead of /Applications).
 pkgbuild --analyze --root "$WORK/payload" "$WORK/component.plist"

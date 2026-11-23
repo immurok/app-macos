@@ -20,6 +20,10 @@ class SetupManager: ObservableObject {
     // MARK: - Paths
 
     private let pamModuleDestination = "/usr/local/lib/pam/pam_immurok.so"
+    /// 卸载完成的判据。卸载 pkg 故意不删 PAM 模块（pam.d 引用悬空会让 sudo 和授权框
+    /// 全坏，留一个文件则无害），所以不能再用"模块消失"判断，改看 imk：它在撤完
+    /// pam.d 行之后才被删，消失即说明卸载脚本已越过会中止的那几步。
+    private let uninstallSentinelPath = "/usr/local/bin/imk"
     private let authorizationPath = "/etc/pam.d/authorization"
     private let sudoLocalPath = "/etc/pam.d/sudo_local"
     private let legacySudoPath = "/etc/pam.d/sudo"
@@ -235,7 +239,7 @@ class SetupManager: ObservableObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: pkgPath))
         waitForInstaller(done: { [weak self] in
             guard let self = self else { return false }
-            return !FileManager.default.fileExists(atPath: self.pamModuleDestination)
+            return !FileManager.default.fileExists(atPath: self.uninstallSentinelPath)
         }) { [weak self] success, timedOut in
             guard let self = self else { return }
             if success {

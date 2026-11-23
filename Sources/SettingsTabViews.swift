@@ -2943,9 +2943,10 @@ struct AboutTabView: View {
     private func performUninstall() {
         setupManager.uninstall { success, error in
             if success {
-                // 用户级清理（Keychain / UserDefaults）已在 SetupManager 内完成；
-                // App bundle 此时已被 postinstall 删除，提示后主动退出，
-                // 让 postinstall 的等待循环立即结束（否则它超时后 killall 兜底）。
+                // 用户级清理（Keychain / UserDefaults）已在 SetupManager 内完成。
+                // postinstall 正等着本进程退出才删 App bundle（先删的话 Keychain 清理
+                // 会因签名校验失败而全部落空），提示后主动退出让它继续；
+                // 20 秒内没退出它会 killall 兜底。
                 showAlert(title: "about.uninstall.done".localized, message: "about.uninstall.done.message".localized)
                 NSApp.terminate(nil)
             } else if let error = error {
