@@ -330,12 +330,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(),
                                               kAXFocusedUIElementAttribute as CFString, &focusedRef)
                 var focusedSubrole = "nil"
+                // 焦点元素的属主进程常常不是前台 App（系统密码框多由独立的 UI 服务进程托管，
+                // 挂在别的 App 窗口上），白名单按属主匹配，所以诊断必须记属主而不只是前台。
+                var focusedOwner = "nil"
                 if let f = focusedRef, CFGetTypeID(f) == AXUIElementGetTypeID() {
                     var sr: CFTypeRef?
                     AXUIElementCopyAttributeValue(f as! AXUIElement, kAXSubroleAttribute as CFString, &sr)
                     focusedSubrole = (sr as? String) ?? "nil"
+                    var ownerPID: pid_t = 0
+                    if AXUIElementGetPid(f as! AXUIElement, &ownerPID) == .success {
+                        focusedOwner = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier ?? "pid=\(ownerPID)"
+                    }
                 }
-                LogManager.shared.log("[inject/detect] no match front=\(frontBundle) focusedSubrole=\(focusedSubrole) +\(detectMs)ms")
+                LogManager.shared.log("[inject/detect] no match front=\(frontBundle) owner=\(focusedOwner) focusedSubrole=\(focusedSubrole) +\(detectMs)ms")
             }
 
             let isAuthorizationEnabled = SetupManager.shared.isAuthorizationEnabled

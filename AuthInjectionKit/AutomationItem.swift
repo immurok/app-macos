@@ -104,8 +104,11 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
             // "原生 sheet 且不在 AXWebArea 内"硬化判据区分，绝不注入网页字段。
             AutomationItem(id: UUID(), name: "Passwords", enabled: false, builtinKey: "passwords",
                 targetKind: .app,
+                // com.apple.AuthenticationServices.Helper：第三方浏览器（Chrome 等）用 Apple Passwords 里的
+                // 通行密钥登录时，「输入电脑账户密码」那个 sheet 的密码框属主。sheet 本身挂在浏览器窗口上
+                //（AX 上归浏览器进程），只有密码框归这个 Helper。
                 bundleIDs: ["com.apple.Passwords", "com.apple.AuthKitUI.AKAuthorizationRemoteViewService",
-                            "com.apple.Safari"],
+                            "com.apple.AuthenticationServices.Helper", "com.apple.Safari"],
                 signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
                 fieldAXIdentifier: nil, submitStrategy: .generic),
             AutomationItem(id: UUID(), name: "1Password", enabled: false, builtinKey: "1password",

@@ -47,6 +47,14 @@ final class AutomationItemTests: XCTestCase {
         XCTAssertTrue(pw.isValid)
     }
 
+    func testPasswordsBuiltinCoversPasskeySheetInThirdPartyBrowsers() {
+        // Chrome 等用 Apple Passwords 通行密钥登录时，要 Mac 账户密码的 sheet 里，
+        // 密码框属主是 AuthenticationServices.Helper（实测 2026-11-23，macOS 27）。
+        let pw = AutomationItem.builtinDefaults().first { $0.builtinKey == "passwords" }!
+        XCTAssertTrue(pw.bundleIDs.contains("com.apple.AuthenticationServices.Helper"))
+        XCTAssertTrue(pw.isValid)
+    }
+
     func testRefreshBuiltinIdentityUpdatesStoredItems() {
         // 存盘的旧内置项（bundleIDs 缺 Safari）刷新后拿到新身份，但保留 id/enabled。
         let defaults = AutomationItem.builtinDefaults()
