@@ -2011,6 +2011,7 @@ struct PermissionsTabView: View {
     @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
     @AppStorage("immurok.cliEnabled") private var cliEnabled = true
     @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
+    @AppStorage(AppDefaults.keepAwakeDuringDisplaySleepKey) private var keepAwakeDuringDisplaySleep = true
     // 强认证已启用后用户把顶部横幅收起（缩成右上角盾牌）
     @AppStorage("immurok.pamBannerDismissed") private var pamBannerDismissed = false
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
@@ -2121,6 +2122,16 @@ struct PermissionsTabView: View {
                         }
                     }
                 }
+            }
+
+            // 显示器关闭时保持 Mac 唤醒（保住 BLE 链路）；关掉则允许系统睡眠（issue #15）
+            GroupBox {
+                permissionRow(
+                    icon: "powersleep",
+                    titleKey: "permission.keepawake",
+                    hintKey: "permission.keepawake.hint",
+                    isOn: $keepAwakeDuringDisplaySleep
+                )
             }
 
             // App Store / Passwords / 1Password / Bitwarden 的注入项已迁到 Automation tab

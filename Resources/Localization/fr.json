@@ -359,6 +359,8 @@
   "permission.password.missing": "Mot de passe de session non configuré — cette fonction est inactive",
   "permission.passwords": "App Mots de passe",
   "permission.passwords.hint": "Saisit votre mot de passe de session avec votre empreinte au déverrouillage de l’app Mots de passe",
+  "permission.keepawake": "Garder le Mac éveillé quand l’écran est éteint",
+  "permission.keepawake.hint": "Maintient la connexion avec immurok pendant la veille de l’écran. Désactivez pour laisser le Mac passer en veille ; l’appareil peut alors mettre un instant à se reconnecter au réveil",
   "permission.quickfill": "Remplissage rapide",
   "permission.quickfill.hint": "Raccourci global ouvrant un panneau flottant pour rechercher et remplir une clé rapidement",
   "permission.screen.lock": "Verrouillage de l’écran",
