@@ -86,6 +86,7 @@ final class FirmwareUpdateService: ObservableObject {
 
     /// 设备连接就绪后调用；24h 内不重复（force 忽略间隔，供“检查更新”按钮）。
     func checkIfDue(force: Bool = false) {
+        guard force || UserDefaults.standard.bool(forKey: "immurok.automaticUpdateChecks") else { return }
         let last = UserDefaults.standard.double(forKey: Self.kLastCheck)
         if !force && Date().timeIntervalSince1970 - last < Self.checkInterval { return }
         guard let deviceVersion = viewModel?.firmwareVersion else { return }

@@ -92,6 +92,11 @@ static void test_verify_response_vectors(void) {
         CHECK(pam_verify_response(key, nonce, v->user, "sudo_local", good) == 0, "service bound");
         CHECK(pam_verify_response(key, nonce, "mallory", v->service, good) == 0, "user bound");
         CHECK(pam_verify_response(key, nonce, v->user, v->service, "OK:zz") == 0, "short hex rejected");
+        strcat(good, "junk");
+        CHECK(pam_verify_response(key, nonce, v->user, v->service, good) == 0, "trailing data rejected");
+        good[3 + PAM_MAC_LEN * 2] = 0;
+        nonce[0] ^= 1;
+        CHECK(pam_verify_response(key, nonce, v->user, v->service, good) == 0, "replayed response rejected for new nonce");
     }
 }
 
@@ -115,7 +120,7 @@ static void test_load_key_modes(void) {
     unhex(PAM_VECS[0].key_hex, key, 32);
 
     /* 不存在 → 0 */
-    CHECK(pam_load_key(dir, me, out) == 0, "missing key → compat");
+    CHECK(pam_load_key(dir, me, out) == 0, "missing key reported");
 
     /* 0600 且 32 字节 → 1。测试进程不是 root，所以属主检查用 geteuid()==0 时才要求 uid 0，
        非 root 测试环境下要求属主 == 当前 euid。 */

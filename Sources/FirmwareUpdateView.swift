@@ -93,10 +93,10 @@ struct SoftwareUpdateView: View {
         .onAppear {
             // 打开窗口即检查一次（固件需设备连接；App 不依赖设备）
             if case .idle = fwService.state, viewModel.isDeviceConnected {
-                fwService.checkIfDue(force: true)
+                fwService.checkIfDue()
             }
             if case .idle = appService.state {
-                appService.checkIfDue(force: true)
+                appService.checkIfDue()
             }
         }
         .onDisappear {

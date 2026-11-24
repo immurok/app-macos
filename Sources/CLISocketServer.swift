@@ -151,7 +151,7 @@ class CLISocketServer {
         guard n > 0 else { return }
 
         let request = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
-        NSLog("CLISocketServer: Received: %@", request)
+        NSLog("CLISocketServer: Received request (%ld bytes)", n)
 
         // 真机自动化测试控制面，只在 -DTEST_HOOKS 构建里存在；root 不放行。
         if request.hasPrefix("TEST:") {
@@ -567,11 +567,7 @@ class CLISocketServer {
         }
 
         self.lastAvailableNames = availableNames
-        let quoted = availableNames
-            .map { "\"\($0)\" (\($0.utf8.count)B)" }
-            .joined(separator: ", ")
-        NSLog("CLISocketServer: GET %@/'%@' not found. Available: [%@]",
-              String(describing: cat), name, quoted)
+        NSLog("CLISocketServer: Requested entry not found")
         return nil
     }
 

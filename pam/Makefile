@@ -22,14 +22,18 @@ $(TARGET): $(SRC) hmac_sha256.h pam_auth_verify.h
 vectors:
 	python3 gen_vectors.py
 
-test: test_pam_mac
+test: test_pam_mac test_pam_policy
 	./test_pam_mac
+	./test_pam_policy
 
 test_pam_mac: test_pam_mac.c hmac_sha256.c pam_auth_verify.c hmac_sha256.h pam_auth_verify.h test_vectors.h
 	$(CC) -Wall -Wextra -O2 -o $@ test_pam_mac.c hmac_sha256.c pam_auth_verify.c
 
+test_pam_policy: test_pam_policy.c $(SRC) pam_auth_verify.h hmac_sha256.h
+	$(CC) -Wall -Wextra -Wno-unused-parameter -O2 -o $@ test_pam_policy.c hmac_sha256.c pam_auth_verify.c -lpam
+
 clean:
-	rm -f $(TARGET) test_pam_mac
+	rm -f $(TARGET) test_pam_mac test_pam_policy
 
 install: $(TARGET)
 	@sudo mkdir -p /usr/local/lib/pam

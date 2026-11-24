@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import AuthInjectionKit
 
 /// Self-drawn HUD overlay shown when an out-of-app process (sudo, screen unlock,
 /// future MCP/agent integrations) requests fingerprint authorization. macOS
@@ -44,6 +45,7 @@ final class AuthRequestOverlay {
         service: String,
         command: String? = nil,
         kind: AuthRequestKind = .commandRun,
+        requester: ApprovalRequester = .unknown,
         timeout: TimeInterval = 30.0,
         onReject: (() -> Void)? = nil
     ) {
@@ -56,6 +58,7 @@ final class AuthRequestOverlay {
         state.service = service
         state.command = command
         state.kind = kind
+        state.requester = requester
         state.timeout = timeout
         state.startedAt = Date()
         state.status = .waiting
@@ -96,6 +99,10 @@ final class AuthRequestOverlay {
     }
 
     func dismiss(status: AuthRequestState.Status) {
+        switch state.status {
+        case .waiting, .retrying: ApprovalHistory.shared.record(service: state.service, status: status)
+        default: break
+        }
         state.status = status
         // Brief delay so the user sees the success/failure terminal state
         // before the panel slides out.
@@ -200,9 +207,9 @@ final class AuthRequestOverlay {
 }
 
 enum AuthRequestPanelMetrics {
-    static let width: CGFloat = 440
-    static let heightCompact: CGFloat = 110
-    static let heightWithCommand: CGFloat = 156
+    static let width: CGFloat = 540
+    static let heightCompact: CGFloat = 230
+    static let heightWithCommand: CGFloat = 290
 }
 
 @MainActor
@@ -215,6 +222,7 @@ final class AuthRequestState: ObservableObject {
         case timedOut
     }
 
+    @Published var requester: ApprovalRequester = .unknown
     @Published var user: String = ""
     @Published var service: String = ""
     @Published var command: String? = nil
@@ -232,7 +240,7 @@ enum AuthRequestKind {
     case secretAccess   // imk get / read of API key / OTP / SSH key
 }
 
-private struct AuthRequestView: View {
+struct AuthRequestView: View {
     @ObservedObject var state: AuthRequestState
     let onReject: () -> Void
     private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
@@ -263,11 +271,32 @@ private struct AuthRequestView: View {
                 AuthIconView(status: state.status, color: iconColor, symbol: iconSymbol)
                 VStack(alignment: .leading, spacing: 0) {
                     headlineBlock
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("experience.approval.from".localized + " " + state.requester.name)
+                            .font(.callout.weight(.medium))
+                        Text(state.requester.detail).font(.caption).foregroundColor(.secondary)
+                            .lineLimit(2).help(state.requester.detail)
+                        Text("experience.approval.snapshot".localized).font(.caption2).foregroundColor(.secondary)
+                    }.padding(.top, 10)
                     if let cmd = state.command, !cmd.isEmpty {
-                        CommandPill(text: cmd)
-                            .padding(.top, 6)
+                        Text("experience.approval.details".localized).font(.caption).foregroundColor(.secondary).padding(.top, 8)
+                        ScrollView {
+                            CommandPill(text: cmd)
+                        }.frame(height: 90)
+                    } else {
+                        Text("experience.approval.noDetails".localized).font(.caption).foregroundColor(.secondary).padding(.top, 8)
                     }
                     Spacer(minLength: 6)
+                    HStack {
+                        Text(canReject ? "experience.approval.touch".localized : headlineText).font(.callout.weight(.medium))
+                        Spacer()
+                        if canReject {
+                            Button("experience.approval.reject".localized, action: onReject)
+                                .keyboardShortcut(.cancelAction)
+                                .buttonStyle(.bordered)
+                                .accessibilityHint("experience.approval.reject.hint".localized)
+                        }
+                    }.padding(.vertical, 8)
                     metaRow
                 }
                 .frame(maxHeight: .infinity, alignment: .topLeading)
@@ -278,12 +307,6 @@ private struct AuthRequestView: View {
             .padding(.bottom, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            // Top-right close button (= reject)
-            if canReject {
-                CloseButton(action: onReject)
-                    .padding(.top, 8)
-                    .padding(.trailing, 8)
-            }
         }
         .background(
             ZStack {
@@ -395,8 +418,8 @@ private struct AuthRequestView: View {
         switch state.status {
         case .waiting:
             return state.kind == .secretAccess
-                ? "auth.overlay.waiting.secret".localized
-                : "auth.overlay.waiting".localized
+                ? "experience.approval.secret".localized
+                : "experience.approval.request".localized
         case .retrying(let r):       return String(format: "auth.overlay.retrying".localized, r)
         case .approved:              return "auth.overlay.approved".localized
         case .denied:                return "auth.overlay.denied".localized
@@ -406,10 +429,7 @@ private struct AuthRequestView: View {
 
     private var subheadlineText: String? {
         switch state.status {
-        case .waiting, .retrying:
-            return state.kind == .secretAccess
-                ? "auth.overlay.subtitle.touch.secret".localized
-                : "auth.overlay.subtitle.touch".localized
+        case .waiting, .retrying: return "experience.approval.caution".localized
         default: return nil
         }
     }
@@ -469,17 +489,7 @@ private struct AuthIconView: View {
 private struct CommandPill: View {
     let text: String
 
-    /// Hard cap on what we render in the pill. SwiftUI's truncationMode is
-    /// unreliable for very long unbroken tokens, so we cap at the source.
-    /// The full string is preserved in the .help() tooltip.
-    private static let maxDisplayChars = 80
-
-    private var displayText: String {
-        guard text.count > Self.maxDisplayChars else { return text }
-        let keep = Self.maxDisplayChars - 3   // 3 chars for "..."
-        let endIdx = text.index(text.startIndex, offsetBy: keep)
-        return String(text[..<endIdx]) + "..."
-    }
+    private var displayText: String { ApprovalPresentation.visible(text) }
 
     /// Highlight `imk://category/name` URIs inline so the user spots a
     /// secret access at a glance — even when nested in a wrapper command
@@ -519,9 +529,8 @@ private struct CommandPill: View {
             Text(attributedDisplayText)
                 .font(.system(size: 11.5, weight: .regular, design: .monospaced))
                 .foregroundColor(.primary.opacity(0.92))
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .help(text)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(displayText)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

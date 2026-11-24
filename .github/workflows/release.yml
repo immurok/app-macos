@@ -34,6 +34,11 @@ jobs:
       - name: Toolchain versions
         run: swift --version && xcodebuild -version
 
+      - name: Test before signing or publishing
+        run: |
+          make -C pam test
+          swift test --build-system native
+
       - name: Derive version
         id: ver
         run: |

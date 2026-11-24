@@ -237,7 +237,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startSSHAgentServer() {
         do {
             try SSHAgentServer.shared.start()
-            SSHAgentServer.shared.installAuthSockEnv()  // 让 ssh/git 默认能找到 agent（默认设置）
+            if UserDefaults.standard.bool(forKey: "immurok.sshUseAsDefaultAgent") {
+                SSHAgentServer.shared.installAuthSockEnv()
+            } else {
+                SSHAgentServer.shared.restoreAuthSockEnv()
+            }
             NSLog("SSH Agent server started at %@", SSHAgentServer.shared.socketPath)
         } catch {
             NSLog("Failed to start SSH Agent server: %@", error.localizedDescription)

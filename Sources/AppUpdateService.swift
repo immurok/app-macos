@@ -56,6 +56,7 @@ final class AppUpdateService: ObservableObject {
 
     /// 24h 内不重复（force 忽略间隔，供"检查更新"按钮）。检查失败静默，手动检查时提示。
     func checkIfDue(force: Bool = false) {
+        guard force || UserDefaults.standard.bool(forKey: "immurok.automaticUpdateChecks") else { return }
         let last = UserDefaults.standard.double(forKey: Self.kLastCheck)
         if !force && Date().timeIntervalSince1970 - last < Self.checkInterval { return }
         switch state {

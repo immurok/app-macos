@@ -1,27 +1,12 @@
 import Foundation
 
-/// Auth overlay for the device gates the PAM path never sees.
-///
-/// Before build 487 only two flows could raise `AuthRequestOverlay`: a PAM
-/// `AUTH` whose caller chain looked like an AI agent, and `AGENT_APPROVE`
-/// (`imk run --agent`). Every other fingerprint gate — ssh-agent `KEY_SIGN`,
-/// `imk get imk://api/...`, `imk get imk://otp/...` — made the device blink
-/// with no on-screen prompt at all. From the user's chair that looked like
-/// "the agent did something and the LED is asking me to approve it, but no
-/// window came up". It bit whenever an agent ran `git push` / `ssh` /
-/// `imk get` unwrapped, and also inside a wrap when the gate-hitting step
-/// landed more than 10 s after the approval touch (firmware AUTH cooldown
-/// is a rolling 10 s).
-///
-/// This session mirrors the PAM rule: classify the socket peer's parent
-/// chain, show the overlay only for agents (manual `ssh` / `imk` from a
-/// terminal stays quiet), and show it only once the device actually asks
-/// for a touch (`WAIT_FP`) — a gate satisfied by cooldown never prompts.
-///
-/// Thread-safety: created and driven from the socket handler thread; all
-/// overlay calls hop to the main queue exactly like `PAMSocketServer`.
+/// Context for SSH/secret fingerprint gates, regardless of manual or agent origin.
+/// Shows only when the device requests a touch. Requester identity is a process
+/// snapshot; command text is informational, not an authorization boundary.
+/// All UI calls hop to the main actor; gate state is protected by a lock.
 final class AgentGateOverlaySession {
     /// What the overlay prints as the command line.
+    private let requester: ApprovalRequester
     private let command: String
     private let service: String
     private let kind: AuthRequestKind
@@ -30,7 +15,7 @@ final class AgentGateOverlaySession {
     private var shown = false
     private var finished = false
 
-    /// Returns nil when the caller is a human at a terminal — nothing to show.
+    /// The optional initializer is retained for existing call sites.
     /// `fallbackCommand` is used when the chain carries no `imk run --agent`
     /// marker (heuristic agent-binary match only), so the user still sees
     /// what the touch is for.
@@ -46,11 +31,9 @@ final class AgentGateOverlaySession {
         case .agent(let cmd):
             self.command = cmd ?? fallbackCommand
         case .manual:
-            Task { @MainActor in
-                LogManager.shared.log("gate overlay: \(service) suppressed (caller=manual)")
-            }
-            return nil
+            self.command = fallbackCommand
         }
+        self.requester = ApprovalRequester.capture(socketFD: socketFD)
         self.service = service
         self.kind = kind
         self.onReject = onReject
@@ -59,22 +42,24 @@ final class AgentGateOverlaySession {
     /// Device replied WAIT_FP — a real touch is needed. Idempotent.
     func gateRequired() {
         lock.lock()
-        let alreadyShown = shown
+        let alreadyShown = shown || finished
         shown = true
         lock.unlock()
         guard !alreadyShown else { return }
 
+        let requester = self.requester
         let command = self.command
         let service = self.service
         let kind = self.kind
         let onReject = self.onReject
         Task { @MainActor in
-            LogManager.shared.log("gate overlay: \(service) shown (caller=agent)")
+            LogManager.shared.log("gate overlay: \(service) shown")
             AuthRequestOverlay.shared.show(
                 user: NSUserName(),
                 service: service,
                 command: command,
                 kind: kind,
+                requester: requester,
                 timeout: 30.0,
                 onReject: onReject
             )

@@ -301,7 +301,7 @@ class PAMSocketServer {
         }
 
         let request = String(cString: buffer)
-        NSLog("PAMSocketServer: Received: %@", request)
+        NSLog("PAMSocketServer: Received request (%ld bytes)", n)
 
         // Parse request
         let parts = request.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
@@ -333,7 +333,7 @@ class PAMSocketServer {
             handleAgentApprove(clientSocket, command: cmdString)
             return
         default:
-            NSLog("PAMSocketServer: Unknown command: %@", command)
+            NSLog("PAMSocketServer: Unsupported request type")
             sendResponse(clientSocket, response: "ERROR")
             return
         }
@@ -405,34 +405,13 @@ class PAMSocketServer {
         pendingRequestApproved = false
         pendingLock.unlock()
 
-        // Classify the originator. We only show the on-screen overlay when the
-        // request comes from an AI agent (`imk run --agent ...` marker, or a
-        // known agent binary in the parent chain). Manual sudo / ssh from a
-        // terminal already implies the user knows what they initiated; an
-        // extra HUD would just be noise.
+        // Every real fingerprint request deserves context, including manual sudo.
+        let requester = ApprovalRequester.capture(socketFD: clientSocket)
         let caller = AuthCallerClassifier.classify(socketFD: clientSocket)
-        let showOverlay: Bool
+        let showOverlay = true
         let agentCommand: String?
-        switch caller {
-        case .agent(let cmd):
-            showOverlay = true
-            agentCommand = cmd
-            NSLog("PAMSocketServer: Auth originated from AI agent — showing overlay (cmd=%@)",
-                  cmd ?? "<unknown>")
-            Task { @MainActor in
-                LogManager.shared.log("PAM AUTH \(service): overlay shown (caller=agent, marker=\(cmd != nil ? "yes" : "no"))")
-            }
-        case .manual:
-            showOverlay = false
-            agentCommand = nil
-            NSLog("PAMSocketServer: Auth originated from manual user action — overlay suppressed")
-            // NSLog from this app reaches neither immurok.log nor the unified
-            // log, so without this line "LED blinks but no window" is
-            // undiagnosable after the fact.
-            Task { @MainActor in
-                LogManager.shared.log("PAM AUTH \(service): overlay suppressed (caller=manual — no imk marker / unknown agent binary in parent chain)")
-            }
-        }
+        if case .agent(let command) = caller { agentCommand = command }
+        else { agentCommand = nil }
 
         // User-action intent — captured by overlay button callbacks, read
         // after BLE wait returns. Wrapped so closures can mutate. Memory
@@ -447,6 +426,7 @@ class PAMSocketServer {
                     user: user,
                     service: service,
                     command: agentCommand,
+                    requester: requester,
                     timeout: 30.0,
                     onReject: { [weak self] in
                         NSLog("PAMSocketServer: Auth REJECTED by user — will kill sudo")
@@ -609,7 +589,7 @@ class PAMSocketServer {
     /// `sudo -k` outside the launch burst restores fresh-fingerprint
     /// behavior.
     private func handleAgentApprove(_ clientSocket: Int32, command: String) {
-        NSLog("PAMSocketServer: AGENT_APPROVE for command: %@", command)
+        NSLog("PAMSocketServer: AGENT_APPROVE request")
 
         guard bleManager.deviceState.isConnected, bleManager.isDeviceVerified else {
             NSLog("PAMSocketServer: AGENT_APPROVE rejected — device not ready")
@@ -638,6 +618,7 @@ class PAMSocketServer {
         // copy) so the user notices it's a key access, not a benign command
         // run. Anything else stays on the default command-run treatment.
         let kind = AuthRequestOverlay.classify(command: command)
+        let requester = ApprovalRequester.capture(socketFD: clientSocket)
 
         DispatchQueue.main.async { [weak self] in
             AuthRequestOverlay.shared.show(
@@ -645,6 +626,7 @@ class PAMSocketServer {
                 service: "agent",
                 command: command,
                 kind: kind,
+                requester: requester,
                 timeout: 30.0,
                 onReject: { [weak self] in
                     NSLog("PAMSocketServer: AGENT_APPROVE rejected by user")

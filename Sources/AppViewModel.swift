@@ -64,8 +64,12 @@ class AppViewModel: ObservableObject {
     @Published var firmwareVersion: String?
 
     // Battery level (0-100%, nil = unknown)
+    @Published var batteryUpdatedAt: Date?
     @Published var batteryLevel: Int? {
-        didSet { checkLowBattery() }
+        didSet {
+            batteryUpdatedAt = batteryLevel == nil ? nil : Date()
+            checkLowBattery()
+        }
     }
 
     /// 低电量只提醒一次；回到 ≥30%（充过电）后复位，下次掉下去可再提醒。
@@ -505,7 +509,10 @@ class AppViewModel: ObservableObject {
         }
         guard let password = promptVerifiedLoginPassword() else { return }
         // Save password to Keychain (local only, not sent via BLE)
-        ImmurokSecurity.shared.savePassword(password)
+        guard ImmurokSecurity.shared.savePassword(password) else {
+            showAlert(title: "alert.error".localized, message: "experience.password.saveFailed".localized)
+            return
+        }
         isPasswordConfigured = true
         hasLocalPairing = true
         // 密码换新后解除「连续解锁失败」暂停（见 AppDelegate.unlockScreen）。
@@ -522,7 +529,10 @@ class AppViewModel: ObservableObject {
             return false
         }
         guard let password = promptVerifiedLoginPassword() else { return false }
-        ImmurokSecurity.shared.savePassword(password)
+        guard ImmurokSecurity.shared.savePassword(password) else {
+            showAlert(title: "alert.error".localized, message: "experience.password.saveFailed".localized)
+            return false
+        }
         isPasswordConfigured = true
         hasLocalPairing = true
         UserDefaults.standard.removeObject(forKey: "immurok.autoUnlockSuspended")
@@ -693,8 +703,8 @@ class AppViewModel: ObservableObject {
                     // 否则页面还停在配对前的空指纹列表 / 旧槽状态。
                     self.refreshDeviceStatus()
                     self.refreshFingerprintCount()
-                    self.showAlert(title: "pairing.success".localized, message: "pairing.success.set.password".localized)
-                    self.configurePassword()
+                    // Pairing is independent of password autofill. The selected
+                    // onboarding feature requests credentials only when needed.
                     return
                 }
 
