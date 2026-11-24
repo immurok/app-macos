@@ -55,6 +55,11 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
     /// 对应内置条目「Touch ID auto-fill」（`touchIDBuiltinKey`），开关在 Automation 里；
     /// 识别与注入走 AuthContextDetector.localAuthDialog() 专用路径，不走通用 detect()。
     public static let localAuthUIAgentBundleID = "com.apple.LocalAuthentication.UIAgent"
+    /// Passwords 菜单栏图标（独立进程）。Passwords 锁定时点图标弹出的面板同样是
+    /// Touch ID 页 +「使用密码…」→ 登录密码，归同一个 Touch ID auto-fill 条目。
+    public static let passwordsMenuBarBundleID = "com.apple.Passwords.MenuBarExtra"
+    /// Passwords App 主窗口锁定时显示同一个 Touch ID 页。
+    public static let passwordsAppBundleID = "com.apple.Passwords"
     public static let touchIDBuiltinKey = "touchid"
 
     /// 「Touch ID auto-fill」内置条目。复用登录密码且**不提供**任何密码设置/修改入口
@@ -127,7 +132,7 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
                 fieldAXIdentifier: nil, submitStrategy: .generic),
             // 系统 Touch ID 认证框（coreautha）：按「使用密码…」→ 注入登录密码 → 提交。
             AutomationItem(id: UUID(), name: "Touch ID auto-fill", enabled: false, builtinKey: touchIDBuiltinKey,
-                targetKind: .app, bundleIDs: [localAuthUIAgentBundleID],
+                targetKind: .app, bundleIDs: [localAuthUIAgentBundleID, passwordsMenuBarBundleID, passwordsAppBundleID],
                 signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
                 fieldAXIdentifier: nil, submitStrategy: .generic),
             AutomationItem(id: UUID(), name: "1Password", enabled: false, builtinKey: "1password",

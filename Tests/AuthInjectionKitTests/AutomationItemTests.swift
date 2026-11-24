@@ -39,7 +39,9 @@ final class AutomationItemTests: XCTestCase {
         XCTAssertEqual(tid.name, "Touch ID auto-fill")
         XCTAssertEqual(tid.secretService, "com.immurok.password")
         XCTAssertTrue(tid.usesLoginPassword)
-        XCTAssertEqual(tid.bundleIDs, [AutomationItem.localAuthUIAgentBundleID])
+        XCTAssertEqual(tid.bundleIDs, [AutomationItem.localAuthUIAgentBundleID, AutomationItem.passwordsMenuBarBundleID,
+                                       AutomationItem.passwordsAppBundleID])
+        XCTAssertTrue(tid.isValid)
         // 老存盘（无 touchid）刷新后，新条目插在 Passwords 之后而不是末尾。
         let old = items.filter { !$0.isTouchIDAutoFill }
         let refreshedKeys = AutomationItem.refreshingBuiltinIdentity(old).map { $0.builtinKey! }
