@@ -54,7 +54,7 @@ struct AutomationTabView: View {
     }
 
     private func setPassword(for item: AutomationItem) {
-        // Passwords / System Authentication 与屏幕解锁共用登录密码，必须走校验路径，防止存错后在锁屏盲打。
+        // Passwords / Touch ID auto-fill 与屏幕解锁共用登录密码，必须走校验路径，防止存错后在锁屏盲打。
         if item.usesLoginPassword {
             viewModel.setupLoginPasswordIfNeeded()
             refreshToken = UUID()
@@ -66,7 +66,7 @@ struct AutomationTabView: View {
     }
 
     /// 开关规则：开启必须已有密码，没有就当场索取，取消则保持关闭；关闭时清掉该条目的密码。
-    /// 例外：用登录密码的条目（Passwords）关闭时不清，那份密码屏幕解锁和 GUI Authorization 还在用。
+    /// 例外：用登录密码的条目（Passwords / Touch ID auto-fill）关闭时不清，那份密码屏幕解锁还在用。
     private func setEnabled(_ on: Bool, for item: AutomationItem) {
         if on {
             if !store.hasPassword(item) { setPassword(for: item) }
@@ -129,52 +129,82 @@ private struct AutomationRow: View {
 
     private var hasPassword: Bool { store.hasPassword(item) }
     /// 用登录密码的条目，修改入口在「功能 > 屏幕解锁」，这里只保留未配置时的设置入口。
-    private var showsPasswordButton: Bool { !item.usesLoginPassword || !hasPassword }
+    /// Touch ID auto-fill 完全复用系统登录密码，任何时候都不显示密码按钮。
+    private var showsPasswordButton: Bool { !item.isTouchIDAutoFill && (!item.usesLoginPassword || !hasPassword) }
 
+    /// 布局与「功能」页的 permissionRow 对齐：单行 = 图标(20pt 宽) + 标题 + 徽标 + (i) 说明气泡，
+    /// 右侧是操作按钮（图标样式）+ 开关。目标身份（bundle id / 扩展 origin）收进 (i) 气泡，不再占第二行。
     var body: some View {
         GroupBox {
-            HStack(spacing: 12) {
-                Image(systemName: item.targetKind == .browserExtension ? "puzzlepiece.extension" : "app.badge")
-                    .font(.system(size: 20)).frame(width: 24).foregroundColor(.accentColor)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(item.name.isEmpty ? "automation.unnamed".localized : item.name)
-                            .font(.headline)
-                        badge(item.builtinKey != nil ? "automation.builtin".localized : "automation.custom".localized)
-                        if item.targetKind == .browserExtension {
-                            badge("automation.browserExt".localized)
-                        }
-                        if item.isValid == false {
-                            badge("automation.weakIdentity".localized, color: .orange)
-                        }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: iconName)
+                        .frame(width: 20)
+                        .foregroundColor(.accentColor)
+                    Text(item.name.isEmpty ? "automation.unnamed".localized : item.name)
+                        .font(.headline)
+                    badge(item.builtinKey != nil ? "automation.builtin".localized : "automation.custom".localized)
+                    if item.targetKind == .browserExtension {
+                        badge("automation.browserExt".localized)
                     }
-                    Text(subtitle).font(.caption).foregroundColor(.secondary)
-                    if item.enabled && !hasPassword {
-                        Text("automation.needPassword".localized).font(.caption).foregroundColor(.orange)
+                    if item.isValid == false {
+                        badge("automation.weakIdentity".localized, color: .orange)
                     }
+                    InfoTip(text: subtitle)
+
+                    Spacer()
+
+                    if showsPasswordButton {
+                        let label = hasPassword ? "automation.changePassword".localized : "automation.setPassword".localized
+                        iconButton("key", label: label, action: onSetPassword)
+                    }
+                    if item.builtinKey == nil {
+                        iconButton("pencil", label: "keys.edit".localized, action: onEdit)
+                        iconButton("trash", label: "keys.delete".localized) { confirmDelete() }
+                    }
+
+                    Toggle("", isOn: Binding(
+                        get: { item.enabled },
+                        set: { onToggle($0) }))
+                        .labelsHidden().toggleStyle(.switch)
                 }
-
-                Spacer()
-
-                if showsPasswordButton {
-                    Button(hasPassword ? "automation.changePassword".localized : "automation.setPassword".localized,
-                           action: onSetPassword)
-                        .buttonStyle(.borderless).font(.caption)
+                if item.enabled && !hasPassword {
+                    Text("automation.needPassword".localized).font(.caption).foregroundColor(.orange)
                 }
-
-                if item.builtinKey == nil {
-                    Button { onEdit() } label: { Image(systemName: "pencil") }.buttonStyle(.borderless)
-                    Button { store.remove(id: item.id) } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
-                }
-
-                Toggle("", isOn: Binding(
-                    get: { item.enabled },
-                    set: { onToggle($0) }))
-                    .labelsHidden().toggleStyle(.switch)
             }
-            .padding(6)
+            .padding(4)
         }
+    }
+
+    /// 删除会连同该条目存的密码一起清掉且不可恢复，先文字确认。
+    private func confirmDelete() {
+        let confirm = NSAlert()
+        confirm.messageText = "automation.delete.confirm.title".localized(
+            item.name.isEmpty ? "automation.unnamed".localized : item.name)
+        confirm.informativeText = "automation.delete.confirm.message".localized
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "alert.delete".localized)
+        confirm.addButton(withTitle: "alert.cancel".localized)
+        // 不设 hasDestructiveAction：macOS 27 深色模式的 sheet 里破坏性按钮会被画成不可见。
+        guard confirm.runModalOverSettings() == .alertFirstButtonReturn else { return }
+        store.remove(id: item.id)
+    }
+
+    private var iconName: String {
+        if item.isTouchIDAutoFill { return "touchid" }
+        return item.targetKind == .browserExtension ? "puzzlepiece.extension" : "app.badge"
+    }
+
+    /// 与「功能」页行内的次要按钮同款：12pt 灰色图标 + tooltip。
+    private func iconButton(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private var subtitle: String {

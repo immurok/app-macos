@@ -38,7 +38,7 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
     public var secretService: String {
         switch builtinKey {
         case "appstore":   return "com.immurok.appleid-password"
-        case "passwords":  return "com.immurok.password"
+        case "passwords", Self.touchIDBuiltinKey:  return "com.immurok.password"
         case "1password":  return "com.immurok.onepassword-password"
         case "bitwarden":  return "com.immurok.bitwarden-password"
         default:           return "com.immurok.automation.\(id.uuidString)"
@@ -47,13 +47,19 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
 
     /// 该条目注入的是 Mac 登录密码（与屏幕解锁共用同一 Keychain 条目）。
     /// 这类条目的密码设置/修改必须走带校验的登录密码入口，不能在 Automation 里随手存。
-    public var usesLoginPassword: Bool { builtinKey == "passwords" }
+    public var usesLoginPassword: Bool { builtinKey == "passwords" || isTouchIDAutoFill }
 
-    /// LocalAuthentication 的系统密码框（coreautha）。它直接向钥匙包校验密码，不经过 PAM，
-    /// 所以"提交空密码 + authorization 预授权"对它无效，只会白记一次密码错误。
-    /// 它不是 Automation 条目：归「GUI Authorization」开关管，由 AppDelegate 的 authorization
-    /// 分支直接注入登录密码。
+    /// LocalAuthentication 的系统认证框（coreautha）：Touch ID 页 +「使用密码…」后的密码页。
+    /// 它直接向钥匙包校验密码，不经过 PAM，所以"提交空密码 + authorization 预授权"对它无效，
+    /// 只会白记一次密码错误；正确做法是按「使用密码…」再注入登录密码。
+    /// 对应内置条目「Touch ID auto-fill」（`touchIDBuiltinKey`），开关在 Automation 里；
+    /// 识别与注入走 AuthContextDetector.localAuthDialog() 专用路径，不走通用 detect()。
     public static let localAuthUIAgentBundleID = "com.apple.LocalAuthentication.UIAgent"
+    public static let touchIDBuiltinKey = "touchid"
+
+    /// 「Touch ID auto-fill」内置条目。复用登录密码且**不提供**任何密码设置/修改入口
+    ///（修改在「功能 > 屏幕解锁」）。
+    public var isTouchIDAutoFill: Bool { builtinKey == Self.touchIDBuiltinKey }
 
     public func matches(bundleID: String) -> Bool { bundleIDs.contains(bundleID) }
 
@@ -79,8 +85,16 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
             m.enabled = item.enabled
             return m
         }
-        for item in builtinDefaults() where !seen.contains(item.builtinKey!) {
-            result.append(item)
+        // 缺失的内置项按 builtinDefaults 的顺序插到"前一个内置项"后面（如 Touch ID auto-fill
+        // 紧跟 Passwords），找不到前驱才追加到末尾。
+        let order = builtinDefaults()
+        for (i, item) in order.enumerated() where !seen.contains(item.builtinKey!) {
+            let prevKey = i > 0 ? order[i - 1].builtinKey : nil
+            if let prevKey, let at = result.firstIndex(where: { $0.builtinKey == prevKey }) {
+                result.insert(item, at: at + 1)
+            } else {
+                result.append(item)
+            }
         }
         return result
     }
@@ -92,7 +106,7 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
             extensionOrigin: nil, urlFragment: nil, fieldAXIdentifier: nil, submitStrategy: .generic)
     }
 
-    /// 4 个内置条目（enabled 默认 false，迁移时按旧开关覆盖）。
+    /// 内置条目（enabled 默认 false，迁移时按旧开关覆盖）。
     public static func builtinDefaults() -> [AutomationItem] {
         [
             AutomationItem(id: UUID(), name: "App Store", enabled: false, builtinKey: "appstore",
@@ -109,6 +123,11 @@ public struct AutomationItem: Codable, Identifiable, Equatable {
                 //（AX 上归浏览器进程），只有密码框归这个 Helper。
                 bundleIDs: ["com.apple.Passwords", "com.apple.AuthKitUI.AKAuthorizationRemoteViewService",
                             "com.apple.AuthenticationServices.Helper", "com.apple.Safari"],
+                signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
+                fieldAXIdentifier: nil, submitStrategy: .generic),
+            // 系统 Touch ID 认证框（coreautha）：按「使用密码…」→ 注入登录密码 → 提交。
+            AutomationItem(id: UUID(), name: "Touch ID auto-fill", enabled: false, builtinKey: touchIDBuiltinKey,
+                targetKind: .app, bundleIDs: [localAuthUIAgentBundleID],
                 signing: .applePlatform, extensionOrigin: nil, urlFragment: nil,
                 fieldAXIdentifier: nil, submitStrategy: .generic),
             AutomationItem(id: UUID(), name: "1Password", enabled: false, builtinKey: "1password",

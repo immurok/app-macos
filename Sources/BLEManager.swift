@@ -298,6 +298,10 @@ class BLEManager: NSObject {
     private var displaySleeping = false
     private var connectingStartTime: Date?  // Tracks when .connecting state began
     private static let connectingTimeout: TimeInterval = 10  // Max time in .connecting before reset
+    /// 本轮断连期间是否已记过「正在查找设备」类日志。重连定时器每秒跑一次 doConnect()，
+    /// 设备长期不在线（双机切走、不在身边）时每秒两条日志会让内存日志与日志页无限膨胀，
+    /// 导致 App 越跑越卡。每轮断连只记一次，startReconnectTimer() 开启新一轮时复位。
+    private var searchLoggedThisEpisode = false
 
     private let queue = DispatchQueue(label: "com.immurok.ble", qos: .userInitiated)
     private let queueKey = DispatchSpecificKey<Bool>()
@@ -407,13 +411,22 @@ class BLEManager: NSObject {
             }
             NSLog("BLEManager: Connecting timed out, resetting")
             centralManager.stopScan()
+            // CoreBluetooth 的 connect() 永不超时：撤掉挂起的连接请求，不让它一直挂在 bluetoothd。
+            // 只对 .connecting 的外设撤；系统级 HID 链路不受 App 侧 cancel 影响。
+            if let p = peripheral, p.state == .connecting {
+                centralManager.cancelPeripheralConnection(p)
+            }
             deviceState = .disconnected
         }
 
         deviceState = .connecting
         connectingStartTime = Date()
-        NSLog("BLEManager: Looking for immurok device...")
-        Task { @MainActor in LogManager.shared.log("BLE: searching for connected devices...") }
+        let logSearch = !searchLoggedThisEpisode
+        searchLoggedThisEpisode = true
+        if logSearch {
+            NSLog("BLEManager: Looking for immurok device...")
+            Task { @MainActor in LogManager.shared.log("BLE: searching for connected devices...") }
+        }
 
         // Strategy 1: Check if our known peripheral is already connected (system auto-reconnect)
         if let p = peripheral, p.state == .connected {
@@ -440,7 +453,9 @@ class BLEManager: NSObject {
         // No connected device found — wait for system auto-reconnect (HID keyboard)
         // App should never initiate scan/connect; the device is paired as HID keyboard
         // and macOS will auto-connect it. Reconnect timer will retry doConnect() periodically.
-        NSLog("BLEManager: No connected device found, waiting for system auto-reconnect...")
+        if logSearch {
+            NSLog("BLEManager: No connected device found, waiting for system auto-reconnect...")
+        }
         deviceState = .disconnected
         connectingStartTime = nil
     }
@@ -1817,6 +1832,7 @@ class BLEManager: NSObject {
 
     private func startReconnectTimer() {
         stopReconnectTimer()
+        searchLoggedThisEpisode = false
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
         timer.setEventHandler { [weak self] in

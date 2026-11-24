@@ -443,6 +443,8 @@
   "automation.import": "Importieren",
   "automation.export": "Exportieren",
   "automation.unnamed": "Unbenannt",
+  "automation.delete.confirm.title": "„%@“ löschen?",
+  "automation.delete.confirm.message": "Dieser Eintrag und sein gespeichertes Passwort werden gelöscht. Dies kann nicht rückgängig gemacht werden.",
   "automation.builtin": "Integriert",
   "automation.custom": "Benutzerdefiniert",
   "automation.browserExt": "Browsererweiterung",

@@ -420,6 +420,8 @@
   "automation.import": "Import",
   "automation.export": "Export",
   "automation.unnamed": "Unnamed",
+  "automation.delete.confirm.title": "Delete “%@”?",
+  "automation.delete.confirm.message": "This item and its saved password will be deleted. This cannot be undone.",
   "automation.builtin": "Built-in",
   "automation.custom": "Custom",
   "automation.browserExt": "Browser extension",

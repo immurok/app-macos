@@ -2353,7 +2353,7 @@ struct PermissionsTabView: View {
             // 登录密码由"屏幕解锁"与 Automation 的 Passwords 内置条目共享。两者都不用时才清除，
             // 避免误删 Automation 仍在使用的登录密码。
             let passwordsItemEnabled = AutomationStore.shared.items.contains {
-                $0.builtinKey == "passwords" && $0.enabled
+                $0.usesLoginPassword && $0.enabled
             }
             if !passwordsItemEnabled {
                 viewModel.clearLoginPassword()

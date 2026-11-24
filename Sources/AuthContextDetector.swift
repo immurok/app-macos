@@ -23,7 +23,8 @@ struct AuthContextDetector {
 
     func detect() -> AuthContext {
         let items = AutomationStore.shared.enabledItems()
-        let appItems = items.filter { $0.targetKind == .app }
+        // Touch ID auto-fill 条目走 localAuthDialog() 专用路径（要先按「使用密码…」），不参与通用检测。
+        let appItems = items.filter { $0.targetKind == .app && !$0.isTouchIDAutoFill }
         let extItems = items.filter { $0.targetKind == .browserExtension }
 
         // Path 1) 系统级焦点若是 AXSecureTextField，按其**属主进程** bundleID 命中 app 条目
@@ -97,17 +98,59 @@ struct AuthContextDetector {
         /// 焦点密码框属主自称是 coreautha 但签名校验没过，或找不到所在窗口：不注入、也不发回车。
         case untrusted
         case ready(field: AXUIElement, window: AXUIElement)
+        /// 还停在 Touch ID 页（本机 Touch ID 可用时的默认页），且带「使用密码…」按钮：
+        /// 按下后同一窗口原地切到密码页（→ `.ready`）。
+        case touchID(usePasswordButton: AXUIElement)
     }
 
-    /// 系统级焦点若是 coreautha 的密码框，校验其 Apple 平台签名并返回 (密码框, 所在窗口)。
-    /// 归「GUI Authorization」管，不走 Automation 条目。
+    /// 识别 coreautha 的认证框，校验其 Apple 平台签名。对应 Automation 内置条目「Touch ID auto-fill」
+    ///（开关由调用方判断，这里只管识别）。
+    ///
+    /// 两条路径：
+    /// 1. 系统级焦点是 coreautha 的密码框 → `.ready`（最便宜，原有路径）。
+    /// 2. 否则直接扫 coreautha 进程的窗口（不依赖焦点/前台）。必须有这条：Touch ID 页根本没有
+    ///    密码框；而按下「使用密码…」后密码框虽已出现，系统级焦点却常是 nil（实测），路径 1 认不出。
+    ///
+    /// 识别全部靠结构与 AXIdentifier（`authentication_ui` 容器、`touchid` 图标），与界面语言无关。
     func localAuthDialog() -> LocalAuthDialog {
         let bundleID = AutomationItem.localAuthUIAgentBundleID
-        guard let focused = systemWideFocusedSecureField(), let pid = ownerPID(of: focused),
-              NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == bundleID else { return .notPresent }
-        guard InjectionWhitelist.processSatisfies(pid: pid, bundleID: bundleID, signing: .applePlatform),
-              let hit = enclosingContainer(of: focused) else { return .untrusted }
-        return .ready(field: focused, window: hit.container)
+        if let focused = systemWideFocusedSecureField(), let pid = ownerPID(of: focused),
+           NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == bundleID {
+            guard InjectionWhitelist.processSatisfies(pid: pid, bundleID: bundleID, signing: .applePlatform),
+                  let hit = enclosingContainer(of: focused) else { return .untrusted }
+            return .ready(field: focused, window: hit.container)
+        }
+
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID) {
+            let pid = app.processIdentifier
+            guard let appEl = AXAppProbe.responsiveApplication(pid: pid, tag: "localauth-scan") else { continue }
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement], !windows.isEmpty else { continue }
+            for window in windows {
+                guard let ui = children(of: window).first(where: { identifier(of: $0) == "authentication_ui" }) else { continue }
+                // 确有认证框才做签名校验（coreautha 常驻但平时无窗口，避免每次触摸都验签）。
+                guard InjectionWhitelist.processSatisfies(pid: pid, bundleID: bundleID, signing: .applePlatform) else { return .untrusted }
+                let kids = children(of: ui)
+                if let field = kids.first(where: { subrole(of: $0) == (kAXSecureTextFieldSubrole as String) }) {
+                    return .ready(field: field, window: window)
+                }
+                // Touch ID 页：touchid 图标 + 恰好两个按钮 [使用密码…, 取消]（实测子节点顺序）。
+                // 只有一个按钮 = 该请求不允许密码回退（仅生物识别），不处理。
+                let buttons = kids.filter { role(of: $0) == "AXButton" }
+                if buttons.count == 2,
+                   kids.contains(where: { role(of: $0) == "AXImage" && identifier(of: $0) == "touchid" }) {
+                    return .touchID(usePasswordButton: buttons[0])
+                }
+            }
+        }
+        return .notPresent
+    }
+
+    private func identifier(of el: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXIdentifierAttribute as CFString, &ref)
+        return ref as? String
     }
 
     // MARK: - AX helpers
@@ -213,22 +256,32 @@ struct AuthContextDetector {
     ///    其余"单个密码框"场景（确认密码以显示/授权）本身也要账户密码，注入登录密码无害。
     private func soleSecureFieldWithWindow(under root: AXUIElement) -> (field: AXUIElement, window: AXUIElement)? {
         var budget = 8000
+        let deadline = CFAbsoluteTimeGetCurrent() + AXAppProbe.scanTimeBudget
+        var timedOut = false
         var results: [(AXUIElement, AXUIElement?)] = []
         func rec(_ el: AXUIElement, _ nearestWindow: AXUIElement?) {
-            if budget <= 0 || results.count > 1 { return }
+            if budget <= 0 || timedOut || results.count > 1 { return }
+            if CFAbsoluteTimeGetCurrent() > deadline { timedOut = true; return }
             budget -= 1
-            let r = role(of: el)
+            let node = AXNode.snapshot(el)
+            let r = node.role
             let win = (r == "AXWindow" || r == "AXSheet") ? el : nearestWindow
-            if subrole(of: el) == (kAXSecureTextFieldSubrole as String) || r == "AXSecureTextField" {
+            if node.subrole == (kAXSecureTextFieldSubrole as String) || r == "AXSecureTextField" {
                 results.append((el, win))
                 return   // 命中即止，不下钻密码框内部
             }
-            for c in children(of: el) {
+            for c in node.children {
                 rec(c, win)
-                if results.count > 1 { return }
+                if results.count > 1 || timedOut { return }
             }
         }
         rec(root, nil)
+        // 超时 = 没扫完，「恰好一个」无从断言 → 按未命中处理（不注入）。
+        if timedOut {
+            let msg = "[ax] app-scan exceeded \(Int(AXAppProbe.scanTimeBudget * 1000))ms budget (\(8000 - budget) nodes) → skip"
+            Task { @MainActor in LogManager.shared.log(msg) }
+            return nil
+        }
         guard results.count == 1, let win = results[0].1 else { return nil }
         return (results[0].0, win)
     }

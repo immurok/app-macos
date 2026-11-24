@@ -8,6 +8,9 @@ import Foundation
 enum FileLogger {
     private static let writerQueue = DispatchQueue(label: "com.immurok.filelogger", qos: .utility)
 
+    /// 单个日志文件上限。超过后轮转为 `<name>.1`（覆盖旧的 .1），最多占 2 倍空间。
+    static let maxFileBytes: UInt64 = 5 * 1024 * 1024
+
     static let logDirectory: URL = {
         let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs/immurok", isDirectory: true)
@@ -29,9 +32,14 @@ enum FileLogger {
             }
             if FileManager.default.fileExists(atPath: url.path) {
                 guard let handle = try? FileHandle(forWritingTo: url) else { return }
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
+                let size = (try? handle.seekToEnd()) ?? 0
                 try? handle.write(contentsOf: data)
+                try? handle.close()
+                if size + UInt64(data.count) > maxFileBytes {
+                    let rotated = logDirectory.appendingPathComponent(name + ".1")
+                    try? FileManager.default.removeItem(at: rotated)
+                    try? FileManager.default.moveItem(at: url, to: rotated)
+                }
             } else {
                 try? data.write(to: url, options: .atomic)
             }

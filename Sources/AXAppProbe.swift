@@ -31,4 +31,35 @@ enum AXAppProbe {
         }
         return el
     }
+
+    /// 单次检测里对一个目标进程做下行遍历的总时长上限（秒）。
+    /// AX 查询由**目标 App 的主线程**同步应答：遍历期间用户正在打字的那个 App 会停止处理按键，
+    /// 结束后积压的按键一次性吐出（用户感知为「卡顿后突然蹦出一串字」，对韩文等组字输入法
+    /// 还会造成漏字/重复）。超时即放弃并按「未命中」处理（fail-closed，不注入）。
+    static let scanTimeBudget: CFAbsoluteTime = 1.0
+}
+
+/// 一次 IPC 读回 role / subrole / children。逐个读取是 3 次 IPC，每次都要占用目标 App 主线程；
+/// 合并后遍历同样规模的 AX 树，对目标 App 的打扰降到约 1/3。
+enum AXNode {
+    struct Snapshot {
+        let role: String?
+        let subrole: String?
+        let children: [AXUIElement]
+    }
+
+    private static let attributes = [kAXRoleAttribute, kAXSubroleAttribute, kAXChildrenAttribute] as CFArray
+
+    static func snapshot(_ el: AXUIElement) -> Snapshot {
+        var values: CFArray?
+        // options 为空（非 stopOnError）：缺失的属性在结果数组里以 AXValue(error) 占位，
+        // 下面的 as? 转换自然得到 nil / 空数组。
+        guard AXUIElementCopyMultipleAttributeValues(el, attributes, AXCopyMultipleAttributeOptions(rawValue: 0), &values) == .success,
+              let arr = values as? [AnyObject], arr.count == 3 else {
+            return Snapshot(role: nil, subrole: nil, children: [])
+        }
+        return Snapshot(role: arr[0] as? String,
+                        subrole: arr[1] as? String,
+                        children: (arr[2] as? [AXUIElement]) ?? [])
+    }
 }

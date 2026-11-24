@@ -24,11 +24,13 @@ final class AutomationStore: ObservableObject {
             // 内置项身份只读：每次加载用 builtinDefaults 刷新（bundleIDs 等随版本更新），
             // 只保留用户态（id/enabled）。有变化才回写。
             items = AutomationItem.refreshingBuiltinIdentity(decoded)
+            if !decoded.contains(where: { $0.isTouchIDAutoFill }) { migrateTouchIDAutoFill() }
             disableItemsWithoutPassword()
             if items != decoded { persist() }
             return
         }
         items = migrateFromLegacyDefaults()
+        migrateTouchIDAutoFill()
         disableItemsWithoutPassword()
         persist()
     }
@@ -57,6 +59,14 @@ final class AutomationStore: ObservableObject {
             if let key = item.builtinKey, let flag = map[key] { m.enabled = d.bool(forKey: flag) }
             return m
         }
+    }
+
+    /// Touch ID auto-fill 条目首次出现时的初值：此前 coreautha 密码框注入归「GUI Authorization」
+    /// 开关管，开着它的老用户升级后保持可用（没存登录密码的会被 disableItemsWithoutPassword 关掉）。
+    private func migrateTouchIDAutoFill() {
+        guard UserDefaults.standard.bool(forKey: "immurok.authorizationEnabled"),
+              let i = items.firstIndex(where: { $0.isTouchIDAutoFill }) else { return }
+        items[i].enabled = true
     }
 
     private func persist() {

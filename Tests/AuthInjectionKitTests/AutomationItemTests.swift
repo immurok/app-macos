@@ -31,7 +31,19 @@ final class AutomationItemTests: XCTestCase {
     }
     func testBuiltinDefaultsShape() {
         let items = AutomationItem.builtinDefaults()
-        XCTAssertEqual(Set(items.map { $0.builtinKey }), ["appstore", "passwords", "1password", "bitwarden"])
+        XCTAssertEqual(Set(items.map { $0.builtinKey }), ["appstore", "passwords", "touchid", "1password", "bitwarden"])
+        // Touch ID auto-fill 紧跟 Passwords，复用登录密码。
+        let keys = items.map { $0.builtinKey! }
+        XCTAssertEqual(keys.firstIndex(of: "touchid"), keys.firstIndex(of: "passwords")! + 1)
+        let tid = items.first { $0.isTouchIDAutoFill }!
+        XCTAssertEqual(tid.name, "Touch ID auto-fill")
+        XCTAssertEqual(tid.secretService, "com.immurok.password")
+        XCTAssertTrue(tid.usesLoginPassword)
+        XCTAssertEqual(tid.bundleIDs, [AutomationItem.localAuthUIAgentBundleID])
+        // 老存盘（无 touchid）刷新后，新条目插在 Passwords 之后而不是末尾。
+        let old = items.filter { !$0.isTouchIDAutoFill }
+        let refreshedKeys = AutomationItem.refreshingBuiltinIdentity(old).map { $0.builtinKey! }
+        XCTAssertEqual(refreshedKeys, ["appstore", "passwords", "touchid", "1password", "bitwarden"])
         let pw = items.first { $0.builtinKey == "passwords" }!
         XCTAssertTrue(pw.bundleIDs.contains("com.apple.Passwords"))
         XCTAssertTrue(pw.bundleIDs.contains("com.apple.AuthKitUI.AKAuthorizationRemoteViewService"))
@@ -100,6 +112,6 @@ final class AutomationItemTests: XCTestCase {
             extensionOrigin: nil, urlFragment: nil, fieldAXIdentifier: nil, submitStrategy: .generic)
         let refreshed = AutomationItem.refreshingBuiltinIdentity(AutomationItem.builtinDefaults() + [retired])
         XCTAssertNil(refreshed.first { $0.builtinKey == "sysauth" })
-        XCTAssertEqual(refreshed.count, 4)
+        XCTAssertEqual(refreshed.count, AutomationItem.builtinDefaults().count)
     }
 }

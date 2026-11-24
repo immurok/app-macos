@@ -48,34 +48,50 @@ struct BrowserExtensionDetector {
     /// 在浏览器 AX 树里找 URL 属于给定扩展来源的 WebArea，且其内恰好一个 secure field。
     private func soleSecureFieldInWebArea(_ root: AXUIElement, origin: String, urlFragment: String) -> (field: AXUIElement, web: AXUIElement)? {
         var budget = 40000
+        let deadline = CFAbsoluteTimeGetCurrent() + AXAppProbe.scanTimeBudget
+        var timedOut = false
         var result: (AXUIElement, AXUIElement)?
         func walk(_ el: AXUIElement) {
-            if budget <= 0 || result != nil { return }
+            if budget <= 0 || timedOut || result != nil { return }
+            if CFAbsoluteTimeGetCurrent() > deadline { timedOut = true; return }
             budget -= 1
-            if role(of: el) == "AXWebArea",
-               let u = url(of: el),
-               isUnlockURL(u, origin: origin, urlFragment: urlFragment) {
-                let fields = secureFields(in: el, limit: 2)
-                if fields.count == 1 { result = (fields[0], el) }
-                return   // 命中/否决这个 WebArea 后不再下钻它
+            let node = AXNode.snapshot(el)
+            if node.role == "AXWebArea" {
+                if let u = url(of: el), isUnlockURL(u, origin: origin, urlFragment: urlFragment) {
+                    let fields = secureFields(in: el, limit: 2, deadline: deadline)
+                    // 子扫描超时时 fields 可能不完整，「恰好一个」不成立 → 整体判未命中。
+                    if CFAbsoluteTimeGetCurrent() > deadline { timedOut = true; return }
+                    if fields.count == 1 { result = (fields[0], el) }
+                }
+                // 命中/否决这个 WebArea 后都不再下钻：扩展 popup 是独立的顶层 WebArea，
+                // 不会嵌在普通网页里；下钻普通网页会把整页内容（可能上万节点）逐个 IPC 一遍，
+                // 期间浏览器主线程停止处理用户的键盘输入。
+                return
             }
-            for c in children(of: el) { walk(c) }
+            for c in node.children { walk(c) }
         }
         walk(root)
+        if timedOut {
+            let msg = "[ax] ext-scan exceeded \(Int(AXAppProbe.scanTimeBudget * 1000))ms budget → skip"
+            Task { @MainActor in LogManager.shared.log(msg) }
+            return nil
+        }
         return result
     }
 
-    private func secureFields(in web: AXUIElement, limit: Int) -> [AXUIElement] {
+    /// 超时时返回的结果可能不完整；调用方只在「恰好一个」时命中，并在超时后整体判未命中。
+    private func secureFields(in web: AXUIElement, limit: Int, deadline: CFAbsoluteTime) -> [AXUIElement] {
         var out: [AXUIElement] = []
         var budget = 8000
         func rec(_ el: AXUIElement) {
-            if budget <= 0 || out.count >= limit { return }
+            if budget <= 0 || out.count >= limit || CFAbsoluteTimeGetCurrent() > deadline { return }
             budget -= 1
-            if subrole(of: el) == (kAXSecureTextFieldSubrole as String) || role(of: el) == "AXSecureTextField" {
+            let node = AXNode.snapshot(el)
+            if node.subrole == (kAXSecureTextFieldSubrole as String) || node.role == "AXSecureTextField" {
                 out.append(el)
                 return
             }
-            for c in children(of: el) { rec(c) }
+            for c in node.children { rec(c) }
         }
         rec(web)
         return out
@@ -89,24 +105,5 @@ struct BrowserExtensionDetector {
         if let u = v as? URL { return u.absoluteString }
         if let s = v as? String { return s }
         return nil
-    }
-
-    private func role(of el: AXUIElement) -> String? {
-        var v: CFTypeRef?
-        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v)
-        return v as? String
-    }
-
-    private func subrole(of el: AXUIElement) -> String? {
-        var v: CFTypeRef?
-        AXUIElementCopyAttributeValue(el, kAXSubroleAttribute as CFString, &v)
-        return v as? String
-    }
-
-    private func children(of el: AXUIElement) -> [AXUIElement] {
-        var v: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v) == .success,
-              let kids = v as? [AXUIElement] else { return [] }
-        return kids
     }
 }

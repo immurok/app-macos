@@ -443,6 +443,8 @@
   "automation.import": "Импорт",
   "automation.export": "Экспорт",
   "automation.unnamed": "Без имени",
+  "automation.delete.confirm.title": "Удалить «%@»?",
+  "automation.delete.confirm.message": "Этот элемент и сохранённый для него пароль будут удалены. Это действие нельзя отменить.",
   "automation.builtin": "Встроенный",
   "automation.custom": "Пользовательский",
   "automation.browserExt": "Расширение браузера",

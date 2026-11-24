@@ -443,6 +443,8 @@
   "automation.import": "読み込み",
   "automation.export": "書き出し",
   "automation.unnamed": "名称未設定",
+  "automation.delete.confirm.title": "「%@」を削除しますか？",
+  "automation.delete.confirm.message": "この項目と保存されたパスワードが削除されます。この操作は元に戻せません。",
   "automation.builtin": "内蔵",
   "automation.custom": "カスタム",
   "automation.browserExt": "ブラウザ拡張機能",

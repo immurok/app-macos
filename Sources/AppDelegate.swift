@@ -34,6 +34,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // 在这里注册可保证所有后续 UserDefaults 读取（含 @StateObject 的 init）看到默认值。
     override init() {
         AppDefaults.register()
+        // 必须早于 MenuBarExtra 建 NSStatusItem，否则图标按「已被用户拖出」恢复为隐藏。
+        AppDefaults.resetStatusItemVisibility()
         super.init()
     }
 
@@ -292,23 +294,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             switch injectionContext {
             case .secureField(let item, let field, let sheet):
                 // 密码来源与提交策略都来自条目自身（enabled 已在 detect() 过滤）。
-                if let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) {
-                    LogManager.shared.log("[inject] secure field (\(item.name)) strategy=\(item.submitStrategy)")
-                    lastAuthFlowAt = Date()
-                    let injector = AuthInjector()
-                    injector.focus(field)
-                    injector.inject(pw, into: field)
-                    // rightArrow(1Password) / belowButton(Bitwarden) 是 Chromium 网页表单：需专用提交
-                    //（鼠标点击解锁按钮，SEI 拦回车、AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
-                    let isWeb = (item.submitStrategy == .rightArrow || item.submitStrategy == .belowButton)
-                    let delay = isWeb ? 0.3 : 0.15
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                        switch item.submitStrategy {
-                        case .rightArrow:  injector.submitOnePassword(field: field, container: sheet)
-                        case .belowButton: injector.submitBitwarden(field: field, container: sheet)
-                        default:           injector.submit(container: sheet, field: field)
-                        }
-                    }
+                if self.injectAutomationSecret(item: item, field: field, sheet: sheet) {
                     return   // 已处理，不再走原 authorization 逻辑
                 }
                 LogManager.shared.log("[inject/detect] secureField item=\(item.name) no stored password, fall through")
@@ -345,6 +331,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 LogManager.shared.log("[inject/detect] no match front=\(frontBundle) owner=\(focusedOwner) focusedSubrole=\(focusedSubrole) +\(detectMs)ms")
             }
 
+            // Touch ID auto-fill（Automation 内置条目）：LocalAuthentication 认证框（coreautha，如 Chrome
+            // 填充密码、「隐私与安全性」放行 App）直接向钥匙包校验密码，不经过 PAM：发空回车只会被判
+            // "密码错误"并累计失败次数，预授权也永远等不到请求。所以按「使用密码…」后注入登录密码并提交。
+            // 不以"焦点是密码框"为前提：Touch ID 页没有密码框，按完后焦点也常是 nil，由 detector 直接扫窗口。
+            // 只要认证框在场就在这里终结（条目关闭/无密码/签名不过都直接返回），绝不落到下面的回车兜底。
+            let localAuth = AuthContextDetector().localAuthDialog()
+            if case .notPresent = localAuth {} else {
+                let itemEnabled = AutomationStore.shared.enabledItems().contains { $0.isTouchIDAutoFill }
+                guard itemEnabled else {
+                    LogManager.shared.log("LocalAuthentication dialog → Touch ID auto-fill disabled, skip")
+                    return
+                }
+                guard let pw = ImmurokSecurity.shared.loadPassword() else {
+                    LogManager.shared.log("LocalAuthentication dialog → no stored login password, skip")
+                    return
+                }
+                switch localAuth {
+                case .ready(let field, let window):
+                    LogManager.shared.log("LocalAuthentication dialog → inject login password")
+                    self.lastAuthFlowAt = Date()
+                    self.injectLocalAuthPassword(pw, field: field, window: window)
+                case .touchID(let usePasswordButton):
+                    self.lastAuthFlowAt = Date()
+                    let err = AXUIElementPerformAction(usePasswordButton, kAXPressAction as CFString)
+                    LogManager.shared.log("LocalAuthentication Touch ID dialog → press 'Use Password…' (AXError=\(err.rawValue))")
+                    if err == .success { self.awaitLocalAuthPasswordField(pw, attempt: 0) }
+                default:
+                    LogManager.shared.log("LocalAuthentication dialog → signature/window check failed, skip")
+                }
+                return
+            }
+
             let isAuthorizationEnabled = SetupManager.shared.isAuthorizationEnabled
             guard isAuthorizationEnabled else {
                 NSLog("Authorization feature disabled, ignoring fingerprint")
@@ -353,26 +371,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let hasPasswordField = self.isSecureInputFocused()
 
-            // LocalAuthentication 密码框（coreautha，如「隐私与安全性」放行未知来源 App）直接向
-            // 钥匙包校验密码，不经过 PAM：发空回车只会被判"密码错误"并累计失败次数，预授权也
-            // 永远等不到请求。所以这里改为注入登录密码并点默认按钮，仍归 GUI Authorization 开关管。
-            let localAuth = hasPasswordField ? AuthContextDetector().localAuthDialog() : .notPresent
-            if case .ready(let field, let window) = localAuth {
-                guard let pw = ImmurokSecurity.shared.loadPassword() else {
-                    LogManager.shared.log("LocalAuthentication dialog → no stored login password, skip (not PAM-backed)")
-                    return
-                }
-                LogManager.shared.log("LocalAuthentication dialog → inject login password")
-                self.lastAuthFlowAt = Date()
-                let injector = AuthInjector()
-                injector.focus(field)
-                injector.inject(pw, into: field)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    injector.submit(container: window, field: field)
-                }
-            } else if case .untrusted = localAuth {
-                LogManager.shared.log("LocalAuthentication dialog → signature/window check failed, skip")
-            } else if hasPasswordField {
+            if hasPasswordField {
                 // Any focused password field at this point is GUI auth, not
                 // terminal sudo: terminal sudo runs through pam_immurok which
                 // arms BLE-backed AUTH on the device, so the user's touch is
@@ -391,11 +390,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 LogManager.shared.log("Auth window [\(result.appName)] \(desc)")
                 self.lastAuthFlowAt = Date()
                 AXUIElementPerformAction(result.button, kAXPressAction as CFString)
-                LogManager.shared.log("→ Click 'Use Password...' + submit empty password")
-                // TouchID dialog → authorization service
-                self.pamSocketServer?.setPreAuthorization(duration: 3.0, services: ["authorization"])
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.sendEnterKey()  // 提交空密码 → 触发 PAM
+                LogManager.shared.log("→ Click 'Use Password...'")
+                // 按完后密码页有两种，必须先分清再动手：
+                // a) 密码框属于某个已启用的 Automation 条目（如 Safari 里 Passwords 自动填充的 sheet）
+                //    → 它要的是真实密码，注入条目密码；发空回车只会抖一下并记一次失败。
+                // b) 其余（系统设置解锁等）走 PAM `authorization` → 提交空密码 + 预授权。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self else { return }
+                    if case .secureField(let item, let field, let sheet) = AuthContextDetector().detect(),
+                       self.injectAutomationSecret(item: item, field: field, sheet: sheet) {
+                        return
+                    }
+                    LogManager.shared.log("→ submit empty password + pre-auth authorization 3s")
+                    self.pamSocketServer?.setPreAuthorization(duration: 3.0, services: ["authorization"])
+                    self.sendEnterKey()  // 提交空密码 → 触发 PAM
                 }
             } else {
                 // No identified auth context — do NOT pre-authorize.
@@ -868,7 +876,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in LogManager.shared.log("Lock request ignored (password field active)") }
             return
         }
-        if findUsePasswordButton() != nil {
+        var localAuthVisible = false
+        if case .notPresent = AuthContextDetector().localAuthDialog() {} else { localAuthVisible = true }
+        if localAuthVisible || findUsePasswordButton() != nil {
             NSLog("Lock request ignored: TouchID/auth dialog active")
             Task { @MainActor in LogManager.shared.log("Lock request ignored (auth dialog visible)") }
             return
@@ -924,6 +934,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return (subrole as? String) == "AXSecureTextField"
     }
 
+    /// 把 Automation 条目的密码注入已识别的密码框并按条目策略提交。条目没存密码返回 false（未做任何输入）。
+    @MainActor @discardableResult
+    private func injectAutomationSecret(item: AutomationItem, field: AXUIElement, sheet: AXUIElement) -> Bool {
+        guard let pw = ImmurokSecurity.shared.loadSecret(service: item.secretService) else { return false }
+        LogManager.shared.log("[inject] secure field (\(item.name)) strategy=\(item.submitStrategy)")
+        lastAuthFlowAt = Date()
+        let injector = AuthInjector()
+        injector.focus(field)
+        injector.inject(pw, into: field)
+        // rightArrow(1Password) / belowButton(Bitwarden) 是 Chromium 网页表单：需专用提交
+        //（鼠标点击解锁按钮，SEI 拦回车、AXPress 空操作）+ 稍长延时；Apple 原生框走通用 submit。
+        let isWeb = (item.submitStrategy == .rightArrow || item.submitStrategy == .belowButton)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isWeb ? 0.3 : 0.15)) {
+            switch item.submitStrategy {
+            case .rightArrow:  injector.submitOnePassword(field: field, container: sheet)
+            case .belowButton: injector.submitBitwarden(field: field, container: sheet)
+            default:           injector.submit(container: sheet, field: field)
+            }
+        }
+        return true
+    }
+
+    /// 向 coreautha 密码页注入登录密码并点默认按钮。
+    private func injectLocalAuthPassword(_ pw: String, field: AXUIElement, window: AXUIElement) {
+        let injector = AuthInjector()
+        injector.focus(field)
+        injector.inject(pw, into: field)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            injector.submit(container: window, field: field)
+        }
+    }
+
+    /// 按下「使用密码…」后轮询密码框出现（实测 <300ms 原地切换），出现即注入。
+    /// 每 100ms 一次、最多 1.5s；超时或对话框消失/签名不过则放弃，不做任何输入。
+    private func awaitLocalAuthPasswordField(_ pw: String, attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            switch AuthContextDetector().localAuthDialog() {
+            case .ready(let field, let window):
+                LogManager.shared.log("LocalAuthentication password page ready (+\((attempt + 1) * 100)ms) → inject login password")
+                self.lastAuthFlowAt = Date()
+                self.injectLocalAuthPassword(pw, field: field, window: window)
+            case .touchID where attempt < 14:
+                self.awaitLocalAuthPasswordField(pw, attempt: attempt + 1)
+            default:
+                LogManager.shared.log("LocalAuthentication password page did not appear → give up")
+            }
+        }
+    }
+
     /// Find the "Use Password..." button in a TouchID auth sheet (AXSheet → AXButton)
     /// Returns (button, appName, sheetDescription) for logging
     private func findUsePasswordButton() -> (button: AXUIElement, appName: String, sheetTexts: [String])? {
@@ -945,33 +1005,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
                 guard (roleRef as? String) == "AXSheet" else { continue }
 
-                // Found a sheet — collect text labels and look for password button
-                var sheetChildrenRef: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(child, kAXChildrenAttribute as CFString, &sheetChildrenRef) == .success,
-                      let sheetChildren = sheetChildrenRef as? [AXUIElement] else { continue }
-
+                // Found a sheet — collect text labels and look for password button.
+                // 新系统（实测 macOS 27 系统设置解锁）里 sheet 内容包在一层 AXGroup(AXHostingView) 里，
+                // 所以有界下钻收集，而不是只看 sheet 的直接子节点。
                 var texts: [String] = []
                 var buttons: [AXUIElement] = []
-
-                for el in sheetChildren {
-                    var elRoleRef: CFTypeRef?
-                    AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &elRoleRef)
-                    let role = elRoleRef as? String ?? ""
-
-                    if role == "AXStaticText" {
-                        var valRef: CFTypeRef?
-                        AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &valRef)
-                        if let text = valRef as? String, !text.isEmpty {
-                            texts.append(text)
+                var hasTouchIDImage = false
+                func collect(_ el: AXUIElement, depth: Int) {
+                    if depth > 3 { return }
+                    var kidsRef: CFTypeRef?
+                    guard AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &kidsRef) == .success,
+                          let kids = kidsRef as? [AXUIElement] else { return }
+                    for kid in kids {
+                        var elRoleRef: CFTypeRef?
+                        AXUIElementCopyAttributeValue(kid, kAXRoleAttribute as CFString, &elRoleRef)
+                        switch elRoleRef as? String ?? "" {
+                        case "AXStaticText":
+                            var valRef: CFTypeRef?
+                            AXUIElementCopyAttributeValue(kid, kAXValueAttribute as CFString, &valRef)
+                            if let text = valRef as? String, !text.isEmpty { texts.append(text) }
+                        case "AXButton":
+                            buttons.append(kid)
+                        case "AXImage":
+                            var idRef: CFTypeRef?
+                            AXUIElementCopyAttributeValue(kid, kAXIdentifierAttribute as CFString, &idRef)
+                            if (idRef as? String) == "touchid" { hasTouchIDImage = true }
+                        case "AXGroup":
+                            collect(kid, depth: depth + 1)
+                        default:
+                            break
                         }
-                    } else if role == "AXButton" {
-                        buttons.append(el)
                     }
                 }
+                collect(child, depth: 0)
 
-                // Identify TouchID auth sheet by "Touch ID" / "触控" in text
-                let isTouchIDSheet = texts.contains { $0.contains("Touch ID") || $0.contains("触控") }
-                // Last button is "Use Password..." (non-cancel action button)
+                // 新版 LocalAuthentication 界面：touchid 图标（语言无关）+ 恰好两个按钮
+                // [使用密码…, 取消]（实测顺序，与 coreautha 独立窗口一致）→ 取第一个。
+                if hasTouchIDImage, buttons.count == 2 {
+                    return (buttons[0], appName, texts)
+                }
+                // 旧版界面：按文案识别，最后一个按钮是「使用密码…」。有 touchid 图标却不是两个按钮的
+                // 属于未知变体，不猜（避免误点取消）。
+                let isTouchIDSheet = !hasTouchIDImage && texts.contains { $0.contains("Touch ID") || $0.contains("触控") }
                 if isTouchIDSheet, let lastBtn = buttons.last {
                     return (lastBtn, appName, texts)
                 }

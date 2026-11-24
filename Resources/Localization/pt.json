@@ -443,6 +443,8 @@
   "automation.import": "Importar",
   "automation.export": "Exportar",
   "automation.unnamed": "Sem nome",
+  "automation.delete.confirm.title": "Excluir “%@”?",
+  "automation.delete.confirm.message": "Este item e a senha salva serão excluídos. Esta ação não pode ser desfeita.",
   "automation.builtin": "Integrado",
   "automation.custom": "Personalizado",
   "automation.browserExt": "Extensão do navegador",
