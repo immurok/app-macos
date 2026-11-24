@@ -145,7 +145,13 @@ class LocalizationManager: ObservableObject {
     // MARK: - Built-in Strings
 
     /// Simplified Chinese (完整)
-    static let zhHansStrings: [String: String] = [
+    // New product copy remains explicitly English until reviewed translations
+    // arrive. Keep all built-in packs complete without duplicating these strings.
+    private static let desktopExperienceFallbacks = enStrings.filter {
+        $0.key.hasPrefix("experience.") || $0.key.hasPrefix("security.")
+    }
+
+    static let zhHansStrings: [String: String] = desktopExperienceFallbacks.merging([
         // App
         "app.name": "immurok",
         "app.settings": "immurok 设置",
@@ -790,10 +796,10 @@ class LocalizationManager: ObservableObject {
         "notify.battery.low.body": "immurok 设备电量剩余 %d%%，请尽快充电。",
         "alert.uninstall.pkg.missing": "找不到卸载包 immurok_uninstall.pkg",
         "alert.operation.timeout": "操作超时或已取消",
-    ]
+    ]) { _, translated in translated }
 
     /// Traditional Chinese (完整)
-    static let zhHantStrings: [String: String] = [
+    static let zhHantStrings: [String: String] = desktopExperienceFallbacks.merging([
         // App
         "app.name": "immurok",
         "app.settings": "immurok 設定",
@@ -1437,7 +1443,7 @@ class LocalizationManager: ObservableObject {
         "notify.battery.low.body": "immurok 裝置電量剩餘 %d%%，請盡快充電。",
         "alert.uninstall.pkg.missing": "找不到解除安裝套件 immurok_uninstall.pkg",
         "alert.operation.timeout": "操作逾時或已取消",
-    ]
+    ]) { _, translated in translated }
 
     /// English (完整)
     static let enStrings: [String: String] = [
