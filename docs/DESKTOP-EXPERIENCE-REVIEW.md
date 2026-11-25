@@ -2,6 +2,27 @@
 
 This branch makes immurok easier to set up and understand on a Mac without a Touch ID keyboard, while keeping permissions and credentials tied to the features the user chooses. It includes the PAM hardening described in [SECURITY-HARDENING.md](../SECURITY-HARDENING.md).
 
+## Interactive preview (no installation)
+
+[Open the preview file on GitHub](review-previews/interactive-preview.html), choose **Download raw file**, then open the downloaded HTML file in a current Safari, Chrome, or Firefox browser. GitHub displays source; it does not execute HTML previews inline.
+
+From a checkout of this branch on macOS:
+
+```sh
+open docs/review-previews/interactive-preview.html
+```
+
+The preview is a self-contained, offline HTML simulation with no build step, external libraries, telemetry, persistent storage, or network requests. It never accesses Bluetooth, USB, Keychain, macOS permissions, or a shell. All actions and credentials are synthetic. Reloading starts over and clears sample history.
+
+Suggested walkthrough:
+
+1. Select **SSH signing** alone and complete setup: no login-password, Accessibility, or PAM step appears.
+2. Reload, select **Screen unlock** and **Administrator approval**, and try **Set up later** on a prerequisite. The final checklist identifies incomplete setup.
+3. Open **Approval dialogs** and select known-process, unknown-source, and SSH examples. Try Reject (or Escape while focused inside the preview), simulated fingerprint approval, and timeout.
+4. Open **Device status** and select the connection, permission, unverified-device, prerequisite, and low-battery scenarios. Try their simulated recovery actions and clear sample approval history.
+
+This browser approximation accompanies the native component screenshots below; it is not the SwiftUI app or a hardware test. The simulated fingerprint button and scenario selectors are review controls, not production approval bypasses. Recovery scenarios are independent demonstrations; they do not exercise the native readiness state machine. Icons use offline text substitutes. Actual macOS permission dialogs, authentication behavior, VoiceOver, and hardware still require native acceptance testing.
+
 ## User-visible changes
 
 ### Feature-led setup
