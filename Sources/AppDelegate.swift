@@ -171,6 +171,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         BLEManager.shared.stop()
     }
 
+    /// App 已在运行时用户再次打开它（Finder / Launchpad / Spotlight / `open`）。
+    /// immurok 是 LSUIElement App，没有 Dock 图标，菜单栏图标又可能被刘海或
+    /// 其他图标挤掉——不少用户找不到入口，于是反复双击 App 却毫无反应。
+    /// 这里把「再次打开」当成「我要找设置」：直接弹出设置窗口。
+    /// 不带 tab：窗口已开着时保留用户当前所在的页。
+    /// 返回 false：已自行处理，不走 AppKit/SwiftUI 的默认 reopen 行为。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NSLog("Reopen requested while running, showing settings window")
+        NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
+        return false
+    }
+
     // App should not terminate when window is closed (menu bar app)
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
