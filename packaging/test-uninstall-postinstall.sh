@@ -122,4 +122,21 @@ IMMUROK_ROOT="$ROOT" bash "$UNINST" >"$ROOT/out.log" 2>"$ROOT/err.log"; RC=$?
 [ ! -e "$ROOT/Library/Application Support/immurok" ] || fail external-copy "Application Support/immurok 应被删除"
 cleanup "$ROOT"
 
+# ---- upgrade-marker：cask 落了标记（brew upgrade/uninstall）→ 用户数据/密钥保留，其余照删 ----
+ROOT="$(make_root)"
+mkdir -p "$ROOT/tmp"; : > "$ROOT/tmp/immurok-keep-user-data"
+IMMUROK_ROOT="$ROOT" bash "$UNINST" >"$ROOT/out.log" 2>"$ROOT/err.log"; RC=$?
+[ $RC -eq 0 ] || fail upgrade-marker "exit ${RC}（应为 0）"
+for p in etc/immurok/pam/501.keyid home/.immurok; do
+    [ -e "$ROOT/$p" ] || fail upgrade-marker "$p 不应被删除"
+done
+for p in usr/local/bin/imk Applications/immurok.app; do
+    [ ! -e "$ROOT/$p" ] || fail upgrade-marker "$p 应被删除"
+done
+grep -q pam_immurok "$ROOT/etc/pam.d/sudo_local" && fail upgrade-marker "sudo_local 仍含 pam_immurok"
+grep -q pam_immurok "$ROOT/etc/pam.d/authorization" && fail upgrade-marker "authorization 仍含 pam_immurok"
+[ ! -e "$ROOT/tmp/immurok-keep-user-data" ] || fail upgrade-marker "标记文件应被消费删除"
+[ -e "$ROOT/usr/local/lib/pam/pam_immurok.so" ] || fail upgrade-marker "模块不应被删除"
+cleanup "$ROOT"
+
 if [ $FAILS -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$FAILS FAILURE(S)"; exit 1; fi
