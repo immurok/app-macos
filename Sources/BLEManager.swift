@@ -122,7 +122,8 @@ enum PairFailureReason: Error {
 
 // Enrollment status notifications (from device)
 // Must match firmware fingerprint.h fp_enroll_event_t
-// Single-slot enrollment: 6 captures (mode-1 broad coverage) → merge → store
+// Single-slot enrollment: 5 spread captures (mode 1) + 1 "back to center" → merge → store
+// `.failed` 帧的 current 字段是失败原因（EnrollFailReason），不是采集计数。
 enum EnrollEvent: UInt8 {
     case waiting = 0x00
     case captured = 0x01
@@ -2623,9 +2624,13 @@ extension BLEManager: CBPeripheralDelegate {
                 }
             }
 
+            // 失败帧的 current 字节是原因码（固件 1.8.9+），只有 0xFF 帧带。
+            let reported = event == .failed
+                ? EnrollFailReason.fromFrame(status: status, byte2: current) : current
+
             DispatchQueue.main.async { [weak self] in
-                self?.onEnrollStatus?(event, current, total)
-                BLEManager.broadcastEnrollStatus(event, current: current, total: total)
+                self?.onEnrollStatus?(event, reported, total)
+                BLEManager.broadcastEnrollStatus(event, current: reported, total: total)
             }
             return
         }

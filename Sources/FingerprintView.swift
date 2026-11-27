@@ -222,9 +222,10 @@ struct FingerprintIconView: View {
 
 /// 6-step guided enrollment offset map (椭圆偏移量，px).
 /// progress 1: 正中 / 2: 左 / 3: 右 / 4: 上(指尖) / 5: 下(手腕) / 6: 再次正中
-/// mode-1 强制每步采集**不同**区域，所以每步都要换位置——中心按两次会被
-/// 传感器以 0x28 拒绝。第 6 步回到正中(与第 5 步"下"不同, mode-1 合规),
-/// 给核心指腹补一个样本。Out-of-range (0 pre-start, >6 done) returns .zero.
+/// mode-1 强制前 5 步采集**不同**区域，所以每步都要换位置——重合太多会被
+/// 传感器以 0x28 拒绝。第 6 步回到正中、与第 1 步重合是有意的：固件 1.8.8 起
+/// 只在这一步关掉区域控制，给核心指腹补一个样本。
+/// Out-of-range (0 pre-start, >6 done) returns .zero.
 fileprivate func enrollOffsetForStep(_ progress: Int) -> CGSize {
     switch progress {
     case 1:      return .zero
@@ -308,6 +309,10 @@ struct EnrollmentSheet: View {
         animProgress >= 2 && animProgress <= 5
     }
 
+    /// 刚用旧手指过门：先停在「验证通过，换成新手指」，不摆采集引导
+    /// （见 EnrollHandoff）。
+    private var isHandoff: Bool { viewModel.enrollHandoff }
+
     var body: some View {
         VStack(spacing: 20) {
             // sensor 圆 + 偏移椭圆 + 方向箭头
@@ -317,58 +322,74 @@ struct EnrollmentSheet: View {
                     .fill(Color(NSColor.controlBackgroundColor))
                     .frame(width: 120, height: 120)
 
-                // pulse 圆（不变，等待手指视觉提示）
-                // repeatForever 必须挂在这里，绝不能用 onAppear 里的
-                // withAnimation：sheet 呈现时 onAppear 与布局在同一个事务中，
-                // withAnimation 会把「内容从原点落到居中」这段位移也一起
-                // repeatForever，整个对话框内容就在居中与左上角之间无限摆动。
-                Circle()
-                    .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
-                    .frame(width: 60, height: 60)
-                    .scaleEffect(pulseScale)
-                    .opacity(2.0 - Double(pulseScale))
-                    .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true),
-                               value: pulseScale)
+                // 采集引导三件套。过渡期间只用 opacity 藏起来、不从视图树里摘掉：
+                // 摘掉再插回来时 pulseScale / arrowOpacity 已经是终值，
+                // repeatForever 等不到值变化，脉动就再也不会启动。
+                Group {
+                    // pulse 圆（不变，等待手指视觉提示）
+                    // repeatForever 必须挂在这里，绝不能用 onAppear 里的
+                    // withAnimation：sheet 呈现时 onAppear 与布局在同一个事务中，
+                    // withAnimation 会把「内容从原点落到居中」这段位移也一起
+                    // repeatForever，整个对话框内容就在居中与左上角之间无限摆动。
+                    Circle()
+                        .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
+                        .frame(width: 60, height: 60)
+                        .scaleEffect(pulseScale)
+                        .opacity(2.0 - Double(pulseScale))
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                                   value: pulseScale)
 
-                // 手指椭圆（按 progress 偏移）
-                RoundedRectangle(cornerRadius: 30)
-                    .fill(transitionFlash ? Color.orange : Color.accentColor)
-                    .frame(width: 60, height: 80)
-                    .offset(enrollOffsetForStep(animProgress))
-                    .offset(x: shakeOffset)   // horizontal shake on overlap reject
-                    .opacity(viewModel.enrollmentProgress > 0 ? 1.0 : 0.5)
-                    .animation(.easeInOut(duration: 0.3), value: animProgress)
+                    // 手指椭圆（按 progress 偏移）
+                    RoundedRectangle(cornerRadius: 30)
+                        .fill(transitionFlash ? Color.orange : Color.accentColor)
+                        .frame(width: 60, height: 80)
+                        .offset(enrollOffsetForStep(animProgress))
+                        .offset(x: shakeOffset)   // horizontal shake on overlap reject
+                        .opacity(viewModel.enrollmentProgress > 0 ? 1.0 : 0.5)
+                        .animation(.easeInOut(duration: 0.3), value: animProgress)
 
-                // 方向箭头（位置 + symbol 都按 progress 切换, 正中阶段隐藏）
-                Image(systemName: enrollArrowSymbolForStep(animProgress))
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundColor(.accentColor)
-                    .offset(enrollArrowOffsetForStep(animProgress))
-                    .opacity(showArrow ? arrowOpacity : 0)
-                    .animation(.easeInOut(duration: 0.3), value: animProgress)
-                    // 同上：脉动只绑到 arrowOpacity，不走 onAppear 的 withAnimation
-                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true),
-                               value: arrowOpacity)
+                    // 方向箭头（位置 + symbol 都按 progress 切换, 正中阶段隐藏）
+                    Image(systemName: enrollArrowSymbolForStep(animProgress))
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundColor(.accentColor)
+                        .offset(enrollArrowOffsetForStep(animProgress))
+                        .opacity(showArrow ? arrowOpacity : 0)
+                        .animation(.easeInOut(duration: 0.3), value: animProgress)
+                        // 同上：脉动只绑到 arrowOpacity，不走 onAppear 的 withAnimation
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                                   value: arrowOpacity)
+                }
+                .opacity(isHandoff ? 0 : 1)
+
+                // 换手指过渡：对勾
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 56))
+                    .foregroundColor(.green)
+                    .opacity(isHandoff ? 1 : 0)
             }
 
-            // 主步骤标题（切换步加粗）
-            Text(enrollTitleKeyForStep(animProgress).localized)
+            // 主步骤标题（切换步加粗）；过渡期间是「验证通过」
+            Text((isHandoff ? "enroll.verified" : enrollTitleKeyForStep(animProgress)).localized)
                 .font(.headline)
-                .fontWeight(isTransitionStep ? .semibold : .regular)
+                .fontWeight(isTransitionStep && !isHandoff ? .semibold : .regular)
                 .multilineTextAlignment(.center)
 
-            // 现有 status text（waiting / captured / lift_finger 等动态文案）
-            Text(viewModel.enrollmentStatus)
+            // 现有 status text（waiting / captured / lift_finger 等动态文案）；
+            // 过渡期间是「抬起手指，换成新手指」
+            Text(isHandoff ? "enroll.verified.hint".localized : viewModel.enrollmentStatus)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
+            // 过渡期间还没开始采集，进度留位但不显示（免得布局跳动）
             ProgressView(value: Double(viewModel.enrollmentProgress), total: Double(viewModel.enrollmentTotal))
                 .frame(width: 200)
+                .opacity(isHandoff ? 0 : 1)
 
             Text("\(viewModel.enrollmentProgress)/\(viewModel.enrollmentTotal)")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .opacity(isHandoff ? 0 : 1)
 
             Button("alert.cancel".localized) {
                 viewModel.cancelEnrollment()
@@ -435,11 +456,20 @@ class FingerprintViewModel: ObservableObject {
     @Published var enrollmentProgress = 0
     @Published var enrollmentTotal = 6  // Single-slot: 6 captures (mode-1 broad coverage)
     @Published var overlapNudge = 0     // bumped on each mode-1 overlap reject → UI shake cue
+    /// 刚用旧手指过门、还没开始采集：录入 sheet 显示「验证通过，换成新手指」。
+    @Published var enrollHandoff = false
 
     var gateController = FingerprintGateController()
 
     // Track current enrollment slot
     private var currentEnrollSlot: Int?
+
+    // 验证旧指纹 → 换手指 → 采集新指纹 的过渡（帧裁决见 EnrollHandoff）
+    private var handoff = EnrollHandoff()
+    private var handoffDwellTask: Task<Void, Never>?
+    /// 这次录入真的过了指纹门（设备回过 WAIT_FP）。不能用「设备上已有指纹」代替：
+    /// 门在冷却期内会被固件跳过，那时传感器上没有旧手指，也谈不上「验证通过」。
+    private var enrollViaGate = false
 
     // MARK: - Slot capacity
     //
@@ -637,6 +667,10 @@ class FingerprintViewModel: ObservableObject {
                 if self.isLoading || self.currentEnrollSlot != nil {
                     self.gateController.onGateRequired()
                 }
+                // 设备对 ENROLL_START 回了 WAIT_FP：门过之后先进「换手指」过渡。
+                if self.currentEnrollSlot != nil {
+                    self.handoff.arm()
+                }
             }
         }
 
@@ -648,52 +682,97 @@ class FingerprintViewModel: ObservableObject {
             guard let payload = EnrollStatusPayload(note) else { return }
             let (event, current, total) = (payload.event, payload.current, payload.total)
             Task { @MainActor in
-                guard let self = self, self.isEnrolling else { return }
-
-                if total > 0 {
-                    self.enrollmentTotal = total
-                }
-
-                switch event {
-                case .waiting:
-                    self.enrollmentStatus = "enroll.place.finger".localized
-                    self.enrollmentProgress = current
-                case .captured:
-                    self.enrollmentStatus = "enroll.captured".localized(current, total)
-                    self.enrollmentProgress = current
-                case .liftFinger:
-                    self.enrollmentStatus = "enroll.lift.finger".localized
-                    self.enrollmentProgress = current
-                case .processing:
-                    self.enrollmentStatus = "enroll.processing".localized
-                    self.enrollmentProgress = current
-                case .overlap:
-                    // (mode 1) device rejected this capture for overlapping the
-                    // previous one too much. Don't advance progress — prompt the
-                    // user to shift position and bump the nudge so the sheet shakes.
-                    self.enrollmentStatus = "enroll.adjust.overlap".localized
-                    self.overlapNudge &+= 1
-                case .complete:
-                    NSLog("FingerprintView: enrollment complete, old bitmap=0x%02X", self.fingerprintBitmap)
-                    self.isEnrolling = false
-                    self.enrollmentProgress = total
-                    // Update local cache (don't fetch from device)
-                    // Set bit for the enrolled slot
-                    if let slot = self.currentEnrollSlot {
-                        self.fingerprintBitmap |= (1 << slot)
-                        Self.cachedBitmap = self.fingerprintBitmap
-                        Self.isCacheValid = true
-                        NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
-                    }
-                    self.currentEnrollSlot = nil
-                    NSLog("FingerprintView: new bitmap=0x%02X (cached)", self.fingerprintBitmap)
-                    self.showAlert(title: "enroll.success".localized, message: "enroll.success.message".localized)
-                case .failed:
-                    self.isEnrolling = false
-                    self.currentEnrollSlot = nil
-                    self.showAlert(title: "enroll.failed".localized, message: "enroll.failed.message".localized)
-                }
+                // isArmed：门刚过、completion 还没把 isEnrolling 置 true 时到达的帧
+                // 也要让过渡状态机看到（见 EnrollHandoff.frame 的 .armed 分支）。
+                guard let self = self, self.isEnrolling || self.handoff.isArmed else { return }
+                let decision = self.handoff.frame(payload)
+                self.syncHandoff()
+                guard decision == .apply, self.isEnrolling else { return }
+                self.applyEnrollFrame(payload)
             }
+        }
+    }
+
+    /// 把过渡状态机的结论同步到界面；过渡结束时顺手停掉停留计时。
+    private func syncHandoff() {
+        let active = handoff.isActive
+        if !active { handoffDwellTask?.cancel() }
+        if enrollHandoff != active { enrollHandoff = active }
+    }
+
+    /// 过渡画面至少停留 EnrollHandoff.minDwell；这期间压着的帧到点再处理。
+    private func startHandoffDwell() {
+        handoffDwellTask?.cancel()
+        handoffDwellTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(EnrollHandoff.minDwell * 1_000_000_000))
+            guard let self = self, !Task.isCancelled, self.isEnrolling else { return }
+            let held = self.handoff.dwellDidElapse()
+            self.syncHandoff()
+            if let held = held { self.applyEnrollFrame(held) }
+        }
+    }
+
+    private func endHandoff() {
+        handoff.reset()
+        syncHandoff()
+    }
+
+    /// 第一次采集之前「请放手指」的提示：过了门的录入要强调换成新手指。
+    private var placeFingerStatus: String {
+        (enrollViaGate && enrollmentProgress == 0
+            ? "enroll.place.finger.new" : "enroll.place.finger").localized
+    }
+
+    private func applyEnrollFrame(_ payload: EnrollStatusPayload) {
+        let (event, current, total) = (payload.event, payload.current, payload.total)
+
+        if total > 0 {
+            enrollmentTotal = total
+        }
+
+        switch event {
+        case .waiting:
+            enrollmentProgress = current
+            enrollmentStatus = placeFingerStatus
+        case .captured:
+            enrollmentStatus = "enroll.captured".localized(current, total)
+            enrollmentProgress = current
+        case .liftFinger:
+            enrollmentProgress = current
+            // 过门后的第一次采集之前，这一帧是「旧手指已抬起」——该放新手指了。
+            enrollmentStatus = enrollViaGate && current == 0
+                ? placeFingerStatus : "enroll.lift.finger".localized
+        case .processing:
+            enrollmentStatus = "enroll.processing".localized
+            enrollmentProgress = current
+        case .overlap:
+            // (mode 1) device rejected this capture for overlapping the
+            // previous one too much. Don't advance progress — prompt the
+            // user to shift position and bump the nudge so the sheet shakes.
+            enrollmentStatus = "enroll.adjust.overlap".localized
+            overlapNudge &+= 1
+        case .complete:
+            NSLog("FingerprintView: enrollment complete, old bitmap=0x%02X", fingerprintBitmap)
+            isEnrolling = false
+            enrollmentProgress = total
+            // Update local cache (don't fetch from device)
+            // Set bit for the enrolled slot
+            if let slot = currentEnrollSlot {
+                fingerprintBitmap |= (1 << slot)
+                Self.cachedBitmap = fingerprintBitmap
+                Self.isCacheValid = true
+                NotificationCenter.default.post(name: .fingerprintCacheUpdated, object: nil)
+            }
+            currentEnrollSlot = nil
+            NSLog("FingerprintView: new bitmap=0x%02X (cached)", fingerprintBitmap)
+            showAlert(title: "enroll.success".localized, message: "enroll.success.message".localized)
+        case .failed:
+            isEnrolling = false
+            currentEnrollSlot = nil
+            // 失败帧的 current 是原因码（固件 1.8.9+，见 EnrollFailReason）。
+            let reasonKey = current == EnrollFailReason.duplicate
+                ? "enroll.failed.duplicate" : "enroll.failed.message"
+            showAlert(title: "enroll.failed".localized, message: reasonKey.localized)
         }
     }
 
@@ -719,6 +798,7 @@ class FingerprintViewModel: ObservableObject {
             if isEnrolling {
                 isEnrolling = false
                 currentEnrollSlot = nil
+                endHandoff()
                 showAlert(title: "enroll.failed".localized,
                           message: "enroll.disconnected.message".localized)
             }
@@ -782,10 +862,14 @@ class FingerprintViewModel: ObservableObject {
         isLoading = true  // Immediately block UI to prevent duplicate clicks
         currentEnrollSlot = slot
         enrollmentProgress = 0
+        enrollViaGate = false
+        endHandoff()
 
         // If fingerprints already enrolled, firmware requires FP verification first
         if fingerprintCount > 0 {
-            gateController.present(title: "fingerprint.add".localized, onCancel: { [weak self] in
+            gateController.present(title: "fingerprint.add".localized,
+                                   hint: "enroll.verify.hint".localized,
+                                   onCancel: { [weak self] in
                 self?.currentEnrollSlot = nil
                 self?.isLoading = false
             })
@@ -801,11 +885,15 @@ class FingerprintViewModel: ObservableObject {
                     // pending gate on FP match, so sending GATE_CANCEL would just
                     // fire the firmware's red 1s flash over the enroll green-blink.
                     self.gateController.resolveAndDismiss()
+                    // 真的过了门：旧手指还按在传感器上，先停在「验证通过，换成新手指」，
+                    // 等用户抬手（且至少停够 minDwell）再摆采集引导。
+                    self.enrollViaGate = self.handoff.begin()
+                    self.syncHandoff()
                     self.isEnrolling = true
-                    // 验证后开始捕获：已有指纹时强调「换用新手指」
-                    self.enrollmentStatus = (self.fingerprintCount > 0
-                        ? "enroll.place.finger.new" : "enroll.place.finger").localized
+                    self.enrollmentStatus = self.placeFingerStatus
+                    if self.enrollViaGate { self.startHandoffDwell() }
                 } else {
+                    self.endHandoff()
                     // 用户主动 cancel 时 controller.cancel() 的 onCancel 已经
                     // 把 currentEnrollSlot 清空; cancelGateAndRelease 会用
                     // false invoke 这个 completion. 不弹错误也不 reportFailed.
@@ -870,6 +958,7 @@ class FingerprintViewModel: ObservableObject {
         enrollmentStatus = ""
         enrollmentProgress = 0
         currentEnrollSlot = nil
+        endHandoff()
         bleManager.cancelEnrollment()
     }
 

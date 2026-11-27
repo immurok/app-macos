@@ -51,6 +51,11 @@ let package = Package(
             name: "AppDefaultsTests",
             dependencies: ["immurokApp"],
             path: "Tests/AppDefaultsTests"
+        ),
+        .testTarget(
+            name: "SSHConfigTests",
+            dependencies: ["immurokApp"],
+            path: "Tests/SSHConfigTests"
         )
     ]
 )

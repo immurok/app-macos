@@ -29,6 +29,8 @@ class FingerprintGateController: ObservableObject {
     @Published var title: String = ""
     @Published var failureReason: GateFailureReason = .generic
     var successMessage: String?  // Custom success text (e.g. "生成成功"), nil = default
+    /// 等待触摸时显示在状态文字下面的补充说明（如录入前验证：「先不要放要录入的新手指」）。
+    @Published var hint: String?
 
     static let timeout = 30
 
@@ -44,9 +46,10 @@ class FingerprintGateController: ObservableObject {
     // MARK: - Present
 
     /// Show gate sheet for FP verification, auto-dismiss on success
-    func present(title: String, onCancel: (() -> Void)? = nil) {
+    func present(title: String, hint: String? = nil, onCancel: (() -> Void)? = nil) {
         guard !isPresented else { return }
         self.title = title
+        self.hint = hint
         self.onCancel = onCancel
         self.state = .waiting
         self.failureReason = .generic
@@ -59,6 +62,7 @@ class FingerprintGateController: ObservableObject {
     /// Called when fingerprintGateRequiredNotification fires — shows sheet if not already shown
     func onGateRequired() {
         guard !isPresented else { return }
+        hint = nil
         state = .waiting
         failureReason = .generic
         countdown = Self.timeout
@@ -262,6 +266,13 @@ struct FingerprintGateSheet: View {
         }
     }
 
+    private var showsHint: Bool {
+        switch controller.state {
+        case .waiting, .attemptFailed: return true
+        case .processing, .success, .failed: return false
+        }
+    }
+
     var body: some View {
         VStack(spacing: 20) {
             Text(controller.title)
@@ -286,10 +297,21 @@ struct FingerprintGateSheet: View {
                     .animation(.easeInOut(duration: 0.3), value: controller.state)
             }
 
-            Text(statusText)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
+            VStack(spacing: 4) {
+                Text(statusText)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+
+                // 补充说明只在等触摸时有意义；出结果后让位给结果文字。
+                if let hint = controller.hint, showsHint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             // Buttons
             switch controller.state {

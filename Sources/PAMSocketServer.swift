@@ -857,6 +857,7 @@ class PAMSocketServer {
         // Format: OK:event:current:total
         // event: 0=waiting, 1=captured, 2=processing, 3=liftFinger, 4=complete,
         //        6=overlap (mode-1 shift-finger, non-terminal), 255=failed
+        // 失败帧（255）的 current 是原因码：0=通用，1=这根手指已录在别的槽位（固件 1.8.9+）
         sendResponse(clientSocket, response: "OK:\(status.rawValue):\(current):\(total)")
     }
 
