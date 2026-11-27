@@ -1,4 +1,5 @@
 import SwiftUI
+import AuthInjectionKit
 
 /// 首次运行引导：从小白视角带用户走完「连接 → 配对 → 密码 → 指纹 → 权限」全流程。
 /// - 步骤列表动态生成（PAM 已装则不出现安装检查步）
@@ -12,6 +13,10 @@ struct SetupWizardView: View {
     @StateObject private var fpViewModel = FingerprintViewModel()
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedFeatures: Set<SetupFeature> = [.screenUnlock]
+    @State private var securing = false
+    @State private var setupError: String?
+    private var plan: SetupPlan { SetupPlan(features: selectedFeatures) }
     @State private var steps: [WizardStep] = []
     @State private var currentIndex = 0
     /// 用户点了「上一步」后暂停自动前进，避免回看已完成步骤时被立刻弹回
@@ -56,8 +61,7 @@ struct SetupWizardView: View {
     /// （先走完连接/配对/指纹引导，修复入口由设置页横幅与菜单/通知兜底），模块缺失时不可跳过。
     private func isSkippable(_ step: WizardStep) -> Bool {
         switch step {
-        case .password, .fingerprint: return true
-        case .pam: return setupManager.isPAMModuleInstalled
+        case .password, .fingerprint, .accessibility, .pam: return true
         default: return false
         }
     }
@@ -80,14 +84,19 @@ struct SetupWizardView: View {
                 footerView
             }
         }
-        .frame(width: 680, height: 500)
+        .frame(width: 760, height: 620)
         // 始终置顶：向导会把用户支到「系统设置 → 蓝牙」「隐私与安全性 → 辅助功能」
         // 去操作，这些窗口一弹出来向导就被盖住，用户回不来、也看不到「已连接」的反馈。
         .background(WindowLevelSetter(level: .floating))
         .onAppear {
             setupManager.refreshStatus()
+            if let saved = UserDefaults.standard.stringArray(forKey: "immurok.setup.features") {
+                selectedFeatures = Set(saved.compactMap(SetupFeature.init(rawValue:)))
+            }
             buildSteps()
-            jumpToFirstIncomplete()
+        }
+        .onChange(of: selectedFeatures) { _ in
+            if currentStep == .welcome { buildSteps() }
         }
         .onReceive(pollTimer) { _ in
             // PAM/辅助功能没有变更推送，轮询刷新；其余状态由 @Published 驱动
@@ -116,32 +125,25 @@ struct SetupWizardView: View {
         var s: [WizardStep] = [.welcome]
         // pkg 安装的用户 PAM 必然已装；模块缺失（如手动拷贝 App）或 pam.d 缺行
         // （macOS 27 安装时 TCC 被拒 / 系统升级重置）才插入安装检查步
-        if !setupManager.isPAMModuleInstalled || setupManager.needsPAMRepair { s.append(.pam) }
-        s.append(contentsOf: [.connect, .pair, .password, .fingerprint, .accessibility, .finish])
+        s.append(contentsOf: [.connect, .pair, .fingerprint])
+        if plan.needsPassword { s.append(.password) }
+        if plan.needsAccessibility { s.append(.accessibility) }
+        if plan.needsPAM { s.append(.pam) }
+        s.append(.finish)
         steps = s
     }
 
     private func isSatisfied(_ step: WizardStep) -> Bool {
         switch step {
-        case .welcome, .finish: return true
-        case .pam:           return setupManager.isPAMModuleInstalled && !setupManager.needsPAMRepair
+        case .welcome: return !selectedFeatures.isEmpty
+        case .finish: return true
+        case .pam:           return setupManager.isPAMModuleInstalled && !setupManager.needsPAMRepair && setupManager.pamKeyStatus == .installed
         case .connect:       return viewModel.isDeviceConnected
-        case .pair:          return viewModel.isDevicePaired
+        case .pair:          return viewModel.isDevicePaired && viewModel.hasLocalPairing && viewModel.isDeviceVerified
         case .password:      return viewModel.isPasswordConfigured
         case .fingerprint:   return viewModel.fingerprintCount > 0
         case .accessibility: return setupManager.hasAccessibilityPermission
         }
-    }
-
-    /// 启动时直接跳到第一个未完成的步骤（欢迎页仅在全新安装时展示）
-    private func jumpToFirstIncomplete() {
-        guard let first = steps.firstIndex(where: { $0 != .welcome && $0 != .finish && !isSatisfied($0) })
-        else {
-            currentIndex = steps.count - 1  // 全部完成 → 完成页
-            return
-        }
-        // 什么都没配过（连接步就未完成）→ 从欢迎页开始；否则续接进度
-        currentIndex = (steps[first] == .connect || steps[first] == .pam) ? 0 : first
     }
 
     private func autoAdvanceIfSatisfied() {
@@ -154,6 +156,10 @@ struct SetupWizardView: View {
     private func goNext() {
         suppressAutoAdvance = false
         guard currentIndex < steps.count - 1 else { return }
+        if currentStep == .welcome {
+            buildSteps()
+            UserDefaults.standard.set(selectedFeatures.map(\.rawValue).sorted(), forKey: "immurok.setup.features")
+        }
         withAnimation { currentIndex += 1 }
     }
 
@@ -164,6 +170,25 @@ struct SetupWizardView: View {
     }
 
     private func finishWizard() {
+        if currentStep == .finish {
+            let d = UserDefaults.standard
+            let deviceReady = viewModel.isDeviceConnected && viewModel.isDeviceVerified && viewModel.fingerprintCount > 0
+            if selectedFeatures.contains(.screenUnlock), deviceReady,
+               viewModel.isPasswordConfigured, setupManager.hasAccessibilityPermission {
+                d.set(true, forKey: "immurok.screenUnlockEnabled")
+            }
+            if selectedFeatures.contains(.administrator), deviceReady, isSatisfied(.pam) {
+                setupManager.setSudoAuthEnabled(true)
+                setupManager.setAuthorizationEnabled(true)
+            }
+            // SSH stays scoped to explicit clients. Do not replace the user's existing agent.
+            if selectedFeatures.contains(.ssh), deviceReady {
+                do {
+                    try SSHAgentServer.shared.start()
+                    d.set(true, forKey: "immurok.sshAgentEnabled")
+                } catch { setupError = error.localizedDescription; return }
+            }
+        }
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         dismiss()
     }
@@ -193,23 +218,18 @@ struct SetupWizardView: View {
     private func sidebarRow(index: Int, step: WizardStep) -> some View {
         let done = step != .welcome && step != .finish && isSatisfied(step)
         let isCurrent = index == currentIndex
-        return HStack(spacing: 8) {
-            Image(systemName: done ? "checkmark.circle.fill" : (isCurrent ? "circle.inset.filled" : "circle"))
-                .font(.system(size: 12))
-                .foregroundColor(done ? .green : (isCurrent ? .accentColor : .secondary.opacity(0.5)))
-            Text(step.titleKey.localized)
-                .font(.callout)
-                .fontWeight(isCurrent ? .semibold : .regular)
-                .foregroundColor(isCurrent ? .primary : .secondary)
-            Spacer()
-        }
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            // 允许点侧栏回看，等价「上一步」语义（暂停自动前进）
-            suppressAutoAdvance = index < currentIndex
+        return Button {
+            suppressAutoAdvance = true
             withAnimation { currentIndex = index }
-        }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: done ? "checkmark.circle.fill" : (isCurrent ? "circle.inset.filled" : "circle"))
+                    .foregroundColor(done ? .green : (isCurrent ? .accentColor : .secondary))
+                Text(step.titleKey.localized).font(.callout).fontWeight(isCurrent ? .semibold : .regular)
+                Spacer()
+            }.padding(.vertical, 5).contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(index > currentIndex)
+            .accessibilityLabel(step.titleKey.localized)
     }
 
     // MARK: - 底栏
@@ -265,29 +285,23 @@ struct SetupWizardView: View {
     }
 
     private var welcomeStep: some View {
-        VStack(spacing: 20) {
-            stepHeader(icon: "hand.wave", title: "wizard.welcome".localized)
-
-            Text("wizard.intro".localized)
-                .foregroundColor(.secondary)
-
-            VStack(alignment: .leading, spacing: 12) {
-                featureRow(icon: "lock.open", text: "wizard.feature.unlock".localized)
-                featureRow(icon: "terminal", text: "wizard.feature.sudo".localized)
-                featureRow(icon: "gearshape", text: "wizard.feature.system".localized)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("experience.welcome.title".localized).font(.largeTitle.weight(.semibold))
+            Text("experience.welcome.detail".localized).foregroundColor(.secondary)
+            ForEach(SetupFeature.allCases, id: \.self) { feature in
+                FeatureChoiceCard(feature: feature, selected: selectedFeatures.contains(feature)) {
+                    if selectedFeatures.contains(feature) { selectedFeatures.remove(feature) }
+                    else { selectedFeatures.insert(feature) }
+                }
             }
-            .padding(.vertical, 8)
-
-            infoCard("wizard.welcome.needs".localized)
-
-            Text("wizard.welcome.time".localized)
-                .font(.callout)
-                .foregroundColor(.secondary)
+            Label("experience.welcome.privacy".localized, systemImage: "hand.raised")
+                .font(.callout).foregroundColor(.secondary)
+            Text("experience.connection.note".localized).font(.caption).foregroundColor(.secondary)
         }
     }
 
     private var pamStep: some View {
-        let pamOK = setupManager.isPAMModuleInstalled && !setupManager.needsPAMRepair
+        let pamOK = setupManager.isPAMModuleInstalled && !setupManager.needsPAMRepair && setupManager.pamKeyStatus == .installed
         return VStack(spacing: 20) {
             stepHeader(icon: pamOK ? "checkmark.circle.fill" : "exclamationmark.triangle",
                        title: "wizard.pam.title".localized,
@@ -314,8 +328,18 @@ struct SetupWizardView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+            } else if setupManager.pamKeyStatus != .installed {
+                Text("security.pam.required".localized).foregroundColor(.secondary)
+                Button("experience.pam.configure".localized) {
+                    securing = true; setupError = nil
+                    setupManager.installPamKey { _, error in
+                        securing = false; setupError = error
+                    }
+                }.buttonStyle(.borderedProminent).disabled(securing)
+                if securing { ProgressView().controlSize(.small) }
+                if let setupError { Text(setupError).foregroundColor(.red).font(.caption) }
             } else {
-                statusLabel(ok: true, text: "wizard.pam.installed".localized)
+                statusLabel(ok: true, text: "security.pam.ready".localized)
             }
         }
     }
@@ -376,8 +400,11 @@ struct SetupWizardView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
-            if viewModel.isDevicePaired {
+            if viewModel.isDevicePaired && viewModel.hasLocalPairing && viewModel.isDeviceVerified {
                 statusLabel(ok: true, text: "wizard.pair.done".localized)
+            } else if viewModel.isDevicePaired && viewModel.hasLocalPairing && !viewModel.isDeviceVerified {
+                Text("experience.status.unverified.detail".localized).foregroundColor(.secondary)
+                Button("experience.status.unverified.action".localized) { viewModel.openBluetoothPreferences() }
             } else if viewModel.isPairing || viewModel.isPreparingPairing {
                 VStack(spacing: 12) {
                     ProgressView()
@@ -409,7 +436,7 @@ struct SetupWizardView: View {
         VStack(spacing: 20) {
             stepHeader(icon: "key", title: "wizard.password.title".localized)
 
-            Text("wizard.password.body".localized)
+            Text("security.password.explanation".localized)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
@@ -501,43 +528,27 @@ struct SetupWizardView: View {
     }
 
     private var finishStep: some View {
-        VStack(spacing: 20) {
-            stepHeader(icon: "checkmark.seal.fill", title: "wizard.complete.title".localized, iconColor: .green)
-
-            Text("wizard.complete.message".localized)
-                .foregroundColor(.secondary)
-
-            VStack(alignment: .leading, spacing: 10) {
-                summaryRow(text: "wizard.step.connect".localized, ok: viewModel.isDeviceConnected)
-                summaryRow(text: "wizard.step.pair".localized, ok: viewModel.isDevicePaired)
-                summaryRow(text: "wizard.step.password".localized, ok: viewModel.isPasswordConfigured)
-                summaryRow(text: "wizard.step.fingerprint".localized, ok: viewModel.fingerprintCount > 0)
-                summaryRow(text: "wizard.accessibility.title".localized, ok: setupManager.hasAccessibilityPermission)
+        VStack(alignment: .leading, spacing: 18) {
+            Text("experience.finish.title".localized).font(.largeTitle.weight(.semibold))
+            Text("experience.finish.detail".localized).foregroundColor(.secondary)
+            summaryRow(text: "wizard.step.connect".localized, ok: viewModel.isDeviceConnected)
+            summaryRow(text: "wizard.step.pair".localized, ok: isSatisfied(.pair))
+            summaryRow(text: "wizard.step.fingerprint".localized, ok: viewModel.fingerprintCount > 0)
+            if plan.needsPassword { summaryRow(text: "wizard.step.password".localized, ok: viewModel.isPasswordConfigured) }
+            if plan.needsAccessibility { summaryRow(text: "wizard.accessibility.title".localized, ok: setupManager.hasAccessibilityPermission) }
+            if plan.needsPAM { summaryRow(text: "experience.pam.configure".localized, ok: isSatisfied(.pam)) }
+            Divider()
+            if selectedFeatures.contains(.screenUnlock) { Text("experience.finish.unlock".localized) }
+            if selectedFeatures.contains(.administrator) { Text("experience.finish.admin".localized) }
+            if selectedFeatures.contains(.ssh) {
+                Text("experience.finish.ssh".localized)
+                Text("SSH_AUTH_SOCK=\(SSHAgentServer.shared.socketPath) ssh-add -L")
+                    .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(8)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("wizard.try.title".localized)
-                    .font(.callout)
-                    .fontWeight(.medium)
-                Label("wizard.try.unlock".localized, systemImage: "lock.open")
-                Label("wizard.try.sudo".localized, systemImage: "terminal")
-            }
-            .font(.callout)
-            .foregroundColor(.secondary)
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.accentColor.opacity(0.08))
-            .cornerRadius(8)
-
-            Text("wizard.menubar.note".localized)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-        }
+            Label("experience.finish.fallback".localized, systemImage: "key")
+                .font(.callout).foregroundColor(.secondary)
+            if let setupError { Text(setupError).foregroundColor(.red) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Helper Views

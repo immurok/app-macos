@@ -9,15 +9,17 @@ import Foundation
 ///
 /// `register(defaults:)` 不落盘，但让 `bool(forKey:)` 与 `@AppStorage`
 /// 读到同一默认值，两侧永远一致。所有默认为 true 的开关必须在这里注册；
-/// 默认 false 的 key 与 `bool(forKey:)` 的缺省语义一致，无需登记。
+/// Security-sensitive features default off; existing explicit preferences are preserved.
 enum AppDefaults {
-    static func register() {
-        UserDefaults.standard.register(defaults: [
-            "immurok.screenUnlockEnabled": true,
-            "immurok.passwordsFillEnabled": true,
-            "immurok.sshAgentEnabled": true,
-            "immurok.cliEnabled": true,
-            "immurok.quickFillEnabled": true,
+    static func register(in defaults: UserDefaults = .standard) {
+        defaults.register(defaults: [
+            "immurok.screenUnlockEnabled": false,
+            "immurok.passwordsFillEnabled": false,
+            "immurok.sshAgentEnabled": false,
+            "immurok.cliEnabled": false,
+            "immurok.quickFillEnabled": false,
+            "immurok.automaticUpdateChecks": false,
+            "immurok.keepAwakeDuringDisplaySleep": false,
         ])
     }
 

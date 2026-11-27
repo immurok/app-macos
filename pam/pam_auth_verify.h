@@ -9,7 +9,7 @@
 #define PAM_MAC_LEN 16
 #define PAM_AUDIT_LOG_PATH "/var/log/immurok-pam.log"
 
-/* 返回 1=已读到强认证密钥，0=文件不存在（兼容模式），-1=文件存在但不合规（按 0 处理，调用方记 syslog）。 */
+/* 1 = valid key; 0 = missing; -1 = unusable. Only 1 permits authentication. */
 int pam_load_key(const char *dir, uid_t uid, uint8_t key[32]);
 void pam_gen_nonce(uint8_t nonce[PAM_NONCE_LEN]);
 void pam_hex(const uint8_t *in, size_t n, char *out);          /* out 需要 2n+1 字节 */

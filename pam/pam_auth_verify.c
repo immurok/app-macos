@@ -75,7 +75,7 @@ int pam_compute_mac(const uint8_t key[32], const uint8_t nonce[PAM_NONCE_LEN],
 
 int pam_verify_response(const uint8_t key[32], const uint8_t nonce[PAM_NONCE_LEN],
                         const char *user, const char *service, const char *response) {
-    if (strncmp(response, "OK:", 3) != 0) return 0;
+    if (strlen(response) != 3 + PAM_MAC_LEN * 2 || strncmp(response, "OK:", 3) != 0) return 0;
     const char *hex = response + 3;
     uint8_t got[PAM_MAC_LEN];
     for (int i = 0; i < PAM_MAC_LEN; i++) {

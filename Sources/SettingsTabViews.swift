@@ -210,6 +210,7 @@ struct DeviceTabView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                DeviceExperienceView(viewModel: viewModel)
                 // Bluetooth Warning (if needed)
                 if viewModel.needsBluetoothAttention {
                     bluetoothWarningView
@@ -2004,13 +2005,16 @@ struct PermissionsTabView: View {
     @ObservedObject var setupManager: SetupManager
 
     // Feature toggles stored in UserDefaults
-    @AppStorage("immurok.screenUnlockEnabled") private var screenUnlockEnabled = true
+    @AppStorage("immurok.screenUnlockEnabled") private var screenUnlockEnabled = false
     @AppStorage("immurok.screenLockEnabled") private var screenLockEnabled = false
     @AppStorage("immurok.sudoAuthEnabled") private var sudoAuthEnabled = false
     @AppStorage("immurok.authorizationEnabled") private var authorizationEnabled = false
-    @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = true
-    @AppStorage("immurok.cliEnabled") private var cliEnabled = true
-    @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = true
+    @AppStorage("immurok.sshAgentEnabled") private var sshAgentEnabled = false
+    @AppStorage("immurok.sshUseAsDefaultAgent") private var sshUseAsDefaultAgent = false
+    @AppStorage("immurok.cliEnabled") private var cliEnabled = false
+    @AppStorage("immurok.quickFillEnabled") private var quickFillEnabled = false
+    @AppStorage("immurok.automaticUpdateChecks") private var automaticUpdateChecks = false
+    @AppStorage("immurok.keepAwakeDuringDisplaySleep") private var keepAwakeDuringDisplaySleep = false
     // 强认证已启用后用户把顶部横幅收起（缩成右上角盾牌）
     @AppStorage("immurok.pamBannerDismissed") private var pamBannerDismissed = false
     // Empty string = silent. Read by AppDelegate.handleFingerprintMatch.
@@ -2039,6 +2043,16 @@ struct PermissionsTabView: View {
             // 的认证——系统权限授权（authorization）和终端 sudo。未启用/失配时横幅不可关闭；
             // 已启用后可关闭，缩成右上角的盾牌图标，点击盾牌再展开。
             pamSecurityBanner
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("security.updates.title".localized, isOn: $automaticUpdateChecks)
+                    Text("security.updates.detail".localized).font(.caption).foregroundColor(.secondary)
+                    Divider()
+                    Toggle("security.sleep.title".localized, isOn: $keepAwakeDuringDisplaySleep)
+                    Text("security.sleep.detail".localized).font(.caption).foregroundColor(.secondary)
+                }
+            }
 
             // ===== 系统 =====
             sectionLabel("permission.section.system")
@@ -2190,6 +2204,18 @@ struct PermissionsTabView: View {
                             }
                         }
                     }
+                }
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("experience.ssh.default".localized, isOn: $sshUseAsDefaultAgent)
+                        .disabled(!sshAgentEnabled)
+                        .onChange(of: sshUseAsDefaultAgent) { enabled in
+                            if enabled && sshAgentEnabled { SSHAgentServer.shared.installAuthSockEnv() }
+                            else { SSHAgentServer.shared.restoreAuthSockEnv() }
+                        }
+                    Text("experience.ssh.scope".localized).font(.caption).foregroundColor(.secondary)
                 }
             }
 
@@ -2403,7 +2429,7 @@ struct PermissionsTabView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("permission.pam.strong.title".localized)
                         .font(.system(size: 13, weight: .semibold))
-                    Text(pamKeyHintKey.localized)
+                    Text(pamKeyInstalled ? "security.pam.ready".localized : "security.pam.required".localized)
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2486,12 +2512,26 @@ struct PermissionsTabView: View {
             showAlert(title: "alert.need.pam".localized, message: "alert.need.pam.reinstall".localized)
             return
         }
+        if enable && !pamKeyInstalled {
+            setupManager.installPamKey { success, error in
+                if success { setupManager.setSudoAuthEnabled(true) }
+                else if let error { showAlert(title: "alert.pamkey.failed.title".localized, message: error) }
+            }
+            return
+        }
         setupManager.setSudoAuthEnabled(enable)
     }
 
     private func tryEnableSystemAuth(_ enable: Bool) {
         if enable && !setupManager.isPAMModuleInstalled {
             showAlert(title: "alert.need.pam".localized, message: "alert.need.pam.reinstall".localized)
+            return
+        }
+        if enable && !pamKeyInstalled {
+            setupManager.installPamKey { success, error in
+                if success { setupManager.setAuthorizationEnabled(true) }
+                else if let error { showAlert(title: "alert.pamkey.failed.title".localized, message: error) }
+            }
             return
         }
         setupManager.setAuthorizationEnabled(enable)
@@ -2512,7 +2552,7 @@ struct PermissionsTabView: View {
         sshAgentEnabled = enable
         if enable {
             try? SSHAgentServer.shared.start()
-            SSHAgentServer.shared.installAuthSockEnv()   // 开启即设 SSH_AUTH_SOCK
+            if sshUseAsDefaultAgent { SSHAgentServer.shared.installAuthSockEnv() }
         } else {
             SSHAgentServer.shared.stop()
             SSHAgentServer.shared.restoreAuthSockEnv()   // 关闭恢复原值
@@ -2875,6 +2915,7 @@ struct AboutTabView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            ApprovalHistoryView().padding(.horizontal, 20).padding(.top, 12)
             // App Icon and Info - compact
             VStack(spacing: 8) {
                 AppLogoView(size: 56)

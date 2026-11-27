@@ -337,6 +337,8 @@ class BLEManager: NSObject {
         DispatchQueue.main.async {
             let nc = NSWorkspace.shared.notificationCenter
 
+            NotificationCenter.default.addObserver(self, selector: #selector(self.updateSleepActivity),
+                name: UserDefaults.didChangeNotification, object: nil)
             // Screen sleep/wake controls reconnect behavior
             nc.addObserver(self, selector: #selector(self.onScreenDidSleep),
                            name: NSWorkspace.screensDidSleepNotification, object: nil)
@@ -351,13 +353,22 @@ class BLEManager: NSObject {
         Task { @MainActor in LogManager.shared.log("Screen sleep") }
         displaySleeping = true
         stopReconnectTimer()
-        // Prevent system from entering deep power saving that kills BLE connection.
-        // Without this, macOS drops BLE after ~1 min of sleep, device re-advertises,
-        // macOS reconnects HID keyboard → screen wakes → sleep → disconnect → repeat.
-        if sleepActivity == nil {
+        updateSleepActivity()
+    }
+
+    @objc private func updateSleepActivity() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.updateSleepActivity() }
+            return
+        }
+        let keepAwake = displaySleeping && UserDefaults.standard.bool(forKey: "immurok.keepAwakeDuringDisplaySleep")
+        if keepAwake && sleepActivity == nil {
             sleepActivity = ProcessInfo.processInfo.beginActivity(
                 options: .idleSystemSleepDisabled,
                 reason: "Keep BLE connection alive during screen sleep")
+        } else if !keepAwake, let activity = sleepActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepActivity = nil
         }
     }
 
@@ -2127,18 +2138,10 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
-        // Fast path: if this device UUID was previously verified, trust it.
-        // BLE bond already authenticates the device; HMAC on every FP match
-        // provides ongoing verification.
-        if let uuid = self.peripheral?.identifier.uuidString,
-           ImmurokSecurity.shared.isVerifiedDevice(uuid: uuid) {
-            NSLog("BLEManager: Device %@ cached as verified, skipping challenge", uuid)
-            isDeviceVerified = true
-            Task { @MainActor in LogManager.shared.log("Device verified (cached)") }
-            testEventTap?(.connected(name))
-            onDeviceConnected?(name)
-            return
-        }
+        // A remembered identifier is not a fresh proof of possession.
+        // Challenge every connection; fingerprint notification freshness still
+        // requires a coordinated firmware/protocol upgrade.
+        isDeviceVerified = false
 
         let nonce = ImmurokSecurity.shared.generateChallenge()
         sendCommand(.challenge, payload: Array(nonce)) { [weak self] response in

@@ -99,7 +99,11 @@ class SetupManager: ObservableObject {
 
     /// Check if setup wizard should be shown
     var needsSetup: Bool {
-        return !isPAMModuleInstalled || !hasAccessibilityPermission
+        let d = UserDefaults.standard
+        let needsPAM = d.bool(forKey: "immurok.sudoAuthEnabled") || d.bool(forKey: "immurok.authorizationEnabled")
+        let needsAX = d.bool(forKey: "immurok.screenUnlockEnabled") || d.bool(forKey: "immurok.quickFillEnabled")
+        return (needsPAM && (!isPAMModuleInstalled || needsPAMRepair || pamKeyStatus != .installed))
+            || (needsAX && !hasAccessibilityPermission)
     }
 
     // MARK: - PAM 信道强认证密钥（spec 2026-09-03-pam-channel-mac-design.md）

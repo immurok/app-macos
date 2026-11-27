@@ -63,7 +63,10 @@ class ImmurokSecurity {
             let keyData = symmetricKey.withUnsafeBytes { Data($0) }
 
             // Save to Keychain
-            saveToKeychain(service: keychainServiceSharedKey, data: keyData)
+            guard saveToKeychain(service: keychainServiceSharedKey, data: keyData) else {
+                ephemeralPrivateKey = nil
+                return false
+            }
 
             // Clear ephemeral key
             ephemeralPrivateKey = nil
@@ -217,10 +220,10 @@ class ImmurokSecurity {
 
     // MARK: - Password (Keychain)
 
-    func savePassword(_ password: String) {
-        guard let data = password.data(using: .utf8) else { return }
-        saveToKeychain(service: keychainServicePassword, data: data)
-        NSLog("ImmurokSecurity: Password saved to Keychain")
+    @discardableResult
+    func savePassword(_ password: String) -> Bool {
+        guard let data = password.data(using: .utf8) else { return false }
+        return saveToKeychain(service: keychainServicePassword, data: data)
     }
 
     func loadPassword() -> String? {
@@ -366,10 +369,21 @@ class ImmurokSecurity {
 
     // MARK: - Keychain Helpers
 
-    private func saveToKeychain(service: String, data: Data) {
-        // Delete existing item first
-        deleteFromKeychain(service: service)
-
+    @discardableResult
+    private func saveToKeychain(service: String, data: Data) -> Bool {
+        // Update in place so a failed write cannot delete the previous secret.
+        let identity: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: keychainAccount,
+        ]
+        let updateStatus = SecItemUpdate(identity as CFDictionary,
+                                        [kSecValueData as String: data] as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else {
+            NSLog("ImmurokSecurity: Keychain update failed: %d", updateStatus)
+            return false
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -382,6 +396,7 @@ class ImmurokSecurity {
         if status != errSecSuccess {
             NSLog("ImmurokSecurity: Keychain save failed: %d", status)
         }
+        return status == errSecSuccess
     }
 
     private func loadFromKeychain(service: String) -> Data? {

@@ -57,6 +57,7 @@ class SSHAgentServer {
 
     /// 关闭 SSH 功能时恢复原来的 SSH_AUTH_SOCK（有原值则还原，无则清空）。
     func restoreAuthSockEnv() {
+        guard Self.launchctlGetenv("SSH_AUTH_SOCK") == socketPath else { return }
         let prev = UserDefaults.standard.string(forKey: Self.prevAuthSockKey)
         if let prev = prev, !prev.isEmpty {
             Self.launchctl(["setenv", "SSH_AUTH_SOCK", prev])

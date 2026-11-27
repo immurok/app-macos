@@ -60,7 +60,7 @@ struct MenuBarStatusLabel: View {
                 Image(systemName: "touchid")
             }
             Circle()
-                .fill(viewModel.isDeviceConnected ? Color.green : Color.red)
+                .fill(viewModel.isDeviceConnected && viewModel.isDeviceVerified ? Color.green : Color.orange)
                 .frame(width: 6, height: 6)
             if viewModel.firmwareUpdate.updateAvailable || viewModel.appUpdate.updateAvailable {
                 Circle()
@@ -99,11 +99,7 @@ struct MenuBarView: View {
 
     /// 检查所有状态是否正常
     private var isAllStatusOK: Bool {
-        viewModel.isDeviceConnected &&
-        viewModel.fingerprintCount > 0 &&
-        viewModel.isPasswordConfigured &&
-        setupManager.hasAccessibilityPermission &&
-        setupManager.isPAMModuleInstalled
+        viewModel.readiness == .ready
     }
 
     private func batteryIcon(for level: Int) -> String {
@@ -135,7 +131,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if setupManager.needsPAMRepair {
+            if viewModel.requestedFeatures.contains(.administrator) && setupManager.needsPAMRepair {
                 Button(action: {
                     dismiss()
                     setupManager.repairAuthorization { success, error in
@@ -210,14 +206,14 @@ struct MenuBarView: View {
                 .padding(.vertical, 8)
             }
 
-            // 整体状态 - 点击进入 About（默认显示状态列表）
+            // Actionable readiness, scoped to the user's selected features.
             Button(action: {
-                openSettings(tab: .about)
+                openSettings(tab: .device)
             }) {
                 HStack(spacing: 8) {
                     Image(systemName: isAllStatusOK ? "checkmark.circle" : "exclamationmark.circle")
                         .frame(width: 16)
-                    Text(isAllStatusOK ? "menu.status.ok".localized : "menu.status.error".localized)
+                    Text(viewModel.readiness.titleKey.localized)
                     Spacer()
                 }
             }

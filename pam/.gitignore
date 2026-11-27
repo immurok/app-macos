@@ -1,1 +1,3 @@
 test_pam_mac
+/test_pam_policy
+/pam_immurok.so

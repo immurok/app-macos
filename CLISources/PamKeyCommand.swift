@@ -167,7 +167,7 @@ private func pamKeyRemove(uid: uid_t) -> Int32 {
             return 1
         }
     }
-    print("pam_key removed for uid \(uid) (PAM back to compat mode)")
+    print("pam_key removed for uid \(uid) (fingerprint PAM disabled; existing macOS authentication remains available)")
     return 0
 }
 
