@@ -388,6 +388,8 @@
   "alert.pamkey.failed.title": "強力な検証を有効にできませんでした",
   "alert.pamkey.failed.manual": "ターミナルで実行してください：\nsudo imk pam-key install",
   "permission.sudo.hint": "PAM モジュールで sudo のパスワード入力を指紋に置き換えます",
+  "permission.tripleTouchScreenSaver": "トリプルタッチでスクリーンセーバー",
+  "permission.tripleTouchScreenSaver.hint": "ロック解除中にセンサーを 3 回続けてタッチ（約 2 秒間隔）するとスクリーンセーバーを開始します",
   "permission.unlock.password": "ロック解除パスワード",
   "quickfill.empty": "キーがありません",
   "quickfill.error.empty": "キーが空です",

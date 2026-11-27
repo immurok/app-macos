@@ -375,6 +375,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
+            // Triple touch → start the screen saver, whatever is on screen.
+            // Opt-in (immurok.tripleTouchScreenSaver, default off). The device only
+            // reports completed matches (0x21), so "three taps" means three
+            // matches inside tripleTouchWindow. Touches that land on a focused
+            // password field are auth, not part of the gesture. Taps 1-2 fall
+            // through to the normal logic below, so a single touch behaves as
+            // before.
+            if UserDefaults.standard.bool(forKey: "immurok.tripleTouchScreenSaver"),
+               !self.isScreenSaverRunning(),
+               !self.isSecureInputFocused() {
+                let now = Date()
+                self.tripleTouchTimes = self.tripleTouchTimes.filter {
+                    now.timeIntervalSince($0) < Self.tripleTouchWindow
+                }
+                self.tripleTouchTimes.append(now)
+                let taps = self.tripleTouchTimes.count
+                if taps >= 3 {
+                    self.tripleTouchTimes.removeAll()
+                    NSLog("Triple touch → starting screen saver")
+                    LogManager.shared.log("Triple touch → start screen saver")
+                    // Suppress the trailing long-press lock if the finger lingers.
+                    self.lastAuthFlowAt = now
+                    self.startScreenSaver()
+                    return
+                }
+                LogManager.shared.log("Triple touch \(taps)/3")
+            } else {
+                self.tripleTouchTimes.removeAll()
+            }
+
             let isAuthorizationEnabled = SetupManager.shared.isAuthorizationEnabled
             guard isAuthorizationEnabled else {
                 NSLog("Authorization feature disabled, ignoring fingerprint")
@@ -425,6 +455,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // process. Refuse to grant authority without explicit context.
                 NSLog("No auth dialog detected, ignoring fingerprint (no pre-auth)")
                 LogManager.shared.log("No auth window → skip pre-auth (avoid consumption by unrelated processes)")
+            }
+        }
+    }
+
+    // MARK: - Triple Touch → Screen Saver
+
+    /// Timestamps of recent matches counted toward the triple-touch gesture.
+    private var tripleTouchTimes: [Date] = []
+    /// Three matches must land inside this window. A match takes ~0.6s of
+    /// contact, then the sensor sleeps and re-wakes: logs show back-to-back
+    /// matches arrive ~2.5s apart, so three touches span 5-6s.
+    private static let tripleTouchWindow: TimeInterval = 9.0
+
+    private func isScreenSaverRunning() -> Bool {
+        !NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.ScreenSaver.Engine"
+        ).isEmpty
+    }
+
+    private func startScreenSaver() {
+        let url = URL(fileURLWithPath: "/System/Library/CoreServices/ScreenSaverEngine.app")
+        NSWorkspace.shared.openApplication(at: url,
+                                           configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            if let error = error {
+                NSLog("Failed to start screen saver: %@", error.localizedDescription)
+                Task { @MainActor in LogManager.shared.log("Screen saver start failed: \(error.localizedDescription)") }
             }
         }
     }
@@ -847,6 +903,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // pad would otherwise lock the screen the user just unlocked into.
         // Only suppresses when a real auth branch ran — bare matches with no
         // auth context (long-press to lock with no dialog) leave this nil.
+        // Mid triple-touch (2nd tap onward): a tap that
+        // lingers past the long-press threshold must not lock the screen.
+        // The first tap is not suppressed, so a plain long press still locks.
+        if tripleTouchTimes.filter({ Date().timeIntervalSince($0) < Self.tripleTouchWindow }).count >= 2 {
+            NSLog("Lock request ignored: triple touch in progress")
+            Task { @MainActor in LogManager.shared.log("Lock request ignored (triple touch in progress)") }
+            return
+        }
         if let lastFlow = lastAuthFlowAt,
            Date().timeIntervalSince(lastFlow) < Self.lockSuppressWindow {
             NSLog("Lock request ignored: recent auth flow (tail)")

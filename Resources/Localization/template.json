@@ -365,6 +365,8 @@
   "alert.pamkey.failed.title": "Could not enable strong verification",
   "alert.pamkey.failed.manual": "Run this in Terminal:\nsudo imk pam-key install",
   "permission.sudo.hint": "Replace sudo password prompt with fingerprint via PAM",
+  "permission.tripleTouchScreenSaver": "Triple-Touch Screen Saver",
+  "permission.tripleTouchScreenSaver.hint": "When unlocked, touch the sensor three times in a row (about 2 seconds apart) to start the screen saver",
   "permission.unlock.password": "Unlock Password",
   "quickfill.empty": "No keys",
   "quickfill.error.empty": "Key is empty",

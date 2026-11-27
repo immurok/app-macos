@@ -388,6 +388,8 @@
   "alert.pamkey.failed.title": "Não foi possível ativar a verificação forte",
   "alert.pamkey.failed.manual": "Execute no Terminal:\nsudo imk pam-key install",
   "permission.sudo.hint": "Substitui a senha do sudo pela impressão digital via PAM",
+  "permission.tripleTouchScreenSaver": "Protetor de tela com toque triplo",
+  "permission.tripleTouchScreenSaver.hint": "Com o Mac desbloqueado, toque no sensor três vezes seguidas (com cerca de 2 s de intervalo) para iniciar o protetor de tela",
   "permission.unlock.password": "Senha",
   "quickfill.empty": "Nenhuma chave",
   "quickfill.error.empty": "A chave está vazia",
