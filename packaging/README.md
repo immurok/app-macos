@@ -94,7 +94,7 @@ tokens: resource owner `immurok`, repository `homebrew-tap` only, permission
 *Contents: Read and write*. Set it with
 `gh secret set HOMEBREW_TAP_TOKEN --repo immurok/app-macos`.
 
-#### Known issue: `brew upgrade` resets user configuration (not fixed yet)
+#### Fixed: `brew upgrade` preserves user configuration
 
 Found 2026-11-24 by reading the Homebrew source (7.0.16), the cask and
 `uninstall-postinstall`; not reproduced by running an actual upgrade.
@@ -104,38 +104,28 @@ On upgrade Homebrew runs the installed cask's whole `uninstall` stanza (only
 `signal` is skipped) and gives the script no hint that it is an upgrade, so
 `immurok_uninstall.pkg` runs every time.
 
-| | Result of a `brew upgrade` |
-|---|---|
-| `~/.immurok` (`automation.json`, `ssh_keys.json`, `key_name_cache.json`) | removed: custom Automation items and per-item switches are lost |
-| `com.immurok.app` preferences | removed: every feature switch and sound setting is lost, first-run setup shows again |
-| immurok lines in `/etc/pam.d` | removed by the uninstall pkg, written again by the new pkg's postinstall |
-| `/etc/immurok/pam` (PAM channel key) | removed and **not** recreated by the pkg: PAM authentication has to be enabled again in the app (`imk pam-key install`) |
-| Keychain (login password, per-item passwords, pairing key, verified device) | kept: only the in-app uninstall clears it (`SetupManager` → `clearAllKeychainData()`), the brew path never reaches that code |
+The fix is a marker protocol between the cask and `uninstall-postinstall`:
 
-Related cases:
+1. The cask's uninstall script touches `/tmp/immurok-keep-user-data` right
+   before invoking the uninstall pkg (brew-driven uninstall **and** upgrade).
+2. When the marker is present, `uninstall-postinstall` preserves `~/.immurok`,
+   the `com.immurok.app` preferences and `/etc/immurok/pam` (the PAM channel
+   key), and consumes the marker on entry. Everything else — pam.d line
+   stripping, module retention, app/CLI removal — is unchanged.
+3. The in-app uninstall and a hand-run uninstall pkg leave no marker and keep
+   the full-cleanup behaviour. Removing user data is left to the cask's `zap`
+   stanza, which already lists `~/.immurok` and the preferences plist.
 
-- Installed from the pkg only, never through brew: `brew upgrade` reports the
-  cask as not installed and does nothing. `brew install --cask` runs just the
-  installer, so nothing is lost; later upgrades go through the path above.
-- The uninstall script cannot simply be skipped on upgrade. The `pkgutil:`
-  directive deletes `pam_immurok.so` by receipt, and with the `/etc/pam.d`
-  lines still in place PAM fails to initialise: sudo and the system
-  authorization dialog stop working if the new pkg then fails to install.
+| Data | brew upgrade / uninstall | in-app uninstall | `brew uninstall --zap` |
+|---|---|---|---|
+| `~/.immurok`, preferences | preserved | removed | removed |
+| `/etc/immurok/pam` (channel key) | preserved | removed | preserved — root-owned, zap runs unprivileged; remove with `sudo imk pam-key remove` |
+| pam.d lines, app, CLI | removed | removed | removed |
 
-Planned fix (not implemented):
-
-1. The cask script drops a "keep user data" marker file before it runs the
-   uninstall pkg.
-2. `uninstall-postinstall` skips removing `~/.immurok` and the preferences
-   when the marker is present; everything else stays as it is.
-3. Removing user data is left to the cask's `zap` stanza, which already lists
-   both. The in-app uninstall and a hand-run uninstall pkg leave no marker and
-   keep their current behaviour.
-
-Limit of that fix: on upgrade Homebrew uses the **installed** cask and the
+Limit (unchanged): on upgrade Homebrew uses the **installed** cask and the
 **installed** uninstall pkg, not the new ones. The fix therefore takes effect
-one upgrade late; the upgrade from 1.6.11 or earlier still resets the
-configuration once.
+one upgrade late; the upgrade from a version without the marker support still
+resets the configuration once.
 
 ## Building locally
 

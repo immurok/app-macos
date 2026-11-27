@@ -27,6 +27,17 @@ else
     REAL_HOME="$R/home"
 fi
 
+# brew 驱动的卸载（upgrade/uninstall）标记：cask 在调用 installer 前落
+# /tmp/immurok-keep-user-data。存在则保留用户数据（~/.immurok、偏好设置、
+# /etc/immurok/pam 强认证密钥）——升级不应重置配置；彻底清除是 cask zap 的职责。
+# 应用内卸载 / 手动跑卸载包没有标记，维持完整清理。读完即删，避免污染下一次。
+KEEP_USER_DATA=0
+KEEP_MARKER="$R/tmp/immurok-keep-user-data"
+if [ -f "$KEEP_MARKER" ]; then
+    KEEP_USER_DATA=1
+    rm -f "$KEEP_MARKER"
+fi
+
 # Step 1: Do NOT kill the app here. The App launched this pkg and is polling
 # for /usr/local/bin/imk to disappear; on detection it clears
 # its user Keychain entries (unreachable from this root context) and quits
@@ -115,7 +126,9 @@ fi
 
 rm -rf "$BACKUP"
 
-# Step 4: Remove imk CLI + PAM 信道密钥 + 审计日志。
+# Step 4: Remove imk CLI + PAM 信道密钥（仅完整卸载）+ 审计日志。
+# /etc/immurok/pam 仅在无 cask 标记时删除；brew 驱动卸载（有标记）保留，
+# 升级后强认证无需重新开启。彻底清除走 `sudo imk pam-key remove` 或 brew --zap。
 #
 # 故意不删 /usr/local/lib/pam/pam_immurok.so。pam.d 里只要有一行引用了加载不了的
 # 模块，PAM 整个服务初始化失败（见 Step 3c），sudo 和系统授权框一起坏。卸载流程
@@ -124,21 +137,27 @@ rm -rf "$BACKUP"
 # 有行引用而 App 不在时它连不上 socket 立刻失败，认证回退到密码。
 # 所以宁可留一个文件，也不给"引用悬空"留任何路径。重装会覆盖它。
 rm -f "$R/usr/local/bin/imk"
-rm -rf "$R/etc/immurok/pam"
+if [ "$KEEP_USER_DATA" -eq 0 ]; then
+    rm -rf "$R/etc/immurok/pam"
+fi
 rmdir "$R/etc/immurok" 2>/dev/null || true
 rm -f "$R/var/log/immurok-pam.log"
 
 # Step 5 在最后（Step 11）：App 包必须等 App 自己清完 Keychain 并退出之后才能删。
 
-# Step 6: Remove user data directory
-rm -rf "$REAL_HOME/.immurok"
+# Step 6: Remove user data directory（仅完整卸载；有 cask 标记时保留，--zap 才清除）
+if [ "$KEEP_USER_DATA" -eq 0 ]; then
+    rm -rf "$REAL_HOME/.immurok"
+fi
 
 if [ -z "$R" ]; then
     # Step 7: Remove legacy Keychain entry (current entries are cleared by the App itself)
     sudo -u "$REAL_USER" security delete-generic-password -s "com.katsu.immurok" -a "unlock-password" 2>/dev/null || true
 
-    # Step 8: Remove UserDefaults
-    sudo -u "$REAL_USER" defaults delete com.immurok.app 2>/dev/null || true
+    # Step 8: Remove UserDefaults（仅完整卸载；有 cask 标记时保留，--zap 才清除）
+    if [ "$KEEP_USER_DATA" -eq 0 ]; then
+        sudo -u "$REAL_USER" defaults delete com.immurok.app 2>/dev/null || true
+    fi
 
     # Step 9: Clean up pkg receipts
     pkgutil --forget com.immurok.pkg 2>/dev/null || true
