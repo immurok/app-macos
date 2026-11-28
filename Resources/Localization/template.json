@@ -338,6 +338,8 @@
   "permission.password.missing": "Login password not configured — this feature is inactive",
   "permission.passwords": "Passwords App",
   "permission.passwords.hint": "Auto-fill your login password with your fingerprint when unlocking the Passwords app",
+  "permission.keepawake": "Keep Mac awake while the display is off",
+  "permission.keepawake.hint": "Keeps the immurok connection alive while the display sleeps. Turn off to let your Mac go to system sleep; the device may then take a moment to reconnect after wake",
   "permission.quickfill": "Quick Fill",
   "permission.quickfill.hint": "Global hotkey to open floating panel for quick key search and fill",
   "permission.screen.lock": "Screen Lock",

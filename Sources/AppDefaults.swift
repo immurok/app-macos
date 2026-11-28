@@ -11,6 +11,10 @@ import Foundation
 /// 读到同一默认值，两侧永远一致。所有默认为 true 的开关必须在这里注册；
 /// 默认 false 的 key 与 `bool(forKey:)` 的缺省语义一致，无需登记。
 enum AppDefaults {
+    /// 显示器关闭时持有 idleSystemSleepDisabled，尽量保住 BLE 链路（默认开，与旧行为一致）。
+    /// 关掉后 Mac 可正常进入系统睡眠（issue #15）。
+    static let keepAwakeDuringDisplaySleepKey = "immurok.keepAwakeDuringDisplaySleep"
+
     static func register() {
         UserDefaults.standard.register(defaults: [
             "immurok.screenUnlockEnabled": true,
@@ -18,6 +22,7 @@ enum AppDefaults {
             "immurok.sshAgentEnabled": true,
             "immurok.cliEnabled": true,
             "immurok.quickFillEnabled": true,
+            keepAwakeDuringDisplaySleepKey: true,
         ])
     }
 
