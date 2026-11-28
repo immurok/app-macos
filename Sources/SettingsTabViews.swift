@@ -79,6 +79,7 @@ struct InfoTip: View {
                         .font(.callout)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if let onCopy = onCopy {
                         Button {
                             onCopy()
@@ -91,7 +92,10 @@ struct InfoTip: View {
                     }
                 }
                 .padding(12)
-                .frame(maxWidth: 300, alignment: .leading)
+                // 固定宽度，不能用 maxWidth：popover 会在极窄的宽度下量内容，文字按那个宽度折行
+                // 量出 ~2000pt 的高度，再按 300pt 宽画，结果是一个巨高的气泡、文字居中
+                //（macOS 27 实测：maxWidth 版在宽度 0 下量得 25×2034，固定宽度版恒为 300×84）。
+                .frame(width: 300, alignment: .leading)
                 .onDisappear { copied = false }
             }
     }
