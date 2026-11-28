@@ -297,6 +297,13 @@ class BLEManager: NSObject {
     private var reconnectTimer: DispatchSourceTimer?
     private var sleepActivity: NSObjectProtocol?
     private var displaySleeping = false
+    /// 显示器睡眠期间发生的**意外**断连（如 supervision timeout）的时刻，只在主线程读写。
+    /// 断连后 macOS 会自己重连已配对的 HID 键盘，bluetoothd 随即声明 UserIsActive
+    /// 「Bluetooth LE HID Activity」把显示器点亮到锁屏（issue #15）。onScreenDidWake
+    /// 用它区分这种"重连亮屏"和用户真的唤醒。
+    private var sleepDisconnectAt: CFAbsoluteTime?
+    /// 判为重连亮屏的时间窗：断连后这么久内亮屏才算。
+    private static let spuriousWakeWindow: CFTimeInterval = 10
     private var connectingStartTime: Date?  // Tracks when .connecting state began
     private static let connectingTimeout: TimeInterval = 10  // Max time in .connecting before reset
     /// 本轮断连期间是否已记过「正在查找设备」类日志。重连定时器每秒跑一次 doConnect()，
@@ -354,6 +361,12 @@ class BLEManager: NSObject {
         // Prevent system from entering deep power saving that kills BLE connection.
         // Without this, macOS drops BLE after ~1 min of sleep, device re-advertises,
         // macOS reconnects HID keyboard → screen wakes → sleep → disconnect → repeat.
+        // 可在「功能 > 显示器关闭时保持 Mac 唤醒」关掉（issue #15）：链路照样会因 supervision
+        // timeout 掉线，而这个 assertion 让 Mac 整夜无法进入系统睡眠。
+        guard UserDefaults.standard.bool(forKey: AppDefaults.keepAwakeDuringDisplaySleepKey) else {
+            NSLog("BLEManager: keep-awake during display sleep is off, not holding idle-sleep assertion")
+            return
+        }
         if sleepActivity == nil {
             sleepActivity = ProcessInfo.processInfo.beginActivity(
                 options: .idleSystemSleepDisabled,
@@ -370,6 +383,13 @@ class BLEManager: NSObject {
             ProcessInfo.processInfo.endActivity(activity)
             sleepActivity = nil
         }
+        if let reason = spuriousReconnectWakeReason() {
+            // 只把显示器重新关掉；其余唤醒处理照常进行（App 侧 GATT 重连等）。
+            // 显示器关闭后 onScreenDidSleep 会再次触发，状态自然回到睡眠。
+            NSLog("BLEManager: %@ → display back to sleep", reason)
+            Task { @MainActor in LogManager.shared.log("Screen wake caused by BLE reconnect (\(reason)) → display back to sleep") }
+            Self.sleepDisplayNow()
+        }
         queue.async { [weak self] in
             guard let self = self else { return }
             if !self.deviceState.isConnected {
@@ -380,6 +400,50 @@ class BLEManager: NSObject {
                 // completing challenge. Re-run verification now.
                 let name = self.peripheral?.name ?? "immurok"
                 self.performChallengeVerification(name: name)
+            }
+        }
+    }
+
+    /// issue #15：显示器睡眠中链路意外断开（supervision timeout），macOS 随即自动重连已配对的
+    /// HID 键盘，bluetoothd 声明 UserIsActive 把显示器点亮到锁屏——没有任何人碰键盘。
+    /// 三条同时满足才判为这种"重连亮屏"，返回诊断文字，否则 nil：
+    /// 1. 亮屏发生在睡眠期意外断连后的 `spuriousWakeWindow` 秒内；
+    /// 2. 断连前后都没有真实输入（键盘/鼠标/触控板）。实测 IOPMAssertionDeclareUserActivity
+    ///    不会重置 CGEventSource / HIDIdleTime，所以 bluetoothd 的 UserIsActive 不算输入；
+    /// 3. 屏幕仍处于锁定。
+    /// 只在主线程调用。每次断连只用一次。
+    private func spuriousReconnectWakeReason() -> String? {
+        guard let at = sleepDisconnectAt else { return nil }
+        sleepDisconnectAt = nil
+        let sinceDisconnect = CFAbsoluteTimeGetCurrent() - at
+        guard sinceDisconnect >= 0, sinceDisconnect <= Self.spuriousWakeWindow else { return nil }
+        let inputIdle = CGEventSource.secondsSinceLastEventType(
+            .combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        guard inputIdle > sinceDisconnect + 2 else {
+            NSLog("BLEManager: wake %.1fs after sleep disconnect, but user input %.1fs ago → real wake",
+                  sinceDisconnect, inputIdle)
+            return nil
+        }
+        guard Self.isScreenLocked() else { return nil }
+        return String(format: "%.1fs after sleep-time disconnect, no input for %.0fs, screen locked",
+                      sinceDisconnect, inputIdle)
+    }
+
+    private static func isScreenLocked() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        if let locked = session["CGSSessionScreenIsLocked"] as? Bool { return locked }
+        if let locked = session["ScreenIsLocked"] as? Bool { return locked }
+        return false
+    }
+
+    /// 立即关闭显示器（不需要 root）。
+    private static func sleepDisplayNow() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            p.arguments = ["displaysleepnow"]
+            do { try p.run(); p.waitUntilExit() } catch {
+                NSLog("BLEManager: pmset displaysleepnow failed: %@", error.localizedDescription)
             }
         }
     }
@@ -2065,6 +2129,12 @@ extension BLEManager: CBCentralManagerDelegate {
 
         deviceState = .disconnected
         onDeviceDisconnected?()
+
+        // 显示器睡眠中的意外断连：记下时刻，供 onScreenDidWake 识别随之而来的重连亮屏（issue #15）。
+        if displaySleeping && error != nil {
+            let now = CFAbsoluteTimeGetCurrent()
+            DispatchQueue.main.async { [weak self] in self?.sleepDisconnectAt = now }
+        }
 
         if !displaySleeping {
             startReconnectTimer()

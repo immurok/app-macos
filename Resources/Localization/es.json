@@ -359,6 +359,8 @@
   "permission.password.missing": "No has configurado la contraseña de inicio de sesión: esta función está inactiva",
   "permission.passwords": "App Contraseñas",
   "permission.passwords.hint": "Rellena tu contraseña de inicio de sesión con la huella al desbloquear la app Contraseñas",
+  "permission.keepawake": "Mantener el Mac activo con la pantalla apagada",
+  "permission.keepawake.hint": "Mantiene la conexión con immurok mientras la pantalla está en reposo. Desactívalo para que el Mac pueda entrar en reposo; al despertar, el dispositivo puede tardar un momento en reconectarse",
   "permission.quickfill": "Relleno rápido",
   "permission.quickfill.hint": "Atajo global que abre un panel flotante para buscar y rellenar claves al instante",
   "permission.screen.lock": "Bloqueo de pantalla",

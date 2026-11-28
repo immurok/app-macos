@@ -359,6 +359,8 @@
   "permission.password.missing": "Senha de login não configurada — este recurso está inativo",
   "permission.passwords": "App Senhas",
   "permission.passwords.hint": "Preenche sua senha de login com a impressão digital ao desbloquear o app Senhas",
+  "permission.keepawake": "Manter o Mac ativo com a tela desligada",
+  "permission.keepawake.hint": "Mantém a conexão com o immurok enquanto a tela está em repouso. Desative para permitir que o Mac entre em repouso; ao despertar, o dispositivo pode levar um instante para reconectar",
   "permission.quickfill": "Preenchimento rápido",
   "permission.quickfill.hint": "Atalho global que abre um painel flutuante para buscar e preencher chaves rapidamente",
   "permission.screen.lock": "Bloqueio de tela",

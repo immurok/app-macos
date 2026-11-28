@@ -359,6 +359,8 @@
   "permission.password.missing": "Anmeldepasswort nicht eingerichtet. Diese Funktion ist inaktiv",
   "permission.passwords": "App „Passwörter“",
   "permission.passwords.hint": "Anmeldepasswort beim Entsperren der App „Passwörter“ per Fingerabdruck automatisch ausfüllen",
+  "permission.keepawake": "Mac wach halten, wenn das Display aus ist",
+  "permission.keepawake.hint": "Hält die Verbindung zu immurok aufrecht, während das Display ruht. Ausschalten, damit der Mac in den Ruhezustand gehen kann; das Gerät braucht nach dem Aufwachen dann ggf. einen Moment zum Verbinden",
   "permission.quickfill": "Schnellausfüllen",
   "permission.quickfill.hint": "Globales Tastenkürzel öffnet ein schwebendes Fenster zum schnellen Suchen und Ausfüllen von Schlüsseln",
   "permission.screen.lock": "Bildschirm sperren",

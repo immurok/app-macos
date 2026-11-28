@@ -359,6 +359,8 @@
   "permission.password.missing": "ログインパスワードが未設定のため、この機能は動作しません",
   "permission.passwords": "「パスワード」App",
   "permission.passwords.hint": "「パスワード」App のロック解除時に指紋でログインパスワードを自動入力します",
+  "permission.keepawake": "ディスプレイがオフの間も Mac をスリープさせない",
+  "permission.keepawake.hint": "ディスプレイのスリープ中も immurok との接続を維持します。オフにすると Mac がシステムスリープに入れるようになり、復帰後の再接続に少し時間がかかることがあります",
   "permission.quickfill": "クイック入力",
   "permission.quickfill.hint": "グローバルホットキーでフローティングパネルを開き、キーを素早く検索して入力します",
   "permission.screen.lock": "画面ロック",

@@ -144,6 +144,73 @@ struct AuthContextDetector {
                 }
             }
         }
+        return passwordsLockPage()
+    }
+
+    /// Passwords 的锁定页：菜单栏图标面板（com.apple.Passwords.MenuBarExtra，AXSystemDialog）
+    /// 和 Passwords App 主窗口（com.apple.Passwords，AXStandardWindow）是同一套界面。实测结构：
+    ///   … > AXGroup > AXGroup >
+    ///     AXImage id=touchid、「Passwords Is Locked」文字、AXButton「使用密码…」（**没有**取消键）
+    /// 按下后原地换成：AXImage id=lock.fill + 一个 AXSecureTextField。
+    /// 与 coreautha 不同，这里"唯一按钮"就是「使用密码…」，所以判据收得更紧：
+    /// - 只在这两个进程里认；App 主窗口要求 App 在前台（与 Passwords 条目一致）；
+    /// - 窗口控制按钮（关闭/最小化/全屏/缩放）不计数；
+    /// - Touch ID 页：touchid 图标 + 无密码框 + 恰好一个其它按钮；
+    /// - 密码页：恰好一个密码框 + touchid 或 lock.fill 图标（别的单密码框界面不认）。
+    /// 识别只靠结构与 AXIdentifier，与界面语言无关。
+    private func passwordsLockPage() -> LocalAuthDialog {
+        let targets: [(bundleID: String, windowSubrole: String?, requireActive: Bool)] = [
+            (AutomationItem.passwordsMenuBarBundleID, "AXSystemDialog", false),
+            (AutomationItem.passwordsAppBundleID, nil, true),
+        ]
+        let windowControls: Set<String> = ["AXCloseButton", "AXMinimizeButton", "AXFullScreenButton", "AXZoomButton"]
+        for target in targets {
+          for app in NSRunningApplication.runningApplications(withBundleIdentifier: target.bundleID) {
+            if target.requireActive && !app.isActive { continue }
+            let bundleID = target.bundleID
+            let pid = app.processIdentifier
+            guard let appEl = AXAppProbe.responsiveApplication(pid: pid, tag: "passwords-lock-scan") else { continue }
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement], !windows.isEmpty else { continue }
+            for window in windows where target.windowSubrole == nil || subrole(of: window) == target.windowSubrole {
+                // 锁定页很小：有界下行扫描（深度 ≤ 6、≤ 80 个节点）。解锁后的主窗口树很大，
+                // 预算用完就当没命中。
+                var budget = 80
+                var buttons: [AXUIElement] = []
+                var fields: [AXUIElement] = []
+                var hasTouchIDGlyph = false
+                var hasLockGlyph = false
+                func rec(_ el: AXUIElement, _ depth: Int) {
+                    if depth > 6 || budget <= 0 { return }
+                    for c in children(of: el) {
+                        budget -= 1
+                        if budget <= 0 { return }
+                        let r = role(of: c)
+                        if r == "AXButton" {
+                            if !windowControls.contains(subrole(of: c) ?? "") { buttons.append(c) }
+                            continue
+                        }
+                        if subrole(of: c) == (kAXSecureTextFieldSubrole as String) { fields.append(c); continue }
+                        if r == "AXImage" {
+                            let id = identifier(of: c)
+                            if id == "touchid" { hasTouchIDGlyph = true }
+                            if id == "lock.fill" { hasLockGlyph = true }
+                        }
+                        rec(c, depth + 1)
+                    }
+                }
+                rec(window, 0)
+                if budget <= 0 { continue }
+                let isPasswordPage = fields.count == 1 && (hasLockGlyph || hasTouchIDGlyph)
+                let isTouchIDPage = fields.isEmpty && hasTouchIDGlyph && buttons.count == 1
+                guard isPasswordPage || isTouchIDPage else { continue }
+                guard InjectionWhitelist.processSatisfies(pid: pid, bundleID: bundleID, signing: .applePlatform) else { return .untrusted }
+                return isPasswordPage ? .ready(field: fields[0], window: window)
+                                      : .touchID(usePasswordButton: buttons[0])
+            }
+          }
+        }
         return .notPresent
     }
 

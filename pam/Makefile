@@ -2,21 +2,21 @@
 
 CC = clang
 CFLAGS = -fPIC -Wall -Wextra -O2
-LDFLAGS = -shared -lpam
+LDFLAGS = -shared -lpam -framework Foundation -framework LocalAuthentication
 
 # Build for both arm64 and x86_64
 ARCH_FLAGS = -arch arm64 -arch x86_64
 
 TARGET = pam_immurok.so
-SRC = pam_immurok.c hmac_sha256.c pam_auth_verify.c
+SRC = pam_immurok.c hmac_sha256.c pam_auth_verify.c la_race.m
 SIGN_IDENTITY ?= -
 
 .PHONY: all clean install uninstall test vectors
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) hmac_sha256.h pam_auth_verify.h
-	$(CC) $(CFLAGS) $(ARCH_FLAGS) $(LDFLAGS) -o $@ $(SRC)
+$(TARGET): $(SRC) hmac_sha256.h pam_auth_verify.h la_race.h
+	$(CC) $(CFLAGS) -fobjc-arc $(ARCH_FLAGS) $(LDFLAGS) -o $@ $(SRC)
 	codesign --force --sign "$(SIGN_IDENTITY)" $@
 
 vectors:
@@ -39,6 +39,8 @@ install: $(TARGET)
 	@echo ""
 	@echo "To enable, add this line to /etc/pam.d/sudo (at the top):"
 	@echo "  auth sufficient /usr/local/lib/pam/pam_immurok.so"
+	@echo "Add \"tid\" to also accept Touch ID / Apple Watch at the same time:"
+	@echo "  auth sufficient /usr/local/lib/pam/pam_immurok.so tid"
 	@echo ""
 
 uninstall:
